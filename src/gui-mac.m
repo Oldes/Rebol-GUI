@@ -38,7 +38,8 @@
 #include "gui.h"
 
 // Modern AppKit constant names are used throughout (NSWindowStyleMask*,
-// NSEventModifierFlag*, NSEventMaskAny), which need a 10.12 or newer SDK.
+// NSEventModifierFlag*, NSEventMaskAny, NSControlStateValue*), which need a
+// 10.13 or newer SDK.
 #define NSWINDOW_OF(win) ((NSWindow*)((win)->handle))
 
 
@@ -166,10 +167,12 @@ static void Detach_Control(GUIWIDGET *wid);
 
 	// No cursor position comes with an action message, so the position slot
 	// carries the button's own offset - the same as WM_COMMAND on Windows.
+	//
+	// Not queued directly: a check or a radio has state to settle first,
+	// and radio grouping is decided above this file.
 	frame = [self frame];
-	Gui_Queue_Event(context->hob, W_GUI_EVENT_CLICK,
-	                (REBINT)frame.origin.x, (REBINT)frame.origin.y,
-	                Modifier_Bits([NSEvent modifierFlags]));
+	Gui_Widget_Activated(context, (REBINT)frame.origin.x, (REBINT)frame.origin.y,
+	                     Modifier_Bits([NSEvent modifierFlags]));
 }
 
 @end
@@ -761,9 +764,9 @@ static void Detach_Control(GUIWIDGET *wid)
 	}
 }
 
-REBOOL Gui_Create_Button(GUIWIDGET *wid, GUIWIN *owner,
-                         REBINT x, REBINT y, REBINT w, REBINT h,
-                         const REBYTE *text, REBCNT len)
+REBOOL Gui_Create_Button_Control(GUIWIDGET *wid, GUIWIN *owner,
+                                 REBINT x, REBINT y, REBINT w, REBINT h,
+                                 const REBYTE *text, REBCNT len)
 {
 	@autoreleasepool {
 		RebolGuiButton *button;
@@ -782,8 +785,23 @@ REBOOL Gui_Create_Button(GUIWIDGET *wid, GUIWIN *owner,
 			NSMakeRect((CGFloat)x, (CGFloat)y, (CGFloat)w, (CGFloat)h)];
 		if (!button) return FALSE;
 
-		[button setBezelStyle:NSBezelStyleRounded];
-		[button setButtonType:NSButtonTypeMomentaryPushIn];
+		switch (wid->kind) {
+		case W_GUI_WIDGET_CHECK:
+			[button setButtonType:NSButtonTypeSwitch];
+			break;
+		case W_GUI_WIDGET_RADIO:
+			// AppKit groups radios sharing a superview and an action, which
+			// here is every radio in the window. It still clears them when
+			// one is CLICKED; Gui_Widget_Set_State() below is what puts the
+			// wrongly cleared ones back without setting the same trap off
+			// again.
+			[button setButtonType:NSButtonTypeRadio];
+			break;
+		default:
+			[button setBezelStyle:NSBezelStyleRounded];
+			[button setButtonType:NSButtonTypeMomentaryPushIn];
+			break;
+		}
 
 		label = To_NSString(text, len);
 		[button setTitle:(label ? label : @"")];
@@ -1023,6 +1041,47 @@ REBOOL Gui_Widget_Set_Box(GUIWIDGET *wid, REBINT x, REBINT y, REBINT w, REBINT h
 			NSMakeRect((CGFloat)x, (CGFloat)y, (CGFloat)w, (CGFloat)h)];
 		[NSVIEW_OF(wid) setNeedsDisplay:YES];
 		return TRUE;
+	}
+}
+
+
+REBOOL Gui_Widget_Get_State(GUIWIDGET *wid)
+{
+	@autoreleasepool {
+		if (!wid || !wid->handle) return FALSE;
+		return ([NSBUTTON_OF(wid) state] == NSControlStateValueOn) ? TRUE : FALSE;
+	}
+}
+
+
+/***********************************************************************
+**  Writes the state WITHOUT letting AppKit treat it as a group member.
+**
+**  Radio buttons sharing a superview and an action are a group to
+**  AppKit, and switching one on turns the others off - every other
+**  radio in the window, not just the ones this extension calls a group.
+**  Worse, that happens on a programmatic setState: too, so re-asserting
+**  the others afterwards only moves the problem: whichever radio is
+**  written last is the only one left on.
+**
+**  Detaching the action for the length of the write takes the button
+**  out of any group AppKit can see, so the write means exactly what it
+**  says. The action is put straight back; nothing else can run in
+**  between, since this is the main thread.
+***********************************************************************/
+void Gui_Widget_Set_State(GUIWIDGET *wid, REBOOL on)
+{
+	@autoreleasepool {
+		RebolGuiButton *button;
+		SEL action;
+
+		if (!wid || !wid->handle) return;
+		button = NSBUTTON_OF(wid);
+
+		action = [button action];
+		[button setAction:NULL];
+		[button setState:(on ? NSControlStateValueOn : NSControlStateValueOff)];
+		[button setAction:action];
 	}
 }
 

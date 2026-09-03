@@ -115,6 +115,95 @@ static void Release_Handle(REBHOB *hob)
 
 
 /***********************************************************************
+**  Radio groups.
+**
+**  Neither platform groups radios the way a caller means it. Win32 goes
+**  by sibling order bounded by WS_GROUP flags; AppKit goes by superview
+**  and action selector - and since every control here is a direct child
+**  of the window with the same action, both would put every radio of a
+**  window into one group.
+**
+**  So the grouping is done here instead, over the window's own widget
+**  list, and `wid->state` - not the native control - is the truth.
+**
+**  Every radio in the window is then written, not just this group's: a
+**  click on one radio makes AppKit clear the others behind our back, so
+**  the ones it touched have to be put back. That only works because
+**  Gui_Widget_Set_State() writes a state without AppKit reading it as a
+**  group operation - see the note on it in gui-mac.m. Writing them in
+**  two passes, with the one being switched on written LAST, keeps the
+**  right control selected even if some platform still insists on
+**  clearing siblings when a radio goes on.
+**
+**  NOTE: the widget list is in reverse creation order, because widgets
+**  are prepended to it. Nothing here may depend on that order.
+***********************************************************************/
+static void Sync_Radio_Group(GUIWIDGET *wid, REBOOL on)
+{
+	GUIWIDGET *other;
+
+	if (!wid || !wid->owner) return;
+
+	wid->state = on ? 1 : 0;
+
+	if (on) {
+		for (other = (GUIWIDGET*)wid->owner->widgets; other;
+		     other = (GUIWIDGET*)other->next)
+		{
+			if (other != wid
+			 && other->kind  == W_GUI_WIDGET_RADIO
+			 && other->group == wid->group) other->state = 0;
+		}
+	}
+
+	// pass 1: everything which should be off
+	for (other = (GUIWIDGET*)wid->owner->widgets; other;
+	     other = (GUIWIDGET*)other->next)
+	{
+		if (other->kind == W_GUI_WIDGET_RADIO && other->handle && !other->state)
+			Gui_Widget_Set_State(other, FALSE);
+	}
+
+	// pass 2: everything which should be on, except this one
+	for (other = (GUIWIDGET*)wid->owner->widgets; other;
+	     other = (GUIWIDGET*)other->next)
+	{
+		if (other != wid
+		 && other->kind == W_GUI_WIDGET_RADIO && other->handle && other->state)
+			Gui_Widget_Set_State(other, TRUE);
+	}
+
+	// pass 3: and this one last of all
+	if (wid->handle && wid->state) Gui_Widget_Set_State(wid, TRUE);
+}
+
+
+/***********************************************************************
+**  A control was activated - a button pressed, a box ticked.
+**
+**  A checkbox has already toggled itself by the time this runs, so its
+**  state is only read back; a radio is switched on and its group
+**  settled. Everything else just reports the click.
+***********************************************************************/
+void Gui_Widget_Activated(GUIWIDGET *widget, REBINT x, REBINT y, REBINT flags)
+{
+	if (!widget || !widget->hob) return;
+
+	switch (widget->kind) {
+	case W_GUI_WIDGET_CHECK:
+		widget->state = Gui_Widget_Get_State(widget) ? 1 : 0;
+		break;
+	case W_GUI_WIDGET_RADIO:
+		// Clicking a radio always turns it on - there is no untick.
+		Sync_Radio_Group(widget, TRUE);
+		break;
+	}
+
+	Gui_Queue_Event(widget->hob, W_GUI_EVENT_CLICK, x, y, flags);
+}
+
+
+/***********************************************************************
 **  Called when a widget's native control is gone.
 **
 **  Unlinks it from its window, so that the window does not later try to
@@ -192,7 +281,16 @@ static REBOOL Kind_Has_Text(REBCNT kind)
 	return (kind == W_GUI_WIDGET_BUTTON
 	     || kind == W_GUI_WIDGET_TEXT
 	     || kind == W_GUI_WIDGET_FIELD
-	     || kind == W_GUI_WIDGET_AREA) ? TRUE : FALSE;
+	     || kind == W_GUI_WIDGET_AREA
+	     || kind == W_GUI_WIDGET_CHECK
+	     || kind == W_GUI_WIDGET_RADIO) ? TRUE : FALSE;
+}
+
+// Which kinds are on or off.
+static REBOOL Kind_Has_State(REBCNT kind)
+{
+	return (kind == W_GUI_WIDGET_CHECK
+	     || kind == W_GUI_WIDGET_RADIO) ? TRUE : FALSE;
 }
 
 static const char* Kind_Name(REBCNT kind)
@@ -202,6 +300,8 @@ static const char* Kind_Name(REBCNT kind)
 	case W_GUI_WIDGET_TEXT:  return "text";
 	case W_GUI_WIDGET_FIELD: return "field";
 	case W_GUI_WIDGET_AREA:  return "area";
+	case W_GUI_WIDGET_CHECK: return "check";
+	case W_GUI_WIDGET_RADIO: return "radio";
 	default:                 return "button";
 	}
 }
@@ -410,13 +510,15 @@ COMMAND cmd_gui_poll_events(RXIFRM *frm, void *ctx)
 
 
 /***********************************************************************
-**  add-button window [handle!] text [string!] offset [pair!] size [pair!]
+**  add-button / add-check / add-radio
+**      window [handle!] text [string!] offset [pair!] size [pair!]
+**      add-radio also takes /group id [integer!]
 **
 **  The widget handle is independent of the window handle: it can be kept,
 **  dropped or released on its own, and it survives the window's death as
 **  a closed widget rather than as a dangling pointer.
 ***********************************************************************/
-COMMAND cmd_gui_add_button(RXIFRM *frm, void *ctx)
+static int Add_Button_Control(RXIFRM *frm, REBCNT kind)
 {
 	REBHOB    *hob;
 	GUIWIDGET *wid;
@@ -442,10 +544,14 @@ COMMAND cmd_gui_add_button(RXIFRM *frm, void *ctx)
 
 	wid = (GUIWIDGET*)hob->data;
 	wid->hob   = hob;
-	wid->kind  = W_GUI_WIDGET_BUTTON;
+	wid->kind  = kind;
 	wid->owner = win;
 
-	if (!Gui_Create_Button(wid, win, x, y, w, h, text, text_len)) {
+	// Only add-radio has this refinement, so only a radio may read it.
+	if (kind == W_GUI_WIDGET_RADIO && RXA_REF(frm, 5))
+		wid->group = (REBCNT)RXA_INT32(frm, 6);
+
+	if (!Gui_Create_Button_Control(wid, win, x, y, w, h, text, text_len)) {
 		wid->owner = NULL;
 		RL_FREE_HANDLE_CONTEXT(hob);
 		RETURN_ERROR(ERR_NO_WIDGET);
@@ -459,6 +565,21 @@ COMMAND cmd_gui_add_button(RXIFRM *frm, void *ctx)
 	hob->flags |= HANDLE_CONTEXT_LOCKED;
 
 	RETURN_HANDLE(hob);
+}
+
+COMMAND cmd_gui_add_button(RXIFRM *frm, void *ctx)
+{
+	return Add_Button_Control(frm, W_GUI_WIDGET_BUTTON);
+}
+
+COMMAND cmd_gui_add_check(RXIFRM *frm, void *ctx)
+{
+	return Add_Button_Control(frm, W_GUI_WIDGET_CHECK);
+}
+
+COMMAND cmd_gui_add_radio(RXIFRM *frm, void *ctx)
+{
+	return Add_Button_Control(frm, W_GUI_WIDGET_RADIO);
 }
 
 
@@ -820,6 +941,21 @@ int GuiWidget_get_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 		arg->int32a = (i32)Gui_widget_words[wid->kind];
 		break;
 
+	case W_GUI_ARG_STATE:
+		if (!Kind_Has_State(wid->kind)) { *type = RXT_NONE; break; }
+		*type = RXT_LOGIC;
+		// A checkbox toggles itself, so the control knows best; a radio's
+		// truth is kept here, because AppKit interferes with the control.
+		arg->int32a = (wid->kind == W_GUI_WIDGET_RADIO)
+			? (wid->state != 0)
+			: Gui_Widget_Get_State(wid);
+		break;
+
+	case W_GUI_ARG_GROUP:
+		*type = RXT_INTEGER;
+		arg->int64 = (i64)wid->group;
+		break;
+
 	case W_GUI_ARG_SIZE:
 		if (!Gui_Widget_Get_Box(wid, &x, &y, &w, &h)) { *type = RXT_NONE; break; }
 		arg->pair.x = (float)w;
@@ -899,6 +1035,19 @@ int GuiWidget_set_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 		if (*type != RXT_PAIR) return PE_BAD_SET_TYPE;
 		if (!Gui_Widget_Get_Box(wid, &x, &y, &w, &h)) return PE_BAD_SET;
 		Gui_Widget_Set_Box(wid, (REBINT)arg->pair.x, (REBINT)arg->pair.y, w, h);
+		break;
+
+	case W_GUI_ARG_STATE:
+		if (!Kind_Has_State(wid->kind)) return PE_BAD_SET;
+		if (*type != RXT_LOGIC) return PE_BAD_SET_TYPE;
+		if (wid->kind == W_GUI_WIDGET_RADIO) {
+			// Setting one from Rebol settles the group exactly as a click
+			// does - including turning the others off.
+			Sync_Radio_Group(wid, arg->int32a ? TRUE : FALSE);
+		} else {
+			wid->state = arg->int32a ? 1 : 0;
+			Gui_Widget_Set_State(wid, wid->state ? TRUE : FALSE);
+		}
 		break;
 
 	case W_GUI_ARG_ENABLEDQ:

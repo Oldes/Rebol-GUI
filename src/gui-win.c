@@ -281,7 +281,12 @@ static LRESULT CALLBACK Gui_Window_Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
 			// The position slot carries the widget's own offset - a
 			// notification has no cursor position of its own.
 			Gui_Widget_Get_Box(wid, &x, &y, &w, &h);
-			Gui_Queue_Event(wid->hob, type, x, y, Modifiers());
+			if (type == W_GUI_EVENT_CLICK) {
+				// Toggles settle their state before the event goes out.
+				Gui_Widget_Activated(wid, x, y, Modifiers());
+			} else {
+				Gui_Queue_Event(wid->hob, type, x, y, Modifiers());
+			}
 		}
 		return 0;
 		not_handled: break; }
@@ -662,21 +667,38 @@ REBOOL Gui_Set_Title(GUIWIN *win, const REBYTE *utf8, REBCNT len)
 
 //== widgets ==================================================================
 
-REBOOL Gui_Create_Button(GUIWIDGET *wid, GUIWIN *owner,
-                         REBINT x, REBINT y, REBINT w, REBINT h,
-                         const REBYTE *text, REBCNT len)
+REBOOL Gui_Create_Button_Control(GUIWIDGET *wid, GUIWIN *owner,
+                                 REBINT x, REBINT y, REBINT w, REBINT h,
+                                 const REBYTE *text, REBCNT len)
 {
 	HWND   hwnd;
 	WCHAR *wide;
+	DWORD  style = WS_CHILD | WS_VISIBLE | WS_TABSTOP;
 
 	if (!wid || !owner || !owner->handle) return FALSE;
+
+	switch (wid->kind) {
+	case W_GUI_WIDGET_CHECK:
+		// AUTO: the control ticks itself and we read the result back.
+		style |= BS_AUTOCHECKBOX;
+		break;
+	case W_GUI_WIDGET_RADIO:
+		// NOT auto: BS_AUTORADIOBUTTON would group by sibling order and
+		// WS_GROUP flags, which is not the grouping we promise. This one
+		// only reports the click; the state is set from Gui_Widget_Set_State.
+		style |= BS_RADIOBUTTON;
+		break;
+	default:
+		style |= BS_PUSHBUTTON;
+		break;
+	}
 
 	wide = To_Wide(text, len);
 	hwnd = CreateWindowExW(
 		0,
 		L"BUTTON",
 		wide ? wide : L"",
-		WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+		style,
 		x, y, w, h,
 		HWND_OF(owner),
 		NULL, // no control id - BN_CLICKED carries the HWND in lParam
@@ -853,6 +875,22 @@ REBOOL Gui_Widget_Set_Box(GUIWIDGET *wid, REBINT x, REBINT y, REBINT w, REBINT h
 {
 	if (!wid || !wid->handle) return FALSE;
 	return MoveWindow(HWND_OF_WID(wid), x, y, w, h, TRUE) ? TRUE : FALSE;
+}
+
+
+REBOOL Gui_Widget_Get_State(GUIWIDGET *wid)
+{
+	if (!wid || !wid->handle) return FALSE;
+	return (SendMessageW(HWND_OF_WID(wid), BM_GETCHECK, 0, 0) == BST_CHECKED)
+		? TRUE : FALSE;
+}
+
+
+void Gui_Widget_Set_State(GUIWIDGET *wid, REBOOL on)
+{
+	if (!wid || !wid->handle) return;
+	SendMessageW(HWND_OF_WID(wid), BM_SETCHECK,
+	             on ? BST_CHECKED : BST_UNCHECKED, 0);
 }
 
 

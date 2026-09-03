@@ -65,6 +65,11 @@ void   Gui_Window_Closed(REBHOB *window);
 // queued events and unlocks its handle. Does NOT touch the native control.
 void   Gui_Widget_Closed(GUIWIDGET *widget);
 
+// What a backend calls when a control was activated, instead of queueing
+// the `click` itself: check and radio state is settled here first, because
+// radio groups are this extension's business rather than the platform's.
+void   Gui_Widget_Activated(GUIWIDGET *widget, REBINT x, REBINT y, REBINT flags);
+
 
 //== platform backend =========================================================
 // Everything below is implemented per platform (currently gui-win.c only).
@@ -104,9 +109,16 @@ REBOOL  Gui_Set_Title(GUIWIN *win, const REBYTE *utf8, REBCNT len);
 // The backend fills in `wid->handle` only; linking the widget onto its
 // window's list is done by the caller, so that the list stays in one place.
 
-REBOOL  Gui_Create_Button(GUIWIDGET *wid, GUIWIN *owner,
-                          REBINT x, REBINT y, REBINT w, REBINT h,
-                          const REBYTE *text, REBCNT len);
+// The push button and the two toggles: one BUTTON class on Windows, one
+// NSButton on macOS, differing only in style bits and button type, which
+// `wid->kind` - already set by the caller - selects.
+REBOOL  Gui_Create_Button_Control(GUIWIDGET *wid, GUIWIN *owner,
+                                  REBINT x, REBINT y, REBINT w, REBINT h,
+                                  const REBYTE *text, REBCNT len);
+
+// On/off state of a check or a radio, as the native control holds it.
+REBOOL  Gui_Widget_Get_State(GUIWIDGET *wid);
+void    Gui_Widget_Set_State(GUIWIDGET *wid, REBOOL on);
 
 // No pixels are passed in: the image lives in the handle's series and is
 // read again at every paint, so that drawing into it is all it takes to

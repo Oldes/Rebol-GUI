@@ -9,6 +9,7 @@ REBOL [
 	Exports: [
 		open-window close-window show-window hide-window
 		add-button add-image add-text add-field add-area
+		add-check add-radio
 		remove-widget redraw
 		poll-events do-events event-flags
 	]
@@ -64,6 +65,10 @@ typedef struct Gui_Widget_Context {
 	REBCNT  kind;    // W_GUI_WIDGET_* - what the control is
 	GUIWIN *owner;   // window it lives in, NULL once that window is gone
 	void   *next;    // next widget of the same window (GUIWIDGET*)
+	REBCNT  group;   // radio group id; 0 for every other kind
+	REBCNT  state;   // check / radio: 1 when on. The extension is the source
+	                 // of truth here, not the native control - see the radio
+	                 // grouping note in gui-commands.c
 } GUIWIDGET;
 
 #define GUIW_VISIBLE  1
@@ -98,6 +103,8 @@ words: [
 		text            ;; a static label
 		field           ;; one line of editable text
 		area            ;; several lines of editable text, with a scrollbar
+		check           ;; a checkbox, toggled on its own
+		radio           ;; one of a group; see `group` below
 	]
 ]
 
@@ -121,7 +128,9 @@ handles: [
 		size     pair!     pair!     "Size of the control"
 		offset   pair!     pair!     "Position inside the window's client area"
 		id       integer!  none      "Native control handle as an integer"
-		kind     word!     none      "What the control is: button, image, text, field or area"
+		kind     word!     none      "What the control is: button, image, text, field, area, check or radio"
+		state    logic!    logic!    "Whether a check or a radio is on; none for other kinds"
+		group    integer!  none      "Which radio group it belongs to; 0 for everything else"
 		enabled? logic!    logic!    "Whether the control responds to the user"
 		parent   handle!   none      "Window the control lives in, none if it is gone"
 	]
@@ -181,6 +190,21 @@ commands: [
 		text   [string!] "Initial contents"
 		offset [pair!]   "Position inside the client area"
 		size   [pair!]
+	]
+	add-check: [
+		"Creates a checkbox inside a window and returns its handle"
+		window [handle!]
+		text   [string!] "Label"
+		offset [pair!]   "Position inside the client area"
+		size   [pair!]
+	]
+	add-radio: [
+		"Creates a radio button inside a window and returns its handle"
+		window [handle!]
+		text   [string!] "Label"
+		offset [pair!]   "Position inside the client area"
+		size   [pair!]
+		/group id [integer!] {Radios sharing an id turn each other off (default: 0)}
 	]
 ]
 
