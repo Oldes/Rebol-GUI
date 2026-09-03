@@ -222,8 +222,50 @@ void Gui_Widget_Closed(GUIWIDGET *widget)
 		widget->owner = NULL;
 	}
 	widget->handle = NULL;
+	widget->parent = NULL;
 	widget->next   = NULL;
 	Release_Handle(widget->hob);
+}
+
+
+/***********************************************************************
+**  Empties a panel before it is itself destroyed.
+**
+**  Each child is destroyed properly rather than left to the panel: on
+**  Windows the OS would take them anyway, but on macOS this file holds a
+**  reference to every control, so letting the container drop them would
+**  leak one object each. Destroying them first is right on both.
+**
+**  Immediate children only, and a nested panel is emptied before it goes
+**  - so nothing is ever destroyed after the thing containing it, and a
+**  native handle is always still valid when it is used.
+**
+**  The list is re-walked from the start after every removal, because
+**  closing a widget unlinks it and any pointer into the list is stale
+**  from that moment. These lists hold a handful of entries; correctness
+**  is worth more here than a single pass.
+***********************************************************************/
+static void Close_Contents_Of(GUIWIDGET *panel)
+{
+	REBOOL again = TRUE;
+
+	if (!panel || !panel->owner) return;
+
+	while (again) {
+		GUIWIDGET *wid;
+		again = FALSE;
+		for (wid = (GUIWIDGET*)panel->owner->widgets; wid;
+		     wid = (GUIWIDGET*)wid->next)
+		{
+			if ((GUIWIDGET*)wid->parent != panel) continue;
+
+			if (wid->kind == W_GUI_WIDGET_PANEL) Close_Contents_Of(wid);
+			Gui_Destroy_Widget(wid); // the native control
+			Gui_Widget_Closed(wid);  // the Rebol side of it
+			again = TRUE;
+			break;
+		}
+	}
 }
 
 
@@ -364,8 +406,12 @@ static void Block_To_Items(GUIWIDGET *wid, REBSER *blk)
 // all - neither has an enabled state worth reporting.
 static REBOOL Kind_Has_Enabled(REBCNT kind)
 {
+	// A panel is left out because the two platforms disagree: disabling a
+	// child window on Windows greys everything inside it, while an NSView
+	// has no enabled state at all.
 	return (kind != W_GUI_WIDGET_IMAGE
-	     && kind != W_GUI_WIDGET_PROGRESS) ? TRUE : FALSE;
+	     && kind != W_GUI_WIDGET_PROGRESS
+	     && kind != W_GUI_WIDGET_PANEL) ? TRUE : FALSE;
 }
 
 static const char* Kind_Name(REBCNT kind)
@@ -380,6 +426,7 @@ static const char* Kind_Name(REBCNT kind)
 	case W_GUI_WIDGET_SLIDER:   return "slider";
 	case W_GUI_WIDGET_PROGRESS: return "progress";
 	case W_GUI_WIDGET_DROP_DOWN: return "drop-down";
+	case W_GUI_WIDGET_PANEL:     return "panel";
 	default:                 return "button";
 	}
 }
@@ -393,6 +440,60 @@ static GUIWIDGET* Frm_Widget(RXIFRM *frm, REBCNT n)
 	if (!hob || !IS_USED_HOB(hob) || !hob->data) return NULL;
 	return (GUIWIDGET*)hob->data;
 }
+
+/***********************************************************************
+**  Resolves argument `n` as the thing a new widget goes into: either a
+**  window handle, or a panel handle.
+**
+**  Returns the owning WINDOW, and sets *panel to the containing panel or
+**  NULL. Widgets always belong to a window - the panel only says where
+**  they sit inside it - which is what keeps the window's widget list flat
+**  and teardown a single walk.
+***********************************************************************/
+static GUIWIN* Frm_Parent(RXIFRM *frm, REBCNT n, GUIWIDGET **panel)
+{
+	GUIWIDGET *wid;
+	GUIWIN *win;
+
+	*panel = NULL;
+
+	win = Frm_Window(frm, n);
+	if (win) return win;
+
+	wid = Frm_Widget(frm, n);
+	if (!wid || wid->kind != W_GUI_WIDGET_PANEL || !wid->handle) return NULL;
+
+	*panel = wid;
+	return wid->owner;
+}
+
+
+/***********************************************************************
+**  The last step of every add-* command.
+**
+**  Links the widget onto its window's list - done here rather than by a
+**  backend, so the list has exactly one owner and both platforms behave
+**  the same - locks the handle against the GC, and paints the control.
+**
+**  The redraw request matters: a control created after the window was
+**  shown has nothing on screen until something paints it.
+**
+**  What that request DOES is the backend's business, and the two differ.
+**  Windows paints there and then. macOS only marks the control and lets
+**  the next Gui_Pump() paint it, because AppKit draws between events and
+**  forcing it at any other moment is unreliable - the first widgets of a
+**  batch would silently never appear.
+***********************************************************************/
+static void Attach_Widget(GUIWIDGET *wid, GUIWIN *win)
+{
+	wid->next = win->widgets;
+	win->widgets = wid;
+
+	if (wid->hob) wid->hob->flags |= HANDLE_CONTEXT_LOCKED;
+
+	Gui_Widget_Redraw(wid);
+}
+
 
 // Fills an RXIARG with a handle context, as `poll-events` and the `parent`
 // accessor both need to hand one back to Rebol.
@@ -600,7 +701,8 @@ static int Add_Button_Control(RXIFRM *frm, REBCNT kind)
 {
 	REBHOB    *hob;
 	GUIWIDGET *wid;
-	GUIWIN    *win = Frm_Window(frm, 1);
+	GUIWIDGET *panel = NULL;
+	GUIWIN    *win = Frm_Parent(frm, 1, &panel);
 	REBYTE    *text = NULL;
 	REBCNT     text_len = 0;
 	REBINT     x, y, w, h;
@@ -621,26 +723,26 @@ static int Add_Button_Control(RXIFRM *frm, REBCNT kind)
 	if (hob == NULL) RETURN_ERROR(ERR_NO_HANDLE);
 
 	wid = (GUIWIDGET*)hob->data;
+	CLEARS(wid); // every field defined, whatever the pool handed back
 	wid->hob   = hob;
 	wid->kind  = kind;
-	wid->owner = win;
+	wid->owner  = win;
+	wid->parent = panel; // read by the backend to pick the native parent
 
 	// Only add-radio has this refinement, so only a radio may read it.
 	if (kind == W_GUI_WIDGET_RADIO && RXA_REF(frm, 5))
 		wid->group = (REBCNT)RXA_INT32(frm, 6);
 
 	if (!Gui_Create_Button_Control(wid, win, x, y, w, h, text, text_len)) {
-		wid->owner = NULL;
+		wid->owner  = NULL;
+		wid->parent = NULL;
 		RL_FREE_HANDLE_CONTEXT(hob);
 		RETURN_ERROR(ERR_NO_WIDGET);
 	}
 
 	// Linked here rather than by the backend, so that the list has exactly
 	// one owner and both platforms behave the same.
-	wid->next = win->widgets;
-	win->widgets = wid;
-
-	hob->flags |= HANDLE_CONTEXT_LOCKED;
+	Attach_Widget(wid, win);
 
 	RETURN_HANDLE(hob);
 }
@@ -673,7 +775,8 @@ COMMAND cmd_gui_add_image(RXIFRM *frm, void *ctx)
 {
 	REBHOB    *hob;
 	GUIWIDGET *wid;
-	GUIWIN    *win = Frm_Window(frm, 1);
+	GUIWIDGET *panel = NULL;
+	GUIWIN    *win = Frm_Parent(frm, 1, &panel);
 	REBSER    *img = (REBSER*)RXA_IMAGE(frm, 2);
 	REBINT     x, y, w, h;
 
@@ -696,9 +799,11 @@ COMMAND cmd_gui_add_image(RXIFRM *frm, void *ctx)
 	if (hob == NULL) RETURN_ERROR(ERR_NO_HANDLE);
 
 	wid = (GUIWIDGET*)hob->data;
+	CLEARS(wid); // every field defined, whatever the pool handed back
 	wid->hob   = hob;
 	wid->kind  = W_GUI_WIDGET_IMAGE;
-	wid->owner = win;
+	wid->owner  = win;
+	wid->parent = panel; // read by the backend to pick the native parent
 
 	// The GC marks a handle context's series - which is exactly what keeps
 	// the image alive for as long as a widget is showing it.
@@ -711,10 +816,52 @@ COMMAND cmd_gui_add_image(RXIFRM *frm, void *ctx)
 		RETURN_ERROR(ERR_NO_WIDGET);
 	}
 
-	wid->next = win->widgets;
-	win->widgets = wid;
+	Attach_Widget(wid, win);
 
-	hob->flags |= HANDLE_CONTEXT_LOCKED;
+	RETURN_HANDLE(hob);
+}
+
+
+/***********************************************************************
+**  add-panel parent [handle!] offset [pair!] size [pair!]
+**
+**  A panel is a widget like any other - it just happens to be something
+**  other widgets can name as their parent.
+***********************************************************************/
+COMMAND cmd_gui_add_panel(RXIFRM *frm, void *ctx)
+{
+	REBHOB    *hob;
+	GUIWIDGET *wid;
+	GUIWIDGET *panel = NULL;
+	GUIWIN    *win = Frm_Parent(frm, 1, &panel);
+	REBINT     x, y, w, h;
+
+	if (!win || !win->handle) RETURN_ERROR(ERR_INVALID_HANDLE);
+
+	x = (REBINT)RXA_PAIR(frm, 2).x;
+	y = (REBINT)RXA_PAIR(frm, 2).y;
+	w = (REBINT)RXA_PAIR(frm, 3).x;
+	h = (REBINT)RXA_PAIR(frm, 3).y;
+	if (w <= 0 || h <= 0) RETURN_ERROR(ERR_BAD_SIZE);
+
+	hob = RL_MAKE_HANDLE_CONTEXT(Handle_GuiWidget);
+	if (hob == NULL) RETURN_ERROR(ERR_NO_HANDLE);
+
+	wid = (GUIWIDGET*)hob->data;
+	CLEARS(wid); // every field defined, whatever the pool handed back
+	wid->hob    = hob;
+	wid->kind   = W_GUI_WIDGET_PANEL;
+	wid->owner  = win;
+	wid->parent = panel; // panels nest like anything else
+
+	if (!Gui_Create_Panel(wid, win, x, y, w, h)) {
+		wid->owner  = NULL;
+		wid->parent = NULL;
+		RL_FREE_HANDLE_CONTEXT(hob);
+		RETURN_ERROR(ERR_NO_WIDGET);
+	}
+
+	Attach_Widget(wid, win);
 
 	RETURN_HANDLE(hob);
 }
@@ -727,6 +874,9 @@ COMMAND cmd_gui_remove_widget(RXIFRM *frm, void *ctx)
 	if (!wid) RETURN_ERROR(ERR_INVALID_HANDLE);
 
 	if (wid->handle) {
+		// A panel takes its contents with it, so their handles are told
+		// before the native control - and everything under it - is gone.
+		if (wid->kind == W_GUI_WIDGET_PANEL) Close_Contents_Of(wid);
 		Gui_Destroy_Widget(wid); // the native control
 		Gui_Widget_Closed(wid);  // the Rebol side of it
 	}
@@ -745,7 +895,8 @@ static int Add_Text_Control(RXIFRM *frm, REBCNT kind)
 {
 	REBHOB    *hob;
 	GUIWIDGET *wid;
-	GUIWIN    *win = Frm_Window(frm, 1);
+	GUIWIDGET *panel = NULL;
+	GUIWIN    *win = Frm_Parent(frm, 1, &panel);
 	REBYTE    *text = NULL;
 	REBCNT     text_len = 0;
 	REBINT     x, y, w, h;
@@ -766,20 +917,20 @@ static int Add_Text_Control(RXIFRM *frm, REBCNT kind)
 	if (hob == NULL) RETURN_ERROR(ERR_NO_HANDLE);
 
 	wid = (GUIWIDGET*)hob->data;
+	CLEARS(wid); // every field defined, whatever the pool handed back
 	wid->hob   = hob;
 	wid->kind  = kind; // read by the backend to pick the native control
-	wid->owner = win;
+	wid->owner  = win;
+	wid->parent = panel; // read by the backend to pick the native parent
 
 	if (!Gui_Create_Text_Control(wid, win, x, y, w, h, text, text_len)) {
-		wid->owner = NULL;
+		wid->owner  = NULL;
+		wid->parent = NULL;
 		RL_FREE_HANDLE_CONTEXT(hob);
 		RETURN_ERROR(ERR_NO_WIDGET);
 	}
 
-	wid->next = win->widgets;
-	win->widgets = wid;
-
-	hob->flags |= HANDLE_CONTEXT_LOCKED;
+	Attach_Widget(wid, win);
 
 	RETURN_HANDLE(hob);
 }
@@ -794,7 +945,8 @@ static int Add_Range_Control(RXIFRM *frm, REBCNT kind)
 {
 	REBHOB    *hob;
 	GUIWIDGET *wid;
-	GUIWIN    *win = Frm_Window(frm, 1);
+	GUIWIDGET *panel = NULL;
+	GUIWIN    *win = Frm_Parent(frm, 1, &panel);
 	REBINT     x, y, w, h;
 	REBDEC     value = 0.0;
 
@@ -816,21 +968,21 @@ static int Add_Range_Control(RXIFRM *frm, REBCNT kind)
 	if (hob == NULL) RETURN_ERROR(ERR_NO_HANDLE);
 
 	wid = (GUIWIDGET*)hob->data;
+	CLEARS(wid); // every field defined, whatever the pool handed back
 	wid->hob   = hob;
 	wid->kind  = kind;
-	wid->owner = win;
+	wid->owner  = win;
+	wid->parent = panel; // read by the backend to pick the native parent
 
 	if (!Gui_Create_Range_Control(wid, win, x, y, w, h)) {
-		wid->owner = NULL;
+		wid->owner  = NULL;
+		wid->parent = NULL;
 		RL_FREE_HANDLE_CONTEXT(hob);
 		RETURN_ERROR(ERR_NO_WIDGET);
 	}
 	Gui_Widget_Set_Value(wid, value);
 
-	wid->next = win->widgets;
-	win->widgets = wid;
-
-	hob->flags |= HANDLE_CONTEXT_LOCKED;
+	Attach_Widget(wid, win);
 
 	RETURN_HANDLE(hob);
 }
@@ -843,7 +995,8 @@ COMMAND cmd_gui_add_drop_down(RXIFRM *frm, void *ctx)
 {
 	REBHOB    *hob;
 	GUIWIDGET *wid;
-	GUIWIN    *win = Frm_Window(frm, 1);
+	GUIWIDGET *panel = NULL;
+	GUIWIN    *win = Frm_Parent(frm, 1, &panel);
 	REBINT     x, y, w, h;
 
 	if (!win || !win->handle) RETURN_ERROR(ERR_INVALID_HANDLE);
@@ -858,12 +1011,15 @@ COMMAND cmd_gui_add_drop_down(RXIFRM *frm, void *ctx)
 	if (hob == NULL) RETURN_ERROR(ERR_NO_HANDLE);
 
 	wid = (GUIWIDGET*)hob->data;
+	CLEARS(wid); // every field defined, whatever the pool handed back
 	wid->hob   = hob;
 	wid->kind  = W_GUI_WIDGET_DROP_DOWN;
-	wid->owner = win;
+	wid->owner  = win;
+	wid->parent = panel; // read by the backend to pick the native parent
 
 	if (!Gui_Create_Drop_Down(wid, win, x, y, w, h)) {
-		wid->owner = NULL;
+		wid->owner  = NULL;
+		wid->parent = NULL;
 		RL_FREE_HANDLE_CONTEXT(hob);
 		RETURN_ERROR(ERR_NO_WIDGET);
 	}
@@ -873,10 +1029,7 @@ COMMAND cmd_gui_add_drop_down(RXIFRM *frm, void *ctx)
 	// is a normal thing to want.
 	Gui_Widget_Set_Index(wid, RXA_REF(frm, 5) ? (REBINT)RXA_INT32(frm, 6) - 1 : -1);
 
-	wid->next = win->widgets;
-	win->widgets = wid;
-
-	hob->flags |= HANDLE_CONTEXT_LOCKED;
+	Attach_Widget(wid, win);
 
 	RETURN_HANDLE(hob);
 }
@@ -1074,6 +1227,8 @@ int GuiWidget_free(void *hndl)
 	if (!wid) return 0;
 
 	if (wid->handle) {
+		// `release` on a panel means the same as remove-widget on it.
+		if (wid->kind == W_GUI_WIDGET_PANEL) Close_Contents_Of(wid);
 		Gui_Destroy_Widget(wid);
 		Gui_Widget_Closed(wid);
 	}
@@ -1111,16 +1266,33 @@ int GuiWidget_get_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 		*type = RXT_STRING;
 		break; }
 
-	case W_GUI_ARG_IMAGE:
+	/*******************************************************************
+	**  The image an image widget is showing - the very series it was
+	**  given, not a copy, so drawing into it and calling `redraw` is
+	**  how a widget is animated.
+	**
+	**  Filled in as an image and NOTHING else. RXIARG carries an image
+	**  as {pointer, width:16, height:16} and a series as {pointer,
+	**  index}, which puts the dimensions and the index on the same four
+	**  bytes - so `index` here necessarily reads as (height<<16)|width,
+	**  and the conversion behind a handle path must ignore it, exactly
+	**  as it ignores it for an image passed the other way. An image!
+	**  takes its size from its own series; there is nothing for an
+	**  index to mean here.
+	*******************************************************************/
+	case W_GUI_ARG_IMAGE: {
+		REBSER *img;
 		if (wid->kind != W_GUI_WIDGET_IMAGE || !hob->series) {
 			*type = RXT_NONE;
 			break;
 		}
-		arg->image  = hob->series;
-		arg->width  = (int)IMG_WIDE(hob->series);
-		arg->height = (int)IMG_HIGH(hob->series);
+		img = hob->series;
+		CLEARS(arg);
+		arg->image  = img;
+		arg->width  = (int)IMG_WIDE(img);
+		arg->height = (int)IMG_HIGH(img);
 		*type = RXT_IMAGE;
-		break;
+		break; }
 
 	case W_GUI_ARG_KIND:
 		// The word list the kind was taken from is also how it is named.
@@ -1195,7 +1367,15 @@ int GuiWidget_get_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 		arg->int32a = Gui_Widget_Get_Enabled(wid);
 		break;
 
+	// Whatever holds it: a panel if it is in one, otherwise the window.
 	case W_GUI_ARG_PARENT:
+		if (wid->parent && ((GUIWIDGET*)wid->parent)->hob) {
+			Set_Handle_Arg(arg, ((GUIWIDGET*)wid->parent)->hob);
+			*type = RXT_HANDLE;
+			break;
+		}
+		// fall through - no panel means the window holds it
+	case W_GUI_ARG_WINDOW:
 		if (!wid->owner || !wid->owner->hob) { *type = RXT_NONE; break; }
 		Set_Handle_Arg(arg, wid->owner->hob);
 		*type = RXT_HANDLE;

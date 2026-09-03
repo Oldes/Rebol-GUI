@@ -40,7 +40,64 @@
 // Modern AppKit constant names are used throughout (NSWindowStyleMask*,
 // NSEventModifierFlag*, NSEventMaskAny, NSControlStateValue*), which need a
 // 10.13 or newer SDK.
+
+
+/***********************************************************************
+**  Class names.
+**
+**  Objective-C classes live in ONE namespace for the whole process, and
+**  it is not the linker's - two binaries which define a class of the
+**  same name do not each get their own. The runtime keeps one and warns:
+**
+**    objc: Class RebolGuiButton is implemented in both
+**          .../rebol3-bulk-macos-arm64 and .../gui-abi1-arm64.rebx.
+**          This may cause spurious casting failures and mysterious
+**          crashes. One of the duplicates must be removed or renamed.
+**
+**  That warning is not cosmetic. Every message sent from this file can
+**  land in the OTHER implementation, which may have different ivars and
+**  different methods - so a control half works, or does not draw, and
+**  nothing in this file looks wrong.
+**
+**  It bites whenever these sources are loaded twice in one process: a
+**  standalone .rebx while an older copy is embedded in the host, most
+**  obviously. So the names carry a prefix the build can set, and the
+**  standalone build sets a different one from the embedded default (see
+**  Rebol-GUI.nest). Two builds that disagree about the prefix can coexist;
+**  two that agree cannot.
+***********************************************************************/
+#ifndef GUI_CLASS_PREFIX
+#define GUI_CLASS_PREFIX RebolGuiEmbedded
+#endif
+#define GUI_JOIN2(a, b) a##b
+#define GUI_JOIN(a, b)  GUI_JOIN2(a, b)
+#define GUI_CLASS(name) GUI_JOIN(GUI_CLASS_PREFIX, name)
+
+// Written with the plain names below; the preprocessor makes them unique.
+#define RebolGuiView      GUI_CLASS(View)
+#define RebolGuiButton    GUI_CLASS(Button)
+#define RebolGuiTextField GUI_CLASS(TextField)
+#define RebolGuiTextView  GUI_CLASS(TextView)
+#define RebolGuiImageView GUI_CLASS(ImageView)
+#define RebolGuiSlider    GUI_CLASS(Slider)
+#define RebolGuiPopUp     GUI_CLASS(PopUp)
+#define RebolGuiPanel     GUI_CLASS(Panel)
 #define NSWINDOW_OF(win) ((NSWindow*)((win)->handle))
+
+// Raised whenever anything is marked for drawing, cleared by the pump.
+//
+// Forcing a display from outside the run loop does not reliably paint:
+// AppKit expects to do it itself, between events, and a display asked for
+// at the wrong moment can clear a view's needs-display flag without
+// putting anything on screen - after which nothing marks it again and the
+// control stays blank for good. Widgets created in one burst, with no
+// event pumped in between, hit this: the earlier ones never appear.
+//
+// So nothing here displays anything any more. Views are marked, this flag
+// is raised, and Gui_Pump() - which runs between events, where AppKit
+// expects drawing to happen - does one full window display. The cost is
+// one redraw per poll in which something actually changed.
+static REBOOL Display_Pending = FALSE;
 
 
 //== helpers ==================================================================
@@ -145,6 +202,13 @@ static void Detach_Control(GUIWIDGET *wid);
 @end
 
 
+// A container, and nothing else. It is flipped for the same reason the
+// window's content view is: so that what it holds is positioned from the
+// top-left, like every other offset in this extension.
+@interface RebolGuiPanel : NSView
+@end
+
+
 // Reports `change` when the selection moves.
 @interface RebolGuiPopUp : NSPopUpButton
 {
@@ -221,6 +285,29 @@ static void Detach_Control(GUIWIDGET *wid);
 - (void)controlTextDidChange:(NSNotification*)note       { [self queue:W_GUI_EVENT_CHANGE]; }
 - (void)controlTextDidBeginEditing:(NSNotification*)note { [self queue:W_GUI_EVENT_FOCUS]; }
 - (void)controlTextDidEndEditing:(NSNotification*)note   { [self queue:W_GUI_EVENT_UNFOCUS]; }
+
+@end
+
+
+@implementation RebolGuiPanel
+
+// The only thing this class adds to a plain NSView, and the only reason it
+// exists: children are positioned from the TOP-left, like every other
+// offset in this extension.
+- (BOOL)isFlipped { return YES; }
+
+// It deliberately does NOT draw.
+//
+// It used to fill its bounds with windowBackgroundColor, and adding one to
+// a window made every widget already in that window vanish. A container
+// has no business painting a background: it has nothing to say, whatever
+// is beneath it should show through, and an opaque fill is what turns any
+// mistake about its frame into a blank window rather than a misplaced
+// rectangle. A view with no -drawRect: draws nothing at all.
+//
+// No setContext: and no mouse handlers either: a panel holds things, it
+// does not report. Detach_Control() asks before sending, so their absence
+// is fine.
 
 @end
 
@@ -326,9 +413,16 @@ static void Detach_Control(GUIWIDGET *wid);
 	CGDataProviderRef provider;
 	CGImageRef img;
 
+	// Nothing to show yet: draw NOTHING, and in particular do not fill.
+	//
+	// This used to paint the background colour over its own bounds, which
+	// is what a view with nothing to draw is usually told to do - and it
+	// took every widget created before it off the window, exactly as the
+	// panel's background fill did. A view that draws nothing hides
+	// nothing; an opaque fill in a view that should have had something to
+	// say is how a missing image turns into missing buttons.
 	if (!context || !Gui_Widget_Pixels(context, &bits, &w, &h)) {
-		[[NSColor windowBackgroundColor] set];
-		NSRectFill(dirty);
+		debug_print("GUI: image widget %p has no pixels to draw\n", (void*)context);
 		return;
 	}
 
@@ -355,6 +449,10 @@ static void Detach_Control(GUIWIDGET *wid);
 		CGContextDrawImage(gc, CGRectMake(0, 0, bounds.size.width, bounds.size.height), img);
 		CGContextRestoreGState(gc);
 		CGImageRelease(img);
+	} else {
+		// The other way this widget can come out blank. Build with
+		// USE_TRACES to see which of the two it was.
+		debug_print("GUI: CGImageCreate failed for a %dx%d image\n", (int)w, (int)h);
 	}
 
 	CGDataProviderRelease(provider);
@@ -665,6 +763,7 @@ void Gui_Show_Window(GUIWIN *win, REBOOL show)
 			[NSWINDOW_OF(win) makeKeyAndOrderFront:nil];
 			[NSApp activateIgnoringOtherApps:YES];
 			win->flags |= GUIW_VISIBLE;
+			Display_Pending = TRUE;
 		} else {
 			[NSWINDOW_OF(win) orderOut:nil];
 			win->flags &= ~GUIW_VISIBLE;
@@ -695,6 +794,30 @@ void Gui_Pump(void)
 			[NSApp sendEvent:evt];
 		}
 		[NSApp updateWindows];
+
+		// And the drawing - ALL of it, and only here.
+		//
+		// NSApplication's own -run loop displays dirty views between
+		// events; this extension never calls -run, so nothing else would
+		// ever do it. This is the one place where AppKit is in a state to
+		// draw, which is why no other function in this file displays
+		// anything - see the note on Display_Pending.
+		//
+		// A full -display rather than -displayIfNeeded: whatever else may
+		// have happened to a view's needs-display flag, everything on the
+		// window is painted after something changed. In a quiet poll -
+		// the common case, several times a second - nothing is drawn at
+		// all.
+		if (Display_Pending) {
+			NSArray *windows = [NSApp windows];
+			NSUInteger n, count = [windows count];
+
+			Display_Pending = FALSE;
+			for (n = 0; n < count; n++) {
+				NSWindow *w = (NSWindow*)[windows objectAtIndex:n];
+				if ([w isVisible]) [w display];
+			}
+		}
 	}
 }
 
@@ -792,6 +915,16 @@ REBOOL Gui_Set_Title(GUIWIN *win, const REBYTE *utf8, REBCNT len)
 #define NSBUTTON_OF(wid) ((RebolGuiButton*)((wid)->handle))
 #define NSPOPUP_OF(wid)  ((RebolGuiPopUp*)((wid)->handle))
 
+// What a new control is added to: the panel holding it, or the window's
+// content view. `wid->parent` is set before any creation call.
+static NSView* Parent_View(GUIWIDGET *wid, GUIWIN *owner)
+{
+	if (wid->parent && ((GUIWIDGET*)wid->parent)->handle)
+		return (NSView*)((GUIWIDGET*)wid->parent)->handle;
+	return [NSWINDOW_OF(owner) contentView];
+}
+
+
 // An area's handle is its scroll view; the text itself lives one level in.
 static NSTextView* Text_View_Of(GUIWIDGET *wid)
 {
@@ -832,7 +965,7 @@ REBOOL Gui_Create_Button_Control(GUIWIDGET *wid, GUIWIN *owner,
 		if (!wid || !owner || !owner->handle) return FALSE;
 		if (![NSThread isMainThread]) return FALSE;
 
-		content = [NSWINDOW_OF(owner) contentView];
+		content = Parent_View(wid, owner);
 		if (!content) return FALSE;
 
 		// The content view is flipped, so the frame origin is the top-left
@@ -888,7 +1021,7 @@ REBOOL Gui_Create_Text_Control(GUIWIDGET *wid, GUIWIN *owner,
 		if (!wid || !owner || !owner->handle) return FALSE;
 		if (![NSThread isMainThread]) return FALSE;
 
-		content = [NSWINDOW_OF(owner) contentView];
+		content = Parent_View(wid, owner);
 		if (!content) return FALSE;
 
 		value = To_NSString(text, len);
@@ -973,7 +1106,7 @@ REBOOL Gui_Create_Image(GUIWIDGET *wid, GUIWIN *owner,
 		if (!wid || !owner || !owner->handle) return FALSE;
 		if (![NSThread isMainThread]) return FALSE;
 
-		content = [NSWINDOW_OF(owner) contentView];
+		content = Parent_View(wid, owner);
 		if (!content) return FALSE;
 
 		view = [[RebolGuiImageView alloc] initWithFrame:
@@ -989,14 +1122,21 @@ REBOOL Gui_Create_Image(GUIWIDGET *wid, GUIWIN *owner,
 }
 
 
+/***********************************************************************
+**  Marks a control for drawing. Does NOT draw it.
+**
+**  Nothing outside Gui_Pump() draws - see the note on Display_Pending.
+**  Marking here and painting there is the whole of the arrangement: a
+**  widget appears at the next poll, which for any program with an event
+**  loop is immediately, and for one which never polls is never - as it
+**  would be for any other AppKit program that does not run its loop.
+***********************************************************************/
 void Gui_Widget_Redraw(GUIWIDGET *wid)
 {
 	@autoreleasepool {
 		if (!wid || !wid->handle) return;
 		[NSVIEW_OF(wid) setNeedsDisplay:YES];
-		// Drawn now rather than at the next turn of the run loop, so that
-		// `redraw` means the pixels are on screen when it returns.
-		[NSVIEW_OF(wid) displayIfNeeded];
+		Display_Pending = TRUE; // drawn by the next Gui_Pump()
 	}
 }
 
@@ -1008,7 +1148,7 @@ void Gui_Window_Redraw(GUIWIN *win)
 		if (!win || !win->handle) return;
 		content = [NSWINDOW_OF(win) contentView];
 		[content setNeedsDisplay:YES];
-		[content displayIfNeeded];
+		Display_Pending = TRUE; // drawn by the next Gui_Pump()
 	}
 }
 
@@ -1026,6 +1166,7 @@ void Gui_Destroy_Widget(GUIWIDGET *wid)
 		wid->handle = NULL;
 		[view removeFromSuperview];
 		[view release];
+		Display_Pending = TRUE; // the hole it left has to be repainted
 	}
 }
 
@@ -1099,6 +1240,7 @@ REBOOL Gui_Widget_Set_Box(GUIWIDGET *wid, REBINT x, REBINT y, REBINT w, REBINT h
 		[NSVIEW_OF(wid) setFrame:
 			NSMakeRect((CGFloat)x, (CGFloat)y, (CGFloat)w, (CGFloat)h)];
 		[NSVIEW_OF(wid) setNeedsDisplay:YES];
+		Display_Pending = TRUE; // moved, so the old place needs repainting
 		return TRUE;
 	}
 }
@@ -1109,6 +1251,32 @@ REBOOL Gui_Widget_Get_State(GUIWIDGET *wid)
 	@autoreleasepool {
 		if (!wid || !wid->handle) return FALSE;
 		return ([NSBUTTON_OF(wid) state] == NSControlStateValueOn) ? TRUE : FALSE;
+	}
+}
+
+
+//-- panel --------------------------------------------------------------------
+
+REBOOL Gui_Create_Panel(GUIWIDGET *wid, GUIWIN *owner,
+                        REBINT x, REBINT y, REBINT w, REBINT h)
+{
+	@autoreleasepool {
+		RebolGuiPanel *panel;
+		NSView *content;
+
+		if (!wid || !owner || !owner->handle) return FALSE;
+		if (![NSThread isMainThread]) return FALSE;
+
+		content = Parent_View(wid, owner);
+		if (!content) return FALSE;
+
+		panel = [[RebolGuiPanel alloc] initWithFrame:
+			NSMakeRect((CGFloat)x, (CGFloat)y, (CGFloat)w, (CGFloat)h)];
+		if (!panel) return FALSE;
+
+		[content addSubview:panel];
+		wid->handle = (void*)panel;
+		return TRUE;
 	}
 }
 
@@ -1125,7 +1293,7 @@ REBOOL Gui_Create_Drop_Down(GUIWIDGET *wid, GUIWIN *owner,
 		if (!wid || !owner || !owner->handle) return FALSE;
 		if (![NSThread isMainThread]) return FALSE;
 
-		content = [NSWINDOW_OF(owner) contentView];
+		content = Parent_View(wid, owner);
 		if (!content) return FALSE;
 
 		// pullsDown:NO makes it a chooser rather than a menu button. Unlike
@@ -1232,7 +1400,7 @@ REBOOL Gui_Create_Range_Control(GUIWIDGET *wid, GUIWIN *owner,
 		if (!wid || !owner || !owner->handle) return FALSE;
 		if (![NSThread isMainThread]) return FALSE;
 
-		content = [NSWINDOW_OF(owner) contentView];
+		content = Parent_View(wid, owner);
 		if (!content) return FALSE;
 
 		if (wid->kind == W_GUI_WIDGET_SLIDER) {

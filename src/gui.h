@@ -141,6 +141,17 @@ void    Gui_Widget_Set_Value(GUIWIDGET *wid, REBDEC value);
 REBOOL  Gui_Create_Drop_Down(GUIWIDGET *wid, GUIWIN *owner,
                              REBINT x, REBINT y, REBINT w, REBINT h);
 
+
+//-- panel --------------------------------------------------------------------
+// A container. Everything a panel holds is positioned inside IT rather than
+// inside the window, which is what both platforms do natively for a child.
+//
+// NOTE for backends: `wid->parent` is set before any Gui_Create_* call, so
+// the native parent to attach to is the panel's when it is set and the
+// window's otherwise. Every creation function reads it that way.
+REBOOL  Gui_Create_Panel(GUIWIDGET *wid, GUIWIN *owner,
+                         REBINT x, REBINT y, REBINT w, REBINT h);
+
 REBCNT  Gui_Widget_Count_Items(GUIWIDGET *wid);
 REBSER* Gui_Widget_Get_Item(GUIWIDGET *wid, REBCNT n);   // 0-based
 REBOOL  Gui_Widget_Add_Item(GUIWIDGET *wid, const REBYTE *utf8, REBCNT len);

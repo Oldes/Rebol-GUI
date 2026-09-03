@@ -9,7 +9,7 @@ REBOL [
 	Exports: [
 		open-window close-window show-window hide-window
 		add-button add-image add-text add-field add-area
-		add-check add-radio add-slider add-progress add-drop-down
+		add-check add-radio add-slider add-progress add-drop-down add-panel
 		remove-widget redraw
 		poll-events do-events event-flags
 	]
@@ -63,8 +63,13 @@ typedef struct Gui_Widget_Context {
 	void   *handle;  // native control (HWND / NSView*)
 	REBHOB *hob;     // back reference, as above; hob->series is the image!
 	REBCNT  kind;    // W_GUI_WIDGET_* - what the control is
-	GUIWIN *owner;   // window it lives in, NULL once that window is gone
-	void   *next;    // next widget of the same window (GUIWIDGET*)
+	GUIWIN *owner;   // WINDOW it ends up in, however deeply nested; NULL once
+	                 // that window is gone
+	void   *parent;  // containing panel (GUIWIDGET*), NULL when the window
+	                 // holds it directly
+	void   *next;    // next widget of the same window (GUIWIDGET*) - the list
+	                 // is FLAT and window-wide, whatever the nesting, so one
+	                 // walk still reaches every widget at teardown
 	REBCNT  group;   // radio group id; 0 for every other kind
 	REBCNT  state;   // check / radio: 1 when on. The extension is the source
 	                 // of truth here, not the native control - see the radio
@@ -108,6 +113,7 @@ words: [
 		slider          ;; draggable, reports `change`
 		progress        ;; shows a value, takes no input
 		drop-down       ;; pick one of a list; reports `change`
+		panel           ;; holds other widgets; see `parent` below
 	]
 ]
 
@@ -131,14 +137,15 @@ handles: [
 		index    integer!  integer!  "Which item is picked, 1-based; 0 for none"
 		image    image!    image!    "Image shown by an image widget, none for other kinds"
 		size     pair!     pair!     "Size of the control"
-		offset   pair!     pair!     "Position inside the window's client area"
+		offset   pair!     pair!     "Position inside whatever holds it - a window or a panel"
 		id       integer!  none      "Native control handle as an integer"
 		kind     word!     none      "What the control is: button, image, text, field, area, check, radio, slider, progress or drop-down"
 		value    percent!  [percent! decimal!] "Position of a slider or a progress bar; none for other kinds"
 		state    logic!    logic!    "Whether a check or a radio is on; none for other kinds"
 		group    integer!  none      "Which radio group it belongs to; 0 for everything else"
 		enabled? logic!    logic!    "Whether the control responds to the user"
-		parent   handle!   none      "Window the control lives in, none if it is gone"
+		parent   handle!   none      "Whatever holds it - a window, or a panel; none once gone"
+		window   handle!   none      "The window it ends up in, however deeply nested"
 	]
 ]
 
@@ -159,7 +166,7 @@ commands: [
 	poll-events:  ["Dispatches pending OS messages and returns the collected events"]
 	add-button: [
 		"Creates a native push button inside a window and returns its handle"
-		window [handle!]
+		parent [handle!] "Window or panel to put it in"
 		text   [string!] "Label"
 		offset [pair!]   "Position inside the client area"
 		size   [pair!]   "Size of the button"
@@ -167,7 +174,7 @@ commands: [
 	remove-widget: ["Destroys a widget" widget [handle!]]
 	add-image: [
 		"Creates an image widget inside a window and returns its handle"
-		window [handle!]
+		parent [handle!] "Window or panel to put it in"
 		image  [image!]  "Shown as is; the widget keeps a reference, not a copy"
 		offset [pair!]   "Position inside the client area"
 		/size sz [pair!] "Scales the image to this size (default: the image's own)"
@@ -178,35 +185,35 @@ commands: [
 	]
 	add-text: [
 		"Creates a static label inside a window and returns its handle"
-		window [handle!]
+		parent [handle!] "Window or panel to put it in"
 		text   [string!]
 		offset [pair!]   "Position inside the client area"
 		size   [pair!]
 	]
 	add-field: [
 		"Creates a one-line text entry inside a window and returns its handle"
-		window [handle!]
+		parent [handle!] "Window or panel to put it in"
 		text   [string!] "Initial contents"
 		offset [pair!]   "Position inside the client area"
 		size   [pair!]
 	]
 	add-area: [
 		"Creates a multi-line text entry inside a window and returns its handle"
-		window [handle!]
+		parent [handle!] "Window or panel to put it in"
 		text   [string!] "Initial contents"
 		offset [pair!]   "Position inside the client area"
 		size   [pair!]
 	]
 	add-check: [
 		"Creates a checkbox inside a window and returns its handle"
-		window [handle!]
+		parent [handle!] "Window or panel to put it in"
 		text   [string!] "Label"
 		offset [pair!]   "Position inside the client area"
 		size   [pair!]
 	]
 	add-radio: [
 		"Creates a radio button inside a window and returns its handle"
-		window [handle!]
+		parent [handle!] "Window or panel to put it in"
 		text   [string!] "Label"
 		offset [pair!]   "Position inside the client area"
 		size   [pair!]
@@ -214,25 +221,31 @@ commands: [
 	]
 	add-slider: [
 		"Creates a slider inside a window and returns its handle"
-		window [handle!]
+		parent [handle!] "Window or panel to put it in"
 		offset [pair!] "Position inside the client area"
 		size   [pair!] "Taller than wide makes it vertical"
 		/value val [percent! decimal!] "Initial position (default: 0%)"
 	]
 	add-progress: [
 		"Creates a progress bar inside a window and returns its handle"
-		window [handle!]
+		parent [handle!] "Window or panel to put it in"
 		offset [pair!] "Position inside the client area"
 		size   [pair!]
 		/value val [percent! decimal!] "Initial position (default: 0%)"
 	]
 	add-drop-down: [
 		"Creates a drop-down list inside a window and returns its handle"
-		window [handle!]
+		parent [handle!] "Window or panel to put it in"
 		items  [block!] "Strings to offer"
 		offset [pair!]  "Position inside the client area"
 		size   [pair!]  "Of the closed control; room for the list is added"
 		/index n [integer!] "Item picked to start with, 1-based (default: none)"
+	]
+	add-panel: [
+		"Creates a panel - a widget which holds other widgets - and returns its handle"
+		parent [handle!] "Window or panel to put it in"
+		offset [pair!]   "Position inside the client area"
+		size   [pair!]
 	]
 ]
 

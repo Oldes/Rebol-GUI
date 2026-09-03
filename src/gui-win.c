@@ -29,9 +29,11 @@
 
 static const WCHAR *Class_Name = L"RebolGuiWindow";
 static const WCHAR *Class_Name_Image = L"RebolGuiImage";
+static const WCHAR *Class_Name_Panel = L"RebolGuiPanel";
 static HINSTANCE App_Instance = NULL;
 static REBOOL Class_Registered = FALSE;
 static REBOOL Image_Class_Registered = FALSE;
+static REBOOL Panel_Class_Registered = FALSE;
 static HFONT  Default_Font = NULL;
 static REBOOL Default_Font_Owned = FALSE;
 
@@ -467,7 +469,72 @@ static LRESULT CALLBACK Gui_Image_Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp
 }
 
 
+//== panel procedure ==========================================================
+//
+// A container, and nothing more. The one thing it must do is get out of the
+// way: a control reports to ITS parent, so everything a panel holds would
+// notify the panel instead of the window, and the window's proc - which is
+// where all the reporting lives - would never hear about it.
+//
+// So the notifications are passed straight up. The handlers there identify
+// the control from lParam rather than from the window that received the
+// message, so forwarding is all it takes.
+
+static LRESULT CALLBACK Gui_Panel_Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
+{
+	switch (msg) {
+
+	case WM_COMMAND:
+	case WM_HSCROLL:
+	case WM_VSCROLL:
+	case WM_CTLCOLORSTATIC:
+	case WM_CTLCOLORBTN: {
+		HWND parent = GetParent(hwnd);
+		if (parent) return SendMessageW(parent, msg, wp, lp);
+		break; }
+
+	case WM_ERASEBKGND:
+		return TRUE; // WM_PAINT covers it
+
+	case WM_PAINT: {
+		PAINTSTRUCT ps;
+		RECT rect;
+		HDC dc = BeginPaint(hwnd, &ps);
+		GetClientRect(hwnd, &rect);
+		// The same background the window paints, so a panel is a place to
+		// put things rather than a visible slab.
+		FillRect(dc, &rect, (HBRUSH)(COLOR_WINDOW + 1));
+		EndPaint(hwnd, &ps);
+		return 0; }
+	}
+
+	return DefWindowProcW(hwnd, msg, wp, lp);
+}
+
+
 //== class registration =======================================================
+
+static REBOOL Register_Panel_Class(void)
+{
+	WNDCLASSEXW wc;
+
+	if (Panel_Class_Registered) return TRUE;
+
+	ZeroMemory(&wc, sizeof(wc));
+	wc.cbSize        = sizeof(wc);
+	wc.style         = CS_HREDRAW | CS_VREDRAW;
+	wc.lpfnWndProc   = Gui_Panel_Proc;
+	wc.hInstance     = App_Instance;
+	wc.hCursor       = LoadCursorW(NULL, IDC_ARROW);
+	wc.hbrBackground = NULL;
+	wc.lpszClassName = Class_Name_Panel;
+
+	if (!RegisterClassExW(&wc)) return FALSE;
+
+	Panel_Class_Registered = TRUE;
+	return TRUE;
+}
+
 
 static REBOOL Register_Image_Class(void)
 {
@@ -573,6 +640,10 @@ void Gui_Quit_Platform(void)
 	if (Image_Class_Registered) {
 		UnregisterClassW(Class_Name_Image, App_Instance);
 		Image_Class_Registered = FALSE;
+	}
+	if (Panel_Class_Registered) {
+		UnregisterClassW(Class_Name_Panel, App_Instance);
+		Panel_Class_Registered = FALSE;
 	}
 	if (Default_Font && Default_Font_Owned) {
 		DeleteObject(Default_Font); // a stock object must not be deleted
@@ -721,6 +792,42 @@ REBOOL Gui_Set_Title(GUIWIN *win, const REBYTE *utf8, REBCNT len)
 
 //== widgets ==================================================================
 
+// What a new control attaches to: the panel holding it, or the window.
+// `wid->parent` is set before any creation call.
+static HWND Parent_Hwnd(GUIWIDGET *wid, GUIWIN *owner)
+{
+	if (wid->parent && ((GUIWIDGET*)wid->parent)->handle)
+		return (HWND)((GUIWIDGET*)wid->parent)->handle;
+	return HWND_OF(owner);
+}
+
+
+REBOOL Gui_Create_Panel(GUIWIDGET *wid, GUIWIN *owner,
+                        REBINT x, REBINT y, REBINT w, REBINT h)
+{
+	HWND hwnd;
+
+	if (!wid || !owner || !owner->handle) return FALSE;
+	if (!Register_Panel_Class()) return FALSE;
+
+	// WS_CLIPCHILDREN keeps the panel from painting over what it holds.
+	hwnd = CreateWindowExW(
+		0, Class_Name_Panel, L"",
+		WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN,
+		x, y, w, h,
+		Parent_Hwnd(wid, owner),
+		NULL,
+		App_Instance, NULL
+	);
+	if (!hwnd) return FALSE;
+
+	SetWindowLongPtrW(hwnd, GWLP_USERDATA, (LONG_PTR)wid);
+
+	wid->handle = (void*)hwnd;
+	return TRUE;
+}
+
+
 REBOOL Gui_Create_Button_Control(GUIWIDGET *wid, GUIWIN *owner,
                                  REBINT x, REBINT y, REBINT w, REBINT h,
                                  const REBYTE *text, REBCNT len)
@@ -754,7 +861,7 @@ REBOOL Gui_Create_Button_Control(GUIWIDGET *wid, GUIWIN *owner,
 		wide ? wide : L"",
 		style,
 		x, y, w, h,
-		HWND_OF(owner),
+		Parent_Hwnd(wid, owner),
 		NULL, // no control id - BN_CLICKED carries the HWND in lParam
 		App_Instance, NULL
 	);
@@ -818,7 +925,7 @@ REBOOL Gui_Create_Text_Control(GUIWIDGET *wid, GUIWIN *owner,
 		wide ? wide : L"",
 		style,
 		x, y, w, h,
-		HWND_OF(owner),
+		Parent_Hwnd(wid, owner),
 		NULL, // notifications carry the child HWND in lParam
 		App_Instance, NULL
 	);
@@ -847,7 +954,7 @@ REBOOL Gui_Create_Image(GUIWIDGET *wid, GUIWIN *owner,
 		L"",
 		WS_CHILD | WS_VISIBLE,
 		x, y, w, h,
-		HWND_OF(owner),
+		Parent_Hwnd(wid, owner),
 		NULL,
 		App_Instance,
 		wid // arrives as lpCreateParams in WM_NCCREATE
@@ -973,7 +1080,7 @@ REBOOL Gui_Create_Range_Control(GUIWIDGET *wid, GUIWIN *owner,
 	hwnd = CreateWindowExW(
 		0, class_name, L"", style,
 		x, y, w, h,
-		HWND_OF(owner),
+		Parent_Hwnd(wid, owner),
 		NULL,
 		App_Instance, NULL
 	);
@@ -1054,7 +1161,7 @@ REBOOL Gui_Create_Drop_Down(GUIWIDGET *wid, GUIWIN *owner,
 		WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL
 		| CBS_DROPDOWNLIST | CBS_HASSTRINGS,
 		x, y, w, h + DROP_LIST_ROOM, // see DROP_LIST_ROOM
-		HWND_OF(owner),
+		Parent_Hwnd(wid, owner),
 		NULL,
 		App_Instance, NULL
 	);
