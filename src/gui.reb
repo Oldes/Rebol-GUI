@@ -9,7 +9,7 @@ REBOL [
 	Exports: [
 		open-window close-window show-window hide-window
 		add-button add-image add-text add-field add-area
-		add-check add-radio add-slider add-progress
+		add-check add-radio add-slider add-progress add-drop-down
 		remove-widget redraw
 		poll-events do-events event-flags
 	]
@@ -107,6 +107,7 @@ words: [
 		radio           ;; one of a group; see `group` below
 		slider          ;; draggable, reports `change`
 		progress        ;; shows a value, takes no input
+		drop-down       ;; pick one of a list; reports `change`
 	]
 ]
 
@@ -125,12 +126,14 @@ handles: [
 	widget: [
 		"GUI widget handle - a native control inside a window"
 		;NAME    GET       SET       DESCRIPTION
-		text     string!   string!   "Label or contents; none for an image widget"
+		text     string!   string!   "Label or contents; the selected item of a drop-down, which is read-only; none for an image"
+		items    block!    block!    "Strings a drop-down offers; none for other kinds"
+		index    integer!  integer!  "Which item is picked, 1-based; 0 for none"
 		image    image!    image!    "Image shown by an image widget, none for other kinds"
 		size     pair!     pair!     "Size of the control"
 		offset   pair!     pair!     "Position inside the window's client area"
 		id       integer!  none      "Native control handle as an integer"
-		kind     word!     none      "What the control is: button, image, text, field, area, check, radio, slider or progress"
+		kind     word!     none      "What the control is: button, image, text, field, area, check, radio, slider, progress or drop-down"
 		value    percent!  [percent! decimal!] "Position of a slider or a progress bar; none for other kinds"
 		state    logic!    logic!    "Whether a check or a radio is on; none for other kinds"
 		group    integer!  none      "Which radio group it belongs to; 0 for everything else"
@@ -222,6 +225,14 @@ commands: [
 		offset [pair!] "Position inside the client area"
 		size   [pair!]
 		/value val [percent! decimal!] "Initial position (default: 0%)"
+	]
+	add-drop-down: [
+		"Creates a drop-down list inside a window and returns its handle"
+		window [handle!]
+		items  [block!] "Strings to offer"
+		offset [pair!]  "Position inside the client area"
+		size   [pair!]  "Of the closed control; room for the list is added"
+		/index n [integer!] "Item picked to start with, 1-based (default: none)"
 	]
 ]
 

@@ -47,6 +47,12 @@ static REBOOL Setting_Text = FALSE;
 // the extension speaks is carried as one part in RANGE_STEPS.
 #define RANGE_STEPS 1000
 
+// A combo box is created with the height of the WHOLE thing - the closed
+// control plus the list it drops down - so room for the list has to be
+// added to whatever height the caller asked for. Ask for too little and
+// the list is a sliver; this is the classic Win32 trap with this control.
+#define DROP_LIST_ROOM 220
+
 #define HWND_OF(win)      ((HWND)((win)->handle))
 #define HWND_OF_WID(wid)  ((HWND)((wid)->handle))
 #define GUIWIN_OF(hwnd)   ((GUIWIN*)GetWindowLongPtrW((hwnd), GWLP_USERDATA))
@@ -269,6 +275,25 @@ static LRESULT CALLBACK Gui_Window_Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
 
 		if (!child) break;
 
+		wid = (GUIWIDGET*)GetWindowLongPtrW(child, GWLP_USERDATA);
+
+		// Notification codes overlap between control families (BN_CLICKED
+		// and CBN_ERRSPACE are both 0), so the combo box codes are only
+		// read when the control really is one.
+		if (wid && wid->kind == W_GUI_WIDGET_DROP_DOWN) {
+			switch (HIWORD(wp)) {
+			case CBN_SELCHANGE: type = W_GUI_EVENT_CHANGE;  break;
+			case CBN_SETFOCUS:  type = W_GUI_EVENT_FOCUS;   break;
+			case CBN_KILLFOCUS: type = W_GUI_EVENT_UNFOCUS; break;
+			default: goto not_handled;
+			}
+			if (wid->hob) {
+				Gui_Widget_Get_Box(wid, &x, &y, &w, &h);
+				Gui_Queue_Event(wid->hob, type, x, y, Modifiers());
+			}
+			return 0;
+		}
+
 		switch (HIWORD(wp)) {
 		case BN_CLICKED:   type = W_GUI_EVENT_CLICK;   break;
 		// SetWindowText raises EN_CHANGE as well, and reporting our own
@@ -281,7 +306,6 @@ static LRESULT CALLBACK Gui_Window_Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
 		default: goto not_handled;
 		}
 
-		wid = (GUIWIDGET*)GetWindowLongPtrW(child, GWLP_USERDATA);
 		if (wid && wid->hob) {
 			// The position slot carries the widget's own offset - a
 			// notification has no cursor position of its own.
@@ -884,6 +908,23 @@ REBOOL Gui_Widget_Get_Box(GUIWIDGET *wid, REBINT *x, REBINT *y, REBINT *w, REBIN
 	if (!wid || !wid->handle) return FALSE;
 	hwnd = HWND_OF_WID(wid);
 
+	// A combo box's window rectangle covers the dropped list as well, which
+	// is not the box anyone laid out. The closed control is reported instead.
+	if (wid->kind == W_GUI_WIDGET_DROP_DOWN) {
+		if (!GetClientRect(hwnd, &r)) return FALSE;
+		pt.x = 0; pt.y = 0;
+		ClientToScreen(hwnd, &pt);
+		parent = GetParent(hwnd);
+		if (parent) ScreenToClient(parent, &pt);
+
+		*x = pt.x;
+		*y = pt.y;
+		*w = r.right - r.left;
+		*h = (REBINT)SendMessageW(hwnd, CB_GETITEMHEIGHT, (WPARAM)-1, 0)
+		   + 2 * GetSystemMetrics(SM_CYEDGE);
+		return TRUE;
+	}
+
 	if (!GetWindowRect(hwnd, &r)) return FALSE;
 
 	// GetWindowRect is in screen coordinates; the offset is wanted inside
@@ -904,6 +945,8 @@ REBOOL Gui_Widget_Get_Box(GUIWIDGET *wid, REBINT *x, REBINT *y, REBINT *w, REBIN
 REBOOL Gui_Widget_Set_Box(GUIWIDGET *wid, REBINT x, REBINT y, REBINT w, REBINT h)
 {
 	if (!wid || !wid->handle) return FALSE;
+	// ... and the same room has to be added back when it is moved.
+	if (wid->kind == W_GUI_WIDGET_DROP_DOWN) h += DROP_LIST_ROOM;
 	return MoveWindow(HWND_OF_WID(wid), x, y, w, h, TRUE) ? TRUE : FALSE;
 }
 
@@ -994,6 +1037,109 @@ void Gui_Widget_Set_Value(GUIWIDGET *wid, REBDEC value)
 	} else {
 		SendMessageW(HWND_OF_WID(wid), PBM_SETPOS, (WPARAM)pos, 0);
 	}
+}
+
+
+//-- drop-down ----------------------------------------------------------------
+
+REBOOL Gui_Create_Drop_Down(GUIWIDGET *wid, GUIWIN *owner,
+                            REBINT x, REBINT y, REBINT w, REBINT h)
+{
+	HWND hwnd;
+
+	if (!wid || !owner || !owner->handle) return FALSE;
+
+	hwnd = CreateWindowExW(
+		0, L"COMBOBOX", L"",
+		WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL
+		| CBS_DROPDOWNLIST | CBS_HASSTRINGS,
+		x, y, w, h + DROP_LIST_ROOM, // see DROP_LIST_ROOM
+		HWND_OF(owner),
+		NULL,
+		App_Instance, NULL
+	);
+	if (!hwnd) return FALSE;
+
+	SetWindowLongPtrW(hwnd, GWLP_USERDATA, (LONG_PTR)wid);
+	SendMessageW(hwnd, WM_SETFONT, (WPARAM)Get_Default_Font(), TRUE);
+
+	wid->handle = (void*)hwnd;
+	return TRUE;
+}
+
+
+REBCNT Gui_Widget_Count_Items(GUIWIDGET *wid)
+{
+	LRESULT count;
+	if (!wid || !wid->handle) return 0;
+	count = SendMessageW(HWND_OF_WID(wid), CB_GETCOUNT, 0, 0);
+	return (count == CB_ERR || count < 0) ? 0 : (REBCNT)count;
+}
+
+
+REBSER* Gui_Widget_Get_Item(GUIWIDGET *wid, REBCNT n)
+{
+	LRESULT len;
+	WCHAR  *buf;
+	REBSER *str;
+	HWND    hwnd;
+
+	if (!wid || !wid->handle) return NULL;
+	hwnd = HWND_OF_WID(wid);
+
+	len = SendMessageW(hwnd, CB_GETLBTEXTLEN, (WPARAM)n, 0);
+	if (len == CB_ERR) return NULL;
+	if (len == 0) return RL_MAKE_STRING(0, FALSE);
+
+	buf = (WCHAR*)MAKE_MEM(((size_t)len + 1) * sizeof(WCHAR));
+	if (!buf) return NULL;
+
+	len = SendMessageW(hwnd, CB_GETLBTEXT, (WPARAM)n, (LPARAM)buf);
+	if (len == CB_ERR) { FREE_MEM(buf); return NULL; }
+
+	str = RL_ENCODE_UTF8_STRING(buf, (REBCNT)len, TRUE, 0);
+	FREE_MEM(buf);
+	return str;
+}
+
+
+REBOOL Gui_Widget_Add_Item(GUIWIDGET *wid, const REBYTE *utf8, REBCNT len)
+{
+	WCHAR *wide;
+	LRESULT res;
+
+	if (!wid || !wid->handle) return FALSE;
+
+	wide = To_Wide(utf8, len);
+	res = SendMessageW(HWND_OF_WID(wid), CB_ADDSTRING, 0,
+	                   (LPARAM)(wide ? wide : L""));
+	if (wide) FREE_MEM(wide);
+	return (res == CB_ERR || res == CB_ERRSPACE) ? FALSE : TRUE;
+}
+
+
+void Gui_Widget_Clear_Items(GUIWIDGET *wid)
+{
+	if (!wid || !wid->handle) return;
+	SendMessageW(HWND_OF_WID(wid), CB_RESETCONTENT, 0, 0);
+}
+
+
+REBINT Gui_Widget_Get_Index(GUIWIDGET *wid)
+{
+	LRESULT n;
+	if (!wid || !wid->handle) return -1;
+	n = SendMessageW(HWND_OF_WID(wid), CB_GETCURSEL, 0, 0);
+	return (n == CB_ERR) ? -1 : (REBINT)n;
+}
+
+
+void Gui_Widget_Set_Index(GUIWIDGET *wid, REBINT n)
+{
+	if (!wid || !wid->handle) return;
+	// CB_SETCURSEL with -1 clears the selection, which is what an index
+	// out of range means here.
+	SendMessageW(HWND_OF_WID(wid), CB_SETCURSEL, (WPARAM)n, 0);
 }
 
 

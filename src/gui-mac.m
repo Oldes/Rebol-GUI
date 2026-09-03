@@ -145,6 +145,16 @@ static void Detach_Control(GUIWIDGET *wid);
 @end
 
 
+// Reports `change` when the selection moves.
+@interface RebolGuiPopUp : NSPopUpButton
+{
+	GUIWIDGET *context;
+}
+- (void)setContext:(GUIWIDGET*)ctx;
+- (void)picked:(id)sender;
+@end
+
+
 // Reports `change` while it is dragged. A progress bar needs no subclass -
 // it is an NSProgressIndicator, which nobody interacts with.
 @interface RebolGuiSlider : NSSlider
@@ -211,6 +221,23 @@ static void Detach_Control(GUIWIDGET *wid);
 - (void)controlTextDidChange:(NSNotification*)note       { [self queue:W_GUI_EVENT_CHANGE]; }
 - (void)controlTextDidBeginEditing:(NSNotification*)note { [self queue:W_GUI_EVENT_FOCUS]; }
 - (void)controlTextDidEndEditing:(NSNotification*)note   { [self queue:W_GUI_EVENT_UNFOCUS]; }
+
+@end
+
+
+@implementation RebolGuiPopUp
+
+- (void)setContext:(GUIWIDGET*)ctx { context = ctx; }
+
+- (void)picked:(id)sender
+{
+	NSRect frame;
+	if (!context || !context->hob) return;
+	frame = [self frame];
+	Gui_Queue_Event(context->hob, W_GUI_EVENT_CHANGE,
+	                (REBINT)frame.origin.x, (REBINT)frame.origin.y,
+	                Modifier_Bits([NSEvent modifierFlags]));
+}
 
 @end
 
@@ -763,6 +790,7 @@ REBOOL Gui_Set_Title(GUIWIN *win, const REBYTE *utf8, REBCNT len)
 // only the label and the enabled state need the concrete class.
 #define NSVIEW_OF(wid)   ((NSView*)((wid)->handle))
 #define NSBUTTON_OF(wid) ((RebolGuiButton*)((wid)->handle))
+#define NSPOPUP_OF(wid)  ((RebolGuiPopUp*)((wid)->handle))
 
 // An area's handle is its scroll view; the text itself lives one level in.
 static NSTextView* Text_View_Of(GUIWIDGET *wid)
@@ -1013,6 +1041,9 @@ REBSER* Gui_Widget_Get_Text(GUIWIDGET *wid)
 		case W_GUI_WIDGET_TEXT:
 		case W_GUI_WIDGET_FIELD:
 			return From_NSString([(NSTextField*)wid->handle stringValue]);
+		case W_GUI_WIDGET_DROP_DOWN:
+			// An NSPopUpButton's own `title` is not what it displays.
+			return From_NSString([NSPOPUP_OF(wid) titleOfSelectedItem]);
 		default:
 			return From_NSString([NSBUTTON_OF(wid) title]);
 		}
@@ -1078,6 +1109,115 @@ REBOOL Gui_Widget_Get_State(GUIWIDGET *wid)
 	@autoreleasepool {
 		if (!wid || !wid->handle) return FALSE;
 		return ([NSBUTTON_OF(wid) state] == NSControlStateValueOn) ? TRUE : FALSE;
+	}
+}
+
+
+//-- drop-down ----------------------------------------------------------------
+
+REBOOL Gui_Create_Drop_Down(GUIWIDGET *wid, GUIWIN *owner,
+                            REBINT x, REBINT y, REBINT w, REBINT h)
+{
+	@autoreleasepool {
+		RebolGuiPopUp *popup;
+		NSView *content;
+
+		if (!wid || !owner || !owner->handle) return FALSE;
+		if (![NSThread isMainThread]) return FALSE;
+
+		content = [NSWINDOW_OF(owner) contentView];
+		if (!content) return FALSE;
+
+		// pullsDown:NO makes it a chooser rather than a menu button. Unlike
+		// Win32's combo box, the frame is the closed control and the list
+		// is drawn outside it - no room has to be reserved.
+		popup = [[RebolGuiPopUp alloc]
+			initWithFrame:NSMakeRect((CGFloat)x, (CGFloat)y, (CGFloat)w, (CGFloat)h)
+			    pullsDown:NO];
+		if (!popup) return FALSE;
+
+		[popup setContext:wid];
+		[popup setTarget:popup];
+		[popup setAction:@selector(picked:)];
+
+		[content addSubview:popup];
+		wid->handle = (void*)popup;
+		return TRUE;
+	}
+}
+
+
+REBCNT Gui_Widget_Count_Items(GUIWIDGET *wid)
+{
+	@autoreleasepool {
+		if (!wid || !wid->handle) return 0;
+		return (REBCNT)[NSPOPUP_OF(wid) numberOfItems];
+	}
+}
+
+
+REBSER* Gui_Widget_Get_Item(GUIWIDGET *wid, REBCNT n)
+{
+	@autoreleasepool {
+		if (!wid || !wid->handle) return NULL;
+		if ((NSInteger)n >= [NSPOPUP_OF(wid) numberOfItems]) return NULL;
+		return From_NSString([NSPOPUP_OF(wid) itemTitleAtIndex:(NSInteger)n]);
+	}
+}
+
+
+REBOOL Gui_Widget_Add_Item(GUIWIDGET *wid, const REBYTE *utf8, REBCNT len)
+{
+	@autoreleasepool {
+		NSString *title;
+
+		if (!wid || !wid->handle) return FALSE;
+		title = To_NSString(utf8, len);
+		if (!title) title = @"";
+
+		// Titles are a menu's identity to AppKit, which would drop a repeat;
+		// a list of strings is data here, so duplicates have to survive.
+		[[NSPOPUP_OF(wid) menu] addItem:
+			[[[NSMenuItem alloc] initWithTitle:title action:NULL keyEquivalent:@""]
+				autorelease]];
+		return TRUE;
+	}
+}
+
+
+void Gui_Widget_Clear_Items(GUIWIDGET *wid)
+{
+	@autoreleasepool {
+		if (!wid || !wid->handle) return;
+		[NSPOPUP_OF(wid) removeAllItems];
+	}
+}
+
+
+REBINT Gui_Widget_Get_Index(GUIWIDGET *wid)
+{
+	@autoreleasepool {
+		if (!wid || !wid->handle) return -1;
+		return (REBINT)[NSPOPUP_OF(wid) indexOfSelectedItem];
+	}
+}
+
+
+void Gui_Widget_Set_Index(GUIWIDGET *wid, REBINT n)
+{
+	@autoreleasepool {
+		RebolGuiPopUp *popup;
+
+		if (!wid || !wid->handle) return;
+		popup = NSPOPUP_OF(wid);
+
+		if (n < 0 || n >= [popup numberOfItems]) {
+			// AppKit has no "select nothing", so the selected item is
+			// simply deselected through the menu.
+			[popup selectItem:nil];
+			return;
+		}
+		[popup selectItemAtIndex:(NSInteger)n];
 	}
 }
 

@@ -132,6 +132,25 @@ REBOOL  Gui_Create_Range_Control(GUIWIDGET *wid, GUIWIN *owner,
 REBDEC  Gui_Widget_Get_Value(GUIWIDGET *wid);
 void    Gui_Widget_Set_Value(GUIWIDGET *wid, REBDEC value);
 
+
+//-- drop-down ----------------------------------------------------------------
+// Deliberately one item at a time. Turning a Rebol block into a list, and a
+// list back into a block, is the same work on every platform and is done
+// once in gui-commands.c - a backend only has to know how to hold strings.
+
+REBOOL  Gui_Create_Drop_Down(GUIWIDGET *wid, GUIWIN *owner,
+                             REBINT x, REBINT y, REBINT w, REBINT h);
+
+REBCNT  Gui_Widget_Count_Items(GUIWIDGET *wid);
+REBSER* Gui_Widget_Get_Item(GUIWIDGET *wid, REBCNT n);   // 0-based
+REBOOL  Gui_Widget_Add_Item(GUIWIDGET *wid, const REBYTE *utf8, REBCNT len);
+void    Gui_Widget_Clear_Items(GUIWIDGET *wid);
+
+// 0-based, and -1 for "nothing picked" - the 1-based Rebol index is the
+// shared layer's business, not a backend's.
+REBINT  Gui_Widget_Get_Index(GUIWIDGET *wid);
+void    Gui_Widget_Set_Index(GUIWIDGET *wid, REBINT n);
+
 // No pixels are passed in: the image lives in the handle's series and is
 // read again at every paint, so that drawing into it is all it takes to
 // change what is on screen.

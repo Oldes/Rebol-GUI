@@ -283,7 +283,9 @@ static REBOOL Kind_Has_Text(REBCNT kind)
 	     || kind == W_GUI_WIDGET_FIELD
 	     || kind == W_GUI_WIDGET_AREA
 	     || kind == W_GUI_WIDGET_CHECK
-	     || kind == W_GUI_WIDGET_RADIO) ? TRUE : FALSE;
+	     || kind == W_GUI_WIDGET_RADIO
+	     // readable, but not writable - see the set path
+	     || kind == W_GUI_WIDGET_DROP_DOWN) ? TRUE : FALSE;
 }
 
 // Which kinds are on or off.
@@ -299,6 +301,64 @@ static REBOOL Kind_Has_Value(REBCNT kind)
 	return (kind == W_GUI_WIDGET_SLIDER
 	     || kind == W_GUI_WIDGET_PROGRESS) ? TRUE : FALSE;
 }
+
+/***********************************************************************
+**  Block <-> list marshalling for a drop-down.
+**
+**  Done here rather than in the backends: it is identical work on every
+**  platform, and a backend only has to know how to hold strings.
+***********************************************************************/
+static REBSER* Items_To_Block(GUIWIDGET *wid)
+{
+	REBCNT count = Gui_Widget_Count_Items(wid);
+	REBCNT n;
+	REBSER *blk;
+	RXIARG item;
+
+	// Sized up front, so filling it cannot expand - and so cannot collect
+	// the strings put in on the way.
+	blk = (REBSER*)RL_MAKE_BLOCK(count);
+	if (!blk) return NULL;
+
+	RL_PROTECT_GC(blk, 1);
+	for (n = 0; n < count; n++) {
+		REBSER *str = Gui_Widget_Get_Item(wid, n);
+		if (!str) continue;
+		CLEARS(&item);
+		item.series = str;
+		item.index  = 0;
+		RL_SET_VALUE(blk, n, item, RXT_STRING);
+	}
+	RL_PROTECT_GC(blk, 0);
+	return blk;
+}
+
+
+// Replaces the list. Anything in the block which is not a string is
+// skipped rather than refused - a block of words or files is a reasonable
+// thing to hand over, and FORM-ing it is the caller's business.
+static void Block_To_Items(GUIWIDGET *wid, REBSER *blk)
+{
+	REBCNT n;
+	REBCNT type;
+	RXIARG val;
+
+	Gui_Widget_Clear_Items(wid);
+	if (!blk) return;
+
+	for (n = 0; (type = RL_GET_VALUE(blk, n, &val)) != 0; n++) {
+		REBYTE *utf8 = NULL;
+		int len;
+
+		if (type == RXT_END) break;
+		if (type != RXT_STRING) continue;
+
+		len = RL_GET_UTF8_STRING((REBSER*)val.series, val.index, (void**)&utf8);
+		if (len < 0) continue;
+		Gui_Widget_Add_Item(wid, utf8, (REBCNT)len);
+	}
+}
+
 
 // An image is painted, not operated, and a progress bar takes no input at
 // all - neither has an enabled state worth reporting.
@@ -319,6 +379,7 @@ static const char* Kind_Name(REBCNT kind)
 	case W_GUI_WIDGET_RADIO: return "radio";
 	case W_GUI_WIDGET_SLIDER:   return "slider";
 	case W_GUI_WIDGET_PROGRESS: return "progress";
+	case W_GUI_WIDGET_DROP_DOWN: return "drop-down";
 	default:                 return "button";
 	}
 }
@@ -774,6 +835,53 @@ static int Add_Range_Control(RXIFRM *frm, REBCNT kind)
 	RETURN_HANDLE(hob);
 }
 
+/***********************************************************************
+**  add-drop-down window items [block!] offset [pair!] size [pair!]
+**                /index n [integer!]
+***********************************************************************/
+COMMAND cmd_gui_add_drop_down(RXIFRM *frm, void *ctx)
+{
+	REBHOB    *hob;
+	GUIWIDGET *wid;
+	GUIWIN    *win = Frm_Window(frm, 1);
+	REBINT     x, y, w, h;
+
+	if (!win || !win->handle) RETURN_ERROR(ERR_INVALID_HANDLE);
+
+	x = (REBINT)RXA_PAIR(frm, 3).x;
+	y = (REBINT)RXA_PAIR(frm, 3).y;
+	w = (REBINT)RXA_PAIR(frm, 4).x;
+	h = (REBINT)RXA_PAIR(frm, 4).y;
+	if (w <= 0 || h <= 0) RETURN_ERROR(ERR_BAD_SIZE);
+
+	hob = RL_MAKE_HANDLE_CONTEXT(Handle_GuiWidget);
+	if (hob == NULL) RETURN_ERROR(ERR_NO_HANDLE);
+
+	wid = (GUIWIDGET*)hob->data;
+	wid->hob   = hob;
+	wid->kind  = W_GUI_WIDGET_DROP_DOWN;
+	wid->owner = win;
+
+	if (!Gui_Create_Drop_Down(wid, win, x, y, w, h)) {
+		wid->owner = NULL;
+		RL_FREE_HANDLE_CONTEXT(hob);
+		RETURN_ERROR(ERR_NO_WIDGET);
+	}
+
+	Block_To_Items(wid, RXA_SERIES(frm, 2));
+	// Nothing is picked unless asked for - a drop-down which starts blank
+	// is a normal thing to want.
+	Gui_Widget_Set_Index(wid, RXA_REF(frm, 5) ? (REBINT)RXA_INT32(frm, 6) - 1 : -1);
+
+	wid->next = win->widgets;
+	win->widgets = wid;
+
+	hob->flags |= HANDLE_CONTEXT_LOCKED;
+
+	RETURN_HANDLE(hob);
+}
+
+
 COMMAND cmd_gui_add_slider(RXIFRM *frm, void *ctx)
 {
 	return Add_Range_Control(frm, W_GUI_WIDGET_SLIDER);
@@ -1035,6 +1143,25 @@ int GuiWidget_get_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 		arg->int64 = (i64)wid->group;
 		break;
 
+	case W_GUI_ARG_ITEMS: {
+		REBSER *blk;
+		if (wid->kind != W_GUI_WIDGET_DROP_DOWN) { *type = RXT_NONE; break; }
+		blk = Items_To_Block(wid);
+		if (!blk) { *type = RXT_NONE; break; }
+		arg->series = blk;
+		arg->index  = 0;
+		*type = RXT_BLOCK;
+		break; }
+
+	case W_GUI_ARG_INDEX: {
+		REBINT n;
+		if (wid->kind != W_GUI_WIDGET_DROP_DOWN) { *type = RXT_NONE; break; }
+		n = Gui_Widget_Get_Index(wid);
+		*type = RXT_INTEGER;
+		// Rebol counts from one, and zero means nothing is picked.
+		arg->int64 = (i64)(n < 0 ? 0 : n + 1);
+		break; }
+
 	case W_GUI_ARG_VALUE:
 		if (!Kind_Has_Value(wid->kind)) { *type = RXT_NONE; break; }
 		// Reported as a percent!, which is what a fraction of a range
@@ -1089,10 +1216,25 @@ int GuiWidget_set_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 	if (!wid->handle) return PE_BAD_SET;
 
 	switch (RL_FIND_WORD(Gui_arg_words, word)) {
+	case W_GUI_ARG_ITEMS:
+		if (wid->kind != W_GUI_WIDGET_DROP_DOWN) return PE_BAD_SET;
+		if (*type != RXT_BLOCK) return PE_BAD_SET_TYPE;
+		Block_To_Items(wid, (REBSER*)arg->series);
+		break;
+
+	case W_GUI_ARG_INDEX:
+		if (wid->kind != W_GUI_WIDGET_DROP_DOWN) return PE_BAD_SET;
+		if (*type != RXT_INTEGER) return PE_BAD_SET_TYPE;
+		// Out of range - zero included - simply picks nothing.
+		Gui_Widget_Set_Index(wid, (REBINT)arg->int64 - 1);
+		break;
+
 	case W_GUI_ARG_TEXT: {
 		REBYTE *utf8 = NULL;
 		int len;
 		if (!Kind_Has_Text(wid->kind)) return PE_BAD_SET;
+		// A drop-down shows whichever item is picked; `index` chooses it.
+		if (wid->kind == W_GUI_WIDGET_DROP_DOWN) return PE_BAD_SET;
 		if (*type != RXT_STRING) return PE_BAD_SET_TYPE;
 		len = RL_GET_UTF8_STRING((REBSER*)arg->series, arg->index, (void**)&utf8);
 		if (len < 0) return PE_BAD_SET;
