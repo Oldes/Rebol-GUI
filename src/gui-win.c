@@ -34,6 +34,11 @@ static REBOOL Image_Class_Registered = FALSE;
 static HFONT  Default_Font = NULL;
 static REBOOL Default_Font_Owned = FALSE;
 
+// Raised around SetWindowTextW so that writing to an edit control from Rebol
+// does not come back as a `change` event. SetWindowText delivers EN_CHANGE
+// synchronously on this same thread, so a plain flag is enough.
+static REBOOL Setting_Text = FALSE;
+
 #define WINDOW_STYLE   (WS_OVERLAPPEDWINDOW)
 #define WINDOW_EXSTYLE (0)
 
@@ -96,7 +101,9 @@ static REBOOL Set_Text_Of(HWND hwnd, const REBYTE *utf8, REBCNT len)
 	if (!hwnd) return FALSE;
 
 	wide = To_Wide(utf8, len);
+	Setting_Text = TRUE;
 	ok = SetWindowTextW(hwnd, wide ? wide : L"");
+	Setting_Text = FALSE;
 	if (wide) FREE_MEM(wide);
 	return ok ? TRUE : FALSE;
 }
@@ -252,18 +259,38 @@ static LRESULT CALLBACK Gui_Window_Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
 		// arrives in lParam - which is why the control does not need an id.
 		HWND child = (HWND)lp;
 		GUIWIDGET *wid;
+		REBCNT type;
+		REBINT x = 0, y = 0, w = 0, h = 0;
 
-		if (!child || HIWORD(wp) != BN_CLICKED) break;
+		if (!child) break;
+
+		switch (HIWORD(wp)) {
+		case BN_CLICKED:   type = W_GUI_EVENT_CLICK;   break;
+		// SetWindowText raises EN_CHANGE as well, and reporting our own
+		// writes back as user edits would turn every `field/text: ...`
+		// into an event.
+		case EN_CHANGE:    if (Setting_Text) return 0;
+		                   type = W_GUI_EVENT_CHANGE;  break;
+		case EN_SETFOCUS:  type = W_GUI_EVENT_FOCUS;   break;
+		case EN_KILLFOCUS: type = W_GUI_EVENT_UNFOCUS; break;
+		default: goto not_handled;
+		}
 
 		wid = (GUIWIDGET*)GetWindowLongPtrW(child, GWLP_USERDATA);
 		if (wid && wid->hob) {
-			REBINT x = 0, y = 0, w = 0, h = 0;
-			// The position slot carries the widget's own offset - there is
-			// no cursor position in a BN_CLICKED notification.
+			// The position slot carries the widget's own offset - a
+			// notification has no cursor position of its own.
 			Gui_Widget_Get_Box(wid, &x, &y, &w, &h);
-			Gui_Queue_Event(wid->hob, W_GUI_EVENT_CLICK, x, y, Modifiers());
+			Gui_Queue_Event(wid->hob, type, x, y, Modifiers());
 		}
-		return 0; }
+		return 0;
+		not_handled: break; }
+
+	// Static labels paint themselves onto whatever the parent supplies;
+	// this is what keeps them on the same background WM_PAINT fills with.
+	case WM_CTLCOLORSTATIC:
+		SetBkColor((HDC)wp, GetSysColor(COLOR_WINDOW));
+		return (LRESULT)(HBRUSH)(COLOR_WINDOW + 1);
 
 	case WM_ERASEBKGND:
 		return TRUE; // painted below, without the flicker
@@ -659,6 +686,69 @@ REBOOL Gui_Create_Button(GUIWIDGET *wid, GUIWIN *owner,
 	if (!hwnd) return FALSE;
 
 	// How the parent's WM_COMMAND finds its way back to the Rebol handle.
+	SetWindowLongPtrW(hwnd, GWLP_USERDATA, (LONG_PTR)wid);
+	SendMessageW(hwnd, WM_SETFONT, (WPARAM)Get_Default_Font(), TRUE);
+
+	wid->handle = (void*)hwnd;
+	return TRUE;
+}
+
+
+/***********************************************************************
+**  The static label and the two edit controls.
+**
+**  All three are stock Win32 classes differing only in style bits, so
+**  `wid->kind` picks the class and the flags and the rest is shared.
+***********************************************************************/
+REBOOL Gui_Create_Text_Control(GUIWIDGET *wid, GUIWIN *owner,
+                               REBINT x, REBINT y, REBINT w, REBINT h,
+                               const REBYTE *text, REBCNT len)
+{
+	HWND   hwnd;
+	WCHAR *wide;
+	const WCHAR *class_name;
+	DWORD  style   = WS_CHILD | WS_VISIBLE;
+	DWORD  exstyle = 0;
+
+	if (!wid || !owner || !owner->handle) return FALSE;
+
+	switch (wid->kind) {
+	case W_GUI_WIDGET_TEXT:
+		class_name = L"STATIC";
+		style |= SS_LEFT;
+		break;
+
+	case W_GUI_WIDGET_FIELD:
+		class_name = L"EDIT";
+		style   |= WS_TABSTOP | ES_LEFT | ES_AUTOHSCROLL;
+		exstyle |= WS_EX_CLIENTEDGE;
+		break;
+
+	case W_GUI_WIDGET_AREA:
+		class_name = L"EDIT";
+		style   |= WS_TABSTOP | ES_LEFT | ES_MULTILINE
+		         | ES_AUTOVSCROLL | ES_WANTRETURN | WS_VSCROLL;
+		exstyle |= WS_EX_CLIENTEDGE;
+		break;
+
+	default:
+		return FALSE;
+	}
+
+	wide = To_Wide(text, len);
+	hwnd = CreateWindowExW(
+		exstyle,
+		class_name,
+		wide ? wide : L"",
+		style,
+		x, y, w, h,
+		HWND_OF(owner),
+		NULL, // notifications carry the child HWND in lParam
+		App_Instance, NULL
+	);
+	if (wide) FREE_MEM(wide);
+	if (!hwnd) return FALSE;
+
 	SetWindowLongPtrW(hwnd, GWLP_USERDATA, (LONG_PTR)wid);
 	SendMessageW(hwnd, WM_SETFONT, (WPARAM)Get_Default_Font(), TRUE);
 

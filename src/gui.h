@@ -114,6 +114,13 @@ REBOOL  Gui_Create_Button(GUIWIDGET *wid, GUIWIN *owner,
 REBOOL  Gui_Create_Image(GUIWIDGET *wid, GUIWIN *owner,
                          REBINT x, REBINT y, REBINT w, REBINT h);
 
+// The label and the two text entries share one entry point: they differ
+// only in style flags on Windows, and `wid->kind` - already set by the
+// caller - is what picks between them on both platforms.
+REBOOL  Gui_Create_Text_Control(GUIWIDGET *wid, GUIWIN *owner,
+                                REBINT x, REBINT y, REBINT w, REBINT h,
+                                const REBYTE *text, REBCNT len);
+
 // What a backend calls while painting an image widget. Returns FALSE when
 // the widget has no image yet, or the image is empty.
 //

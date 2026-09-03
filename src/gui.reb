@@ -8,7 +8,8 @@ REBOL [
 	Options: [delay]
 	Exports: [
 		open-window close-window show-window hide-window
-		add-button add-image remove-widget redraw
+		add-button add-image add-text add-field add-area
+		remove-widget redraw
 		poll-events do-events event-flags
 	]
 	Purpose: {
@@ -60,7 +61,7 @@ typedef struct Gui_Window_Context {
 typedef struct Gui_Widget_Context {
 	void   *handle;  // native control (HWND / NSView*)
 	REBHOB *hob;     // back reference, as above; hob->series is the image!
-	REBCNT  kind;    // W_GUI_WIDGET_BUTTON or W_GUI_WIDGET_IMAGE
+	REBCNT  kind;    // W_GUI_WIDGET_* - what the control is
 	GUIWIN *owner;   // window it lives in, NULL once that window is gone
 	void   *next;    // next widget of the same window (GUIWIDGET*)
 } GUIWIDGET;
@@ -88,10 +89,15 @@ words: [
 		close           ;; the user asked to close it; the window is still open
 		resize          ;; position = the new client size
 		click           ;; a widget was activated; source = the widget
+		change          ;; the user edited a field or an area
+		focus unfocus   ;; keyboard focus entered or left a widget
 	]
 	widget: [
 		button
 		image
+		text            ;; a static label
+		field           ;; one line of editable text
+		area            ;; several lines of editable text, with a scrollbar
 	]
 ]
 
@@ -110,13 +116,13 @@ handles: [
 	widget: [
 		"GUI widget handle - a native control inside a window"
 		;NAME    GET       SET       DESCRIPTION
-		text     string!   string!   "Label of a button, none for other kinds"
+		text     string!   string!   "Label or contents; none for an image widget"
 		image    image!    image!    "Image shown by an image widget, none for other kinds"
 		size     pair!     pair!     "Size of the control"
 		offset   pair!     pair!     "Position inside the window's client area"
 		id       integer!  none      "Native control handle as an integer"
-		kind     word!     none      "What the control is: button or image"
-		enabled? logic!    logic!    "Whether a button responds to the user"
+		kind     word!     none      "What the control is: button, image, text, field or area"
+		enabled? logic!    logic!    "Whether the control responds to the user"
 		parent   handle!   none      "Window the control lives in, none if it is gone"
 	]
 ]
@@ -154,6 +160,27 @@ commands: [
 	redraw: [
 		"Repaints a window or a widget - use after drawing into a displayed image"
 		target [handle!]
+	]
+	add-text: [
+		"Creates a static label inside a window and returns its handle"
+		window [handle!]
+		text   [string!]
+		offset [pair!]   "Position inside the client area"
+		size   [pair!]
+	]
+	add-field: [
+		"Creates a one-line text entry inside a window and returns its handle"
+		window [handle!]
+		text   [string!] "Initial contents"
+		offset [pair!]   "Position inside the client area"
+		size   [pair!]
+	]
+	add-area: [
+		"Creates a multi-line text entry inside a window and returns its handle"
+		window [handle!]
+		text   [string!] "Initial contents"
+		offset [pair!]   "Position inside the client area"
+		size   [pair!]
 	]
 ]
 

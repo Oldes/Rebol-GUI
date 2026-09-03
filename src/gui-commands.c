@@ -185,6 +185,27 @@ static GUIWIN* Frm_Window(RXIFRM *frm, REBCNT n)
 	return (GUIWIN*)hob->data;
 }
 
+// Which kinds carry a string: everything except the image widget. `text`
+// means the label on a button or a static, and the contents of an entry.
+static REBOOL Kind_Has_Text(REBCNT kind)
+{
+	return (kind == W_GUI_WIDGET_BUTTON
+	     || kind == W_GUI_WIDGET_TEXT
+	     || kind == W_GUI_WIDGET_FIELD
+	     || kind == W_GUI_WIDGET_AREA) ? TRUE : FALSE;
+}
+
+static const char* Kind_Name(REBCNT kind)
+{
+	switch (kind) {
+	case W_GUI_WIDGET_IMAGE: return "image";
+	case W_GUI_WIDGET_TEXT:  return "text";
+	case W_GUI_WIDGET_FIELD: return "field";
+	case W_GUI_WIDGET_AREA:  return "area";
+	default:                 return "button";
+	}
+}
+
 // ... and as a live widget handle.
 static GUIWIDGET* Frm_Widget(RXIFRM *frm, REBCNT n)
 {
@@ -515,6 +536,72 @@ COMMAND cmd_gui_remove_widget(RXIFRM *frm, void *ctx)
 
 
 /***********************************************************************
+**  The label and the two text entries only differ in which kind they
+**  ask for, so the three commands below are one function with three
+**  entry points - the arguments and the failure paths are identical.
+**
+**      add-<kind> window [handle!] text [string!] offset size [pair!]
+***********************************************************************/
+static int Add_Text_Control(RXIFRM *frm, REBCNT kind)
+{
+	REBHOB    *hob;
+	GUIWIDGET *wid;
+	GUIWIN    *win = Frm_Window(frm, 1);
+	REBYTE    *text = NULL;
+	REBCNT     text_len = 0;
+	REBINT     x, y, w, h;
+	int        len;
+
+	if (!win || !win->handle) RETURN_ERROR(ERR_INVALID_HANDLE);
+
+	len = RL_GET_UTF8_STRING(RXA_SERIES(frm, 2), RXA_INDEX(frm, 2), (void**)&text);
+	if (len > 0) text_len = (REBCNT)len;
+
+	x = (REBINT)RXA_PAIR(frm, 3).x;
+	y = (REBINT)RXA_PAIR(frm, 3).y;
+	w = (REBINT)RXA_PAIR(frm, 4).x;
+	h = (REBINT)RXA_PAIR(frm, 4).y;
+	if (w <= 0 || h <= 0) RETURN_ERROR(ERR_BAD_SIZE);
+
+	hob = RL_MAKE_HANDLE_CONTEXT(Handle_GuiWidget);
+	if (hob == NULL) RETURN_ERROR(ERR_NO_HANDLE);
+
+	wid = (GUIWIDGET*)hob->data;
+	wid->hob   = hob;
+	wid->kind  = kind; // read by the backend to pick the native control
+	wid->owner = win;
+
+	if (!Gui_Create_Text_Control(wid, win, x, y, w, h, text, text_len)) {
+		wid->owner = NULL;
+		RL_FREE_HANDLE_CONTEXT(hob);
+		RETURN_ERROR(ERR_NO_WIDGET);
+	}
+
+	wid->next = win->widgets;
+	win->widgets = wid;
+
+	hob->flags |= HANDLE_CONTEXT_LOCKED;
+
+	RETURN_HANDLE(hob);
+}
+
+COMMAND cmd_gui_add_text(RXIFRM *frm, void *ctx)
+{
+	return Add_Text_Control(frm, W_GUI_WIDGET_TEXT);
+}
+
+COMMAND cmd_gui_add_field(RXIFRM *frm, void *ctx)
+{
+	return Add_Text_Control(frm, W_GUI_WIDGET_FIELD);
+}
+
+COMMAND cmd_gui_add_area(RXIFRM *frm, void *ctx)
+{
+	return Add_Text_Control(frm, W_GUI_WIDGET_AREA);
+}
+
+
+/***********************************************************************
 **  redraw target [handle!]
 **
 **  Takes either kind of handle, because "I changed the pixels, show them"
@@ -708,7 +795,7 @@ int GuiWidget_get_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 	// others, rather than erroring - the same as a closed widget does.
 	case W_GUI_ARG_TEXT: {
 		REBSER *str;
-		if (wid->kind != W_GUI_WIDGET_BUTTON) { *type = RXT_NONE; break; }
+		if (!Kind_Has_Text(wid->kind)) { *type = RXT_NONE; break; }
 		str = Gui_Widget_Get_Text(wid);
 		if (!str) { *type = RXT_NONE; break; }
 		arg->series = str;
@@ -753,7 +840,7 @@ int GuiWidget_get_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 		break;
 
 	case W_GUI_ARG_ENABLEDQ:
-		if (wid->kind != W_GUI_WIDGET_BUTTON) { *type = RXT_NONE; break; }
+		if (wid->kind == W_GUI_WIDGET_IMAGE) { *type = RXT_NONE; break; }
 		*type = RXT_LOGIC;
 		arg->int32a = Gui_Widget_Get_Enabled(wid);
 		break;
@@ -782,7 +869,7 @@ int GuiWidget_set_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 	case W_GUI_ARG_TEXT: {
 		REBYTE *utf8 = NULL;
 		int len;
-		if (wid->kind != W_GUI_WIDGET_BUTTON) return PE_BAD_SET;
+		if (!Kind_Has_Text(wid->kind)) return PE_BAD_SET;
 		if (*type != RXT_STRING) return PE_BAD_SET_TYPE;
 		len = RL_GET_UTF8_STRING((REBSER*)arg->series, arg->index, (void**)&utf8);
 		if (len < 0) return PE_BAD_SET;
@@ -815,7 +902,7 @@ int GuiWidget_set_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 		break;
 
 	case W_GUI_ARG_ENABLEDQ:
-		if (wid->kind != W_GUI_WIDGET_BUTTON) return PE_BAD_SET;
+		if (wid->kind == W_GUI_WIDGET_IMAGE) return PE_BAD_SET;
 		if (*type != RXT_LOGIC) return PE_BAD_SET_TYPE;
 		Gui_Widget_Set_Enabled(wid, arg->int32a ? TRUE : FALSE);
 		break;
@@ -837,7 +924,7 @@ int GuiWidget_mold(REBHOB *hob, REBSER *str)
 	SERIES_TAIL(str) = 0;
 	if (wid->handle) {
 		APPEND_STRING(str, "0#%lx %s", (unsigned long)(REBUPT)wid->handle,
-			(wid->kind == W_GUI_WIDGET_IMAGE) ? "image" : "button");
+			Kind_Name(wid->kind));
 	} else {
 		APPEND_STRING(str, "%s", "removed");
 	}

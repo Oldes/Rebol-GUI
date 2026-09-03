@@ -32,6 +32,7 @@
 #import <AppKit/AppKit.h>
 #include <math.h>
 #include <string.h>
+#include <float.h>
 
 #include "gen-gui.h"
 #include "gui.h"
@@ -85,6 +86,10 @@ static REBSER* From_NSString(NSString *str)
 }
 
 
+// Defined with the widget code below, but needed by Gui_Close_Window above it.
+static void Detach_Control(GUIWIDGET *wid);
+
+
 //== content view =============================================================
 //
 // One object in two roles: the window's content view (where mouse events
@@ -118,6 +123,27 @@ static REBSER* From_NSString(NSString *str)
 @end
 
 
+// Static labels and one-line entries are the same class with different
+// switches; each is its own delegate, so that editing reports back without
+// a separate object to keep alive.
+@interface RebolGuiTextField : NSTextField <NSTextFieldDelegate>
+{
+	GUIWIDGET *context;
+}
+- (void)setContext:(GUIWIDGET*)ctx;
+@end
+
+
+// The multi-line entry. It lives inside an NSScrollView, and that scroll
+// view - not this - is what the widget handle points at.
+@interface RebolGuiTextView : NSTextView <NSTextViewDelegate>
+{
+	GUIWIDGET *context;
+}
+- (void)setContext:(GUIWIDGET*)ctx;
+@end
+
+
 // Paints itself straight from the image! series and reports its own mouse
 // events, which is what makes it usable as a canvas rather than a picture.
 @interface RebolGuiImageView : NSView
@@ -145,6 +171,55 @@ static REBSER* From_NSString(NSString *str)
 	                (REBINT)frame.origin.x, (REBINT)frame.origin.y,
 	                Modifier_Bits([NSEvent modifierFlags]));
 }
+
+@end
+
+
+@implementation RebolGuiTextField
+
+- (void)setContext:(GUIWIDGET*)ctx { context = ctx; }
+
+// A notification has no cursor position, so - as with a button - the
+// position slot carries the control's own offset.
+- (void)queue:(REBCNT)type
+{
+	NSRect frame;
+	if (!context || !context->hob) return;
+	frame = [self frame];
+	Gui_Queue_Event(context->hob, type,
+	                (REBINT)frame.origin.x, (REBINT)frame.origin.y,
+	                Modifier_Bits([NSEvent modifierFlags]));
+}
+
+// These fire for USER edits only - setStringValue: does not call them, so
+// unlike Win32's EN_CHANGE there is nothing to suppress when Rebol writes
+// to the control.
+- (void)controlTextDidChange:(NSNotification*)note       { [self queue:W_GUI_EVENT_CHANGE]; }
+- (void)controlTextDidBeginEditing:(NSNotification*)note { [self queue:W_GUI_EVENT_FOCUS]; }
+- (void)controlTextDidEndEditing:(NSNotification*)note   { [self queue:W_GUI_EVENT_UNFOCUS]; }
+
+@end
+
+
+@implementation RebolGuiTextView
+
+- (void)setContext:(GUIWIDGET*)ctx { context = ctx; }
+
+- (void)queue:(REBCNT)type
+{
+	NSRect frame;
+	if (!context || !context->hob) return;
+	// The scroll view is what sits in the window, so its box is the one
+	// worth reporting - not this view's, which scrolls.
+	frame = [[self enclosingScrollView] frame];
+	Gui_Queue_Event(context->hob, type,
+	                (REBINT)frame.origin.x, (REBINT)frame.origin.y,
+	                Modifier_Bits([NSEvent modifierFlags]));
+}
+
+- (void)textDidChange:(NSNotification*)note       { [self queue:W_GUI_EVENT_CHANGE]; }
+- (void)textDidBeginEditing:(NSNotification*)note { [self queue:W_GUI_EVENT_FOCUS]; }
+- (void)textDidEndEditing:(NSNotification*)note   { [self queue:W_GUI_EVENT_UNFOCUS]; }
 
 @end
 
@@ -502,8 +577,8 @@ void Gui_Close_Window(GUIWIN *win)
 			while (wid) {
 				if (wid->handle) {
 					NSView *control = (NSView*)wid->handle;
+					Detach_Control(wid);
 					wid->handle = NULL;
-					[(id)control setContext:NULL];
 					[control removeFromSuperview];
 					[control release];
 				}
@@ -654,9 +729,37 @@ REBOOL Gui_Set_Title(GUIWIN *win, const REBYTE *utf8, REBCNT len)
 //== widgets ==================================================================
 
 // Geometry is the same for every kind of control, so it goes through NSView;
-// only the label and the enabled state need the button itself.
+// only the label and the enabled state need the concrete class.
 #define NSVIEW_OF(wid)   ((NSView*)((wid)->handle))
 #define NSBUTTON_OF(wid) ((RebolGuiButton*)((wid)->handle))
+
+// An area's handle is its scroll view; the text itself lives one level in.
+static NSTextView* Text_View_Of(GUIWIDGET *wid)
+{
+	if (!wid || !wid->handle || wid->kind != W_GUI_WIDGET_AREA) return nil;
+	return (NSTextView*)[(NSScrollView*)wid->handle documentView];
+}
+
+// Breaks the link from a native control back to its Rebol handle. The
+// scroll view of an area does not answer setContext: - the view inside it
+// is the one holding the pointer.
+static void Detach_Control(GUIWIDGET *wid)
+{
+	NSView *view;
+
+	if (!wid || !wid->handle) return;
+	view = NSVIEW_OF(wid);
+
+	if (wid->kind == W_GUI_WIDGET_AREA) {
+		NSTextView *tv = (NSTextView*)[(NSScrollView*)view documentView];
+		if (tv) {
+			[tv setDelegate:nil];
+			[(id)tv setContext:NULL];
+		}
+	} else if ([view respondsToSelector:@selector(setContext:)]) {
+		[(id)view setContext:NULL];
+	}
+}
 
 REBOOL Gui_Create_Button(GUIWIDGET *wid, GUIWIN *owner,
                          REBINT x, REBINT y, REBINT w, REBINT h,
@@ -695,6 +798,93 @@ REBOOL Gui_Create_Button(GUIWIDGET *wid, GUIWIN *owner,
 
 		wid->handle = (void*)button;
 		return TRUE;
+	}
+}
+
+
+REBOOL Gui_Create_Text_Control(GUIWIDGET *wid, GUIWIN *owner,
+                               REBINT x, REBINT y, REBINT w, REBINT h,
+                               const REBYTE *text, REBCNT len)
+{
+	@autoreleasepool {
+		NSView   *content;
+		NSString *value;
+		NSRect    rect = NSMakeRect((CGFloat)x, (CGFloat)y, (CGFloat)w, (CGFloat)h);
+
+		if (!wid || !owner || !owner->handle) return FALSE;
+		if (![NSThread isMainThread]) return FALSE;
+
+		content = [NSWINDOW_OF(owner) contentView];
+		if (!content) return FALSE;
+
+		value = To_NSString(text, len);
+		if (!value) value = @"";
+
+		if (wid->kind == W_GUI_WIDGET_AREA) {
+			NSScrollView *scroll;
+			RebolGuiTextView *tv;
+			NSSize inner;
+
+			scroll = [[NSScrollView alloc] initWithFrame:rect];
+			if (!scroll) return FALSE;
+
+			[scroll setBorderType:NSBezelBorder];
+			[scroll setHasVerticalScroller:YES];
+			[scroll setHasHorizontalScroller:NO];
+			[scroll setAutohidesScrollers:YES];
+
+			// The standard incantation for a text view which grows
+			// downwards and wraps to the width of its scroller.
+			inner = [scroll contentSize];
+			tv = [[RebolGuiTextView alloc] initWithFrame:
+				NSMakeRect(0, 0, inner.width, inner.height)];
+			if (!tv) { [scroll release]; return FALSE; }
+
+			[tv setMinSize:NSMakeSize(0.0, 0.0)];
+			[tv setMaxSize:NSMakeSize(FLT_MAX, FLT_MAX)];
+			[tv setVerticallyResizable:YES];
+			[tv setHorizontallyResizable:NO];
+			[tv setAutoresizingMask:NSViewWidthSizable];
+			[[tv textContainer] setContainerSize:NSMakeSize(inner.width, FLT_MAX)];
+			[[tv textContainer] setWidthTracksTextView:YES];
+
+			[tv setString:value];
+			[tv setContext:wid];
+			[tv setDelegate:tv]; // the delegate reference is not retained
+
+			[scroll setDocumentView:tv];
+			[tv release]; // the scroll view owns it now
+
+			[content addSubview:scroll];
+			wid->handle = (void*)scroll;
+			return TRUE;
+		}
+
+		{
+			RebolGuiTextField *field = [[RebolGuiTextField alloc] initWithFrame:rect];
+			if (!field) return FALSE;
+
+			[field setStringValue:value];
+
+			if (wid->kind == W_GUI_WIDGET_TEXT) {
+				// A label is a text field with everything switched off.
+				[field setEditable:NO];
+				[field setSelectable:NO];
+				[field setBezeled:NO];
+				[field setDrawsBackground:NO];
+			} else {
+				[field setEditable:YES];
+				[field setBezeled:YES];
+				[field setBezelStyle:NSTextFieldSquareBezel];
+			}
+
+			[field setContext:wid];
+			[field setDelegate:field];
+
+			[content addSubview:field];
+			wid->handle = (void*)field;
+			return TRUE;
+		}
 	}
 }
 
@@ -758,9 +948,8 @@ void Gui_Destroy_Widget(GUIWIDGET *wid)
 		if (!wid || !wid->handle) return;
 
 		view = NSVIEW_OF(wid);
+		Detach_Control(wid);
 		wid->handle = NULL;
-		// Both control classes answer this, with the same signature.
-		[(id)view setContext:NULL];
 		[view removeFromSuperview];
 		[view release];
 	}
@@ -771,7 +960,16 @@ REBSER* Gui_Widget_Get_Text(GUIWIDGET *wid)
 {
 	@autoreleasepool {
 		if (!wid || !wid->handle) return NULL;
-		return From_NSString([NSBUTTON_OF(wid) title]);
+
+		switch (wid->kind) {
+		case W_GUI_WIDGET_AREA:
+			return From_NSString([Text_View_Of(wid) string]);
+		case W_GUI_WIDGET_TEXT:
+		case W_GUI_WIDGET_FIELD:
+			return From_NSString([(NSTextField*)wid->handle stringValue]);
+		default:
+			return From_NSString([NSBUTTON_OF(wid) title]);
+		}
 	}
 }
 
@@ -779,10 +977,24 @@ REBSER* Gui_Widget_Get_Text(GUIWIDGET *wid)
 REBOOL Gui_Widget_Set_Text(GUIWIDGET *wid, const REBYTE *utf8, REBCNT len)
 {
 	@autoreleasepool {
-		NSString *label;
+		NSString *value;
+
 		if (!wid || !wid->handle) return FALSE;
-		label = To_NSString(utf8, len);
-		[NSBUTTON_OF(wid) setTitle:(label ? label : @"")];
+		value = To_NSString(utf8, len);
+		if (!value) value = @"";
+
+		switch (wid->kind) {
+		case W_GUI_WIDGET_AREA:
+			[Text_View_Of(wid) setString:value];
+			break;
+		case W_GUI_WIDGET_TEXT:
+		case W_GUI_WIDGET_FIELD:
+			[(NSTextField*)wid->handle setStringValue:value];
+			break;
+		default:
+			[NSBUTTON_OF(wid) setTitle:value];
+			break;
+		}
 		return TRUE;
 	}
 }
@@ -819,7 +1031,11 @@ REBOOL Gui_Widget_Get_Enabled(GUIWIDGET *wid)
 {
 	@autoreleasepool {
 		if (!wid || !wid->handle) return FALSE;
-		return [NSBUTTON_OF(wid) isEnabled] ? TRUE : FALSE;
+		// A scroll view has no enabled state; for an area the question is
+		// whether the text inside it can be edited.
+		if (wid->kind == W_GUI_WIDGET_AREA)
+			return [Text_View_Of(wid) isEditable] ? TRUE : FALSE;
+		return [(NSControl*)wid->handle isEnabled] ? TRUE : FALSE;
 	}
 }
 
@@ -828,7 +1044,12 @@ REBOOL Gui_Widget_Set_Enabled(GUIWIDGET *wid, REBOOL enabled)
 {
 	@autoreleasepool {
 		if (!wid || !wid->handle) return FALSE;
-		[NSBUTTON_OF(wid) setEnabled:(enabled ? YES : NO)];
+		if (wid->kind == W_GUI_WIDGET_AREA) {
+			[Text_View_Of(wid) setEditable:(enabled ? YES : NO)];
+			[Text_View_Of(wid) setSelectable:YES];
+		} else {
+			[(NSControl*)wid->handle setEnabled:(enabled ? YES : NO)];
+		}
 		return TRUE;
 	}
 }
