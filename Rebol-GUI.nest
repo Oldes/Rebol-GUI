@@ -1,0 +1,109 @@
+;-    .-.
+;-   /'v'\   SISKIN-Builder project file
+;-  (/uOu\)  https://github.com/Siskin-framework/Builder/
+;-===="="=======================================================================
+
+version: 0.1.0
+
+compiler: clang
+arch:     x64
+optimize: 2
+
+;define: USE_TRACES
+
+;- options common for all Rebol extensions ----------------------
+flag:   shared
+
+#if Windows? [
+	define: _CRT_SECURE_NO_WARNINGS
+	define: TO_WINDOWS
+	upx:    on
+	strip:  on
+	library: %user32
+	library: %gdi32
+	;; the trackbar and progress bar classes
+	library: %comctl32
+]
+#if macOS? [
+	define: TO_MACOS
+	sign: on
+	frameworks: [AppKit Foundation]
+	;; Objective-C class names are process-global, so a standalone .rebx
+	;; must not name its classes the same as a copy of these sources
+	;; embedded in the host - the runtime would keep only one set and
+	;; messages would land in the wrong implementation. See the note at
+	;; the top of gui-mac.m.
+	define: GUI_CLASS_PREFIX=RebolGuiRebx
+	;; gui-mac.m keeps the window in a plain void* and releases it by hand,
+	;; so it must not be compiled as ARC.
+	cflags: -fno-objc-arc
+	cflags: -Wno-deprecated-declarations
+]
+;; There is no backend for X11/Wayland yet. Porting means one more file
+;; implementing the Gui_* API declared in gui.h - nothing above it knows what
+;; a window is made of.
+
+target-x86: [
+	arch: x86
+]
+target-x64: [
+	arch: x64
+	defines: [
+		_FILE_OFFSET_BITS=64
+		__LP64__       ; has long (integer) 64 bits
+	]
+	#if macOS? [ flag: "-arch x86_64" ]
+]
+target-arm64: [
+	arch: arm64
+	define: _FILE_OFFSET_BITS=64
+	define: __LP64__
+	define: __arm64__
+	#if macOS? [ flag: "-target arm64-apple-darwin" ]
+]
+
+;-----------------------------------------------------------------
+;- extension sources are built out of the Rebol tree -------------
+;; Selects the amalgamated `rebol-extension.h` in the generated header.
+define: REB_EXT
+
+;- generate the extension header and command table ----------------
+;; Produces %src/gen-gui.h and %src/gen-gui.c from the declarative
+;; specification, and refreshes the reference sections of README.md from the
+;; very same file (make-extension.r3 0.6.0 does both).
+do %make-extension.r3 [%src/gui.reb]
+
+files: [
+	%src/gui.c
+	%src/gui-commands.c
+	%src/gen-gui.c
+	#if Windows? [
+		%src/gui-win.c
+	]
+	#if macOS? [
+		%src/gui-mac.m
+	]
+]
+
+eggs: [
+	#if Windows? [
+		"Rebol GUI extension: win32_x86" [
+			name: %gui-x86
+			:target-x86
+		]
+		"Rebol GUI extension: win32_x64" [
+			name: %gui-x64
+			:target-x64
+		]
+	]
+	#if macOS? [
+		"Rebol GUI extension: macOS x64" [
+			name: %gui-x64
+			:target-x64
+		]
+		"Rebol GUI extension: macOS arm64" [
+			name: %gui-arm64
+			:target-arm64
+		]
+	]
+]

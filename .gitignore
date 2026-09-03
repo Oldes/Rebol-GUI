@@ -5,10 +5,11 @@
 !/rebol
 !/src
 !/test
-!/Rebol-Blend2D.nest
+!/Rebol-GUI.nest
 !/Entitlements.plist
 !/ci-test.r3
 !/test.r3
+!/README.md
 */gen-*
 !/make-*.r3
 .DS_Store
