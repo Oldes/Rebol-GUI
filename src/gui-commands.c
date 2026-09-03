@@ -14,6 +14,7 @@
 #include "gen-gui.h"
 #include "gui.h"
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 static const REBYTE* ERR_INVALID_HANDLE = (const REBYTE*)"Invalid GUI window handle!";
@@ -326,6 +327,9 @@ static REBOOL Kind_Has_Text(REBCNT kind)
 	     || kind == W_GUI_WIDGET_AREA
 	     || kind == W_GUI_WIDGET_CHECK
 	     || kind == W_GUI_WIDGET_RADIO
+	     // the caption of a framed panel; harmless on an unframed one,
+	     // which simply keeps a string nothing draws
+	     || kind == W_GUI_WIDGET_PANEL
 	     // readable, but not writable - see the set path
 	     || kind == W_GUI_WIDGET_DROP_DOWN) ? TRUE : FALSE;
 }
@@ -484,6 +488,12 @@ static GUIWIN* Frm_Parent(RXIFRM *frm, REBCNT n, GUIWIDGET **panel)
 **  forcing it at any other moment is unreliable - the first widgets of a
 **  batch would silently never appear.
 ***********************************************************************/
+// Which kinds have text to set a font and a colour on. It is exactly the
+// kinds which have `text` - if there is nothing to read, there is nothing
+// to style - so the two questions share one answer rather than drifting
+// apart as kinds are added.
+#define Kind_Has_Font(kind) Kind_Has_Text(kind)
+
 static void Attach_Widget(GUIWIDGET *wid, GUIWIN *win)
 {
 	wid->next = win->widgets;
@@ -491,7 +501,91 @@ static void Attach_Widget(GUIWIDGET *wid, GUIWIN *win)
 
 	if (wid->hob) wid->hob->flags |= HANDLE_CONTEXT_LOCKED;
 
+	// The window's default is read HERE, once, at creation - which is the
+	// whole of the inheritance. Restyling a window afterwards changes what
+	// the next widget starts with and leaves everything already on screen
+	// alone, so a widget's font is only ever its own business.
+	if (Kind_Has_Font(wid->kind)
+	    && (win->font.name || win->font.size || win->font.style)) {
+		Gui_Widget_Set_Font(wid,
+			(const REBYTE*)win->font.name,
+			win->font.name ? (REBCNT)strlen(win->font.name) : 0,
+			win->font.size, win->font.style);
+	}
+
 	Gui_Widget_Redraw(wid);
+}
+
+
+/***********************************************************************
+**  A window's default font, which is the only GUIFONT anything keeps.
+**
+**  The name is a copy: the Rebol string it came from belongs to the
+**  caller and may be modified or collected the moment the accessor
+**  returns.
+***********************************************************************/
+static REBOOL Font_Set_Name(GUIFONT *font, const REBYTE *utf8, REBCNT len)
+{
+	char *copy = NULL;
+
+	if (utf8 && len > 0) {
+		copy = (char*)MAKE_MEM(len + 1);
+		if (!copy) return FALSE;
+		COPY_MEM(copy, utf8, len);
+		copy[len] = 0;
+	}
+	if (font->name) FREE_MEM(font->name);
+	font->name = copy;
+	return TRUE;
+}
+
+static void Font_Free(GUIFONT *font)
+{
+	if (font->name) FREE_MEM(font->name);
+	font->name = NULL;
+	font->size = 0;
+	font->style = 0;
+}
+
+
+/***********************************************************************
+**  Changing one part of a widget's font.
+**
+**  A native font is one object, not four settings, so every one of the
+**  four accessors is the same read-change-write. `part` says which of
+**  them is being written; the rest are carried over from what the
+**  control already has.
+***********************************************************************/
+enum gui_font_part { FONT_PART_NAME, FONT_PART_SIZE, FONT_PART_STYLE };
+
+static REBOOL Set_Font_Part(GUIWIDGET *wid, REBCNT part,
+                            const REBYTE *name, REBCNT name_len,
+                            REBINT size, REBCNT style, REBCNT style_mask)
+{
+	REBSER *current_name = NULL;
+	REBINT  current_size = 0;
+	REBCNT  current_style = 0;
+	REBYTE *utf8 = NULL;
+	int     len;
+
+	if (!Gui_Widget_Get_Font(wid, &current_name, &current_size, &current_style))
+		return FALSE;
+
+	// Whatever the caller is not writing comes back from the control.
+	if (part != FONT_PART_NAME && current_name) {
+		len = RL_GET_UTF8_STRING(current_name, 0, (void**)&utf8);
+		if (len > 0) {
+			name     = utf8;
+			name_len = (REBCNT)len;
+		}
+	}
+	if (part != FONT_PART_SIZE) size = current_size;
+	if (part != FONT_PART_STYLE)
+		style = current_style;
+	else
+		style = (current_style & ~style_mask) | (style & style_mask);
+
+	return Gui_Widget_Set_Font(wid, name, name_len, size, style);
 }
 
 
@@ -824,9 +918,16 @@ COMMAND cmd_gui_add_image(RXIFRM *frm, void *ctx)
 
 /***********************************************************************
 **  add-panel parent [handle!] offset [pair!] size [pair!]
+**            /edge /title text [string!]
 **
 **  A panel is a widget like any other - it just happens to be something
 **  other widgets can name as their parent.
+**
+**  /edge draws a frame around it and /title puts a caption in that
+**  frame; a caption implies the frame, because a group box without one
+**  is just floating text. Neither moves anything the panel holds: a
+**  child is positioned from the panel's own top-left either way, so an
+**  edge can be turned on later without relaying anything out.
 ***********************************************************************/
 COMMAND cmd_gui_add_panel(RXIFRM *frm, void *ctx)
 {
@@ -834,7 +935,10 @@ COMMAND cmd_gui_add_panel(RXIFRM *frm, void *ctx)
 	GUIWIDGET *wid;
 	GUIWIDGET *panel = NULL;
 	GUIWIN    *win = Frm_Parent(frm, 1, &panel);
+	REBYTE    *text = NULL;
+	REBCNT     text_len = 0;
 	REBINT     x, y, w, h;
+	int        len;
 
 	if (!win || !win->handle) RETURN_ERROR(ERR_INVALID_HANDLE);
 
@@ -843,6 +947,12 @@ COMMAND cmd_gui_add_panel(RXIFRM *frm, void *ctx)
 	w = (REBINT)RXA_PAIR(frm, 3).x;
 	h = (REBINT)RXA_PAIR(frm, 3).y;
 	if (w <= 0 || h <= 0) RETURN_ERROR(ERR_BAD_SIZE);
+
+	if (RXA_REF(frm, 5)) { // /title
+		len = RL_GET_UTF8_STRING(RXA_SERIES(frm, 6), RXA_INDEX(frm, 6),
+		                         (void**)&text);
+		if (len > 0) text_len = (REBCNT)len;
+	}
 
 	hob = RL_MAKE_HANDLE_CONTEXT(Handle_GuiWidget);
 	if (hob == NULL) RETURN_ERROR(ERR_NO_HANDLE);
@@ -854,7 +964,10 @@ COMMAND cmd_gui_add_panel(RXIFRM *frm, void *ctx)
 	wid->owner  = win;
 	wid->parent = panel; // panels nest like anything else
 
-	if (!Gui_Create_Panel(wid, win, x, y, w, h)) {
+	// /title implies /edge - the caption is drawn INTO the frame
+	if (RXA_REF(frm, 4) || RXA_REF(frm, 5)) wid->state = GUI_PANEL_EDGE;
+
+	if (!Gui_Create_Panel(wid, win, x, y, w, h, text, text_len)) {
 		wid->owner  = NULL;
 		wid->parent = NULL;
 		RL_FREE_HANDLE_CONTEXT(hob);
@@ -1103,6 +1216,9 @@ int GuiWindow_free(void *hndl)
 	if (win->handle) Gui_Close_Window(win);
 
 	debug_print("releasing GUI window handle: %p\n", (void*)win);
+	// The default font's family name is plain malloc'd memory owned by the
+	// window - the GC knows nothing about it, so this is where it goes.
+	Font_Free(&win->font);
 	CLEARS(win);
 	UNMARK_HOB(hob);
 	return 0;
@@ -1155,6 +1271,37 @@ int GuiWindow_get_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 		arg->int32a = (win->handle != NULL);
 		break;
 
+	/*******************************************************************
+	**  What the NEXT widget will be created with - not a description of
+	**  anything currently on screen. Unlike a widget's font, which is
+	**  read back from the control, this is the extension's own note to
+	**  itself, so it reports exactly what was set.
+	*******************************************************************/
+	case W_GUI_ARG_FONT:
+		if (!win->font.name) { *type = RXT_NONE; break; }
+		arg->series = RL_DECODE_UTF_STRING((REBYTE*)win->font.name,
+			(REBCNT)strlen(win->font.name), 8, FALSE, FALSE);
+		if (!arg->series) { *type = RXT_NONE; break; }
+		arg->index = 0;
+		*type = RXT_STRING;
+		break;
+
+	case W_GUI_ARG_FONT_SIZE:
+		if (win->font.size <= 0) { *type = RXT_NONE; break; }
+		*type = RXT_INTEGER;
+		arg->int64 = (i64)win->font.size;
+		break;
+
+	case W_GUI_ARG_BOLDQ:
+		*type = RXT_LOGIC;
+		arg->int32a = ((win->font.style & GUI_FONT_BOLD) != 0);
+		break;
+
+	case W_GUI_ARG_ITALICQ:
+		*type = RXT_LOGIC;
+		arg->int32a = ((win->font.style & GUI_FONT_ITALIC) != 0);
+		break;
+
 	default:
 		return PE_BAD_SELECT;
 	}
@@ -1187,6 +1334,46 @@ int GuiWindow_set_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 	case W_GUI_ARG_OFFSET:
 		if (*type != RXT_PAIR) return PE_BAD_SET_TYPE;
 		Gui_Set_Offset(win, (REBINT)arg->pair.x, (REBINT)arg->pair.y);
+		break;
+
+	/*******************************************************************
+	**  Setting a default touches nothing that already exists - it is
+	**  read once, by Attach_Widget, when the next widget is made.
+	*******************************************************************/
+	case W_GUI_ARG_FONT: {
+		REBYTE *utf8 = NULL;
+		int len = 0;
+		if (*type == RXT_STRING) {
+			len = RL_GET_UTF8_STRING((REBSER*)arg->series, arg->index,
+			                         (void**)&utf8);
+			if (len < 0) return PE_BAD_SET;
+		} else if (*type != RXT_NONE) {
+			return PE_BAD_SET_TYPE;
+		}
+		if (!Font_Set_Name(&win->font, utf8, (REBCNT)len)) return PE_BAD_SET;
+		break; }
+
+	case W_GUI_ARG_FONT_SIZE:
+		if (*type == RXT_NONE) {
+			win->font.size = 0;
+		} else if (*type == RXT_INTEGER) {
+			if (arg->int64 <= 0 || arg->int64 > 1000) return PE_BAD_RANGE;
+			win->font.size = (REBINT)arg->int64;
+		} else {
+			return PE_BAD_SET_TYPE;
+		}
+		break;
+
+	case W_GUI_ARG_BOLDQ:
+		if (*type != RXT_LOGIC) return PE_BAD_SET_TYPE;
+		if (arg->int32a) win->font.style |=  GUI_FONT_BOLD;
+		else             win->font.style &= ~(REBCNT)GUI_FONT_BOLD;
+		break;
+
+	case W_GUI_ARG_ITALICQ:
+		if (*type != RXT_LOGIC) return PE_BAD_SET_TYPE;
+		if (arg->int32a) win->font.style |=  GUI_FONT_ITALIC;
+		else             win->font.style &= ~(REBCNT)GUI_FONT_ITALIC;
 		break;
 
 	default:
@@ -1310,6 +1497,72 @@ int GuiWidget_get_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 			: Gui_Widget_Get_State(wid);
 		break;
 
+	case W_GUI_ARG_EDGE:
+		// Only a panel has a frame to draw, so only a panel answers.
+		if (wid->kind != W_GUI_WIDGET_PANEL) { *type = RXT_NONE; break; }
+		*type = RXT_LOGIC;
+		arg->int32a = ((wid->state & GUI_PANEL_EDGE) != 0);
+		break;
+
+	/*******************************************************************
+	**  Typography. All four come out of one question put to the
+	**  control, so what is reported is what the control actually has -
+	**  including a font this extension never set.
+	*******************************************************************/
+	case W_GUI_ARG_FONT:
+	case W_GUI_ARG_FONT_SIZE:
+	case W_GUI_ARG_BOLDQ:
+	case W_GUI_ARG_ITALICQ: {
+		REBSER *name = NULL;
+		REBINT  size = 0;
+		REBCNT  style = 0;
+
+		if (!Kind_Has_Font(wid->kind)
+		    || !Gui_Widget_Get_Font(wid, &name, &size, &style)) {
+			*type = RXT_NONE;
+			break;
+		}
+		switch (word) {
+		case W_GUI_ARG_FONT:
+			// None rather than an empty string: the control is using
+			// whatever the platform hands out, which has no name here.
+			if (!name) { *type = RXT_NONE; break; }
+			arg->series = name;
+			arg->index  = 0;
+			*type = RXT_STRING;
+			break;
+		case W_GUI_ARG_FONT_SIZE:
+			if (size <= 0) { *type = RXT_NONE; break; }
+			*type = RXT_INTEGER;
+			arg->int64 = (i64)size;
+			break;
+		case W_GUI_ARG_BOLDQ:
+			*type = RXT_LOGIC;
+			arg->int32a = ((style & GUI_FONT_BOLD) != 0);
+			break;
+		default: // W_GUI_ARG_ITALICQ
+			*type = RXT_LOGIC;
+			arg->int32a = ((style & GUI_FONT_ITALIC) != 0);
+			break;
+		}
+		break; }
+
+	case W_GUI_ARG_COLOR:
+		// The colour is kept here rather than asked of the control, so a
+		// Win32 push button - which ignores one - still reports what it
+		// was given rather than pretending it was never asked.
+		if (!Kind_Has_Font(wid->kind) || !GUI_COLOR_HAS(wid->color)) {
+			*type = RXT_NONE;
+			break;
+		}
+		CLEARS(arg);
+		arg->tuple_len      = 3;
+		arg->tuple_bytes[0] = (REBYTE)GUI_COLOR_R(wid->color);
+		arg->tuple_bytes[1] = (REBYTE)GUI_COLOR_G(wid->color);
+		arg->tuple_bytes[2] = (REBYTE)GUI_COLOR_B(wid->color);
+		*type = RXT_TUPLE;
+		break;
+
 	case W_GUI_ARG_GROUP:
 		*type = RXT_INTEGER;
 		arg->int64 = (i64)wid->group;
@@ -1419,6 +1672,10 @@ int GuiWidget_set_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 		len = RL_GET_UTF8_STRING((REBSER*)arg->series, arg->index, (void**)&utf8);
 		if (len < 0) return PE_BAD_SET;
 		Gui_Widget_Set_Text(wid, utf8, (REBCNT)len);
+		// A native control repaints itself when its text changes; a panel's
+		// caption is drawn by the backend's own paint handler, so it has to
+		// be asked.
+		if (wid->kind == W_GUI_WIDGET_PANEL) Gui_Panel_Edge_Changed(wid);
 		break; }
 
 	// Swapping the image is just swapping the reference the GC marks; the
@@ -1457,6 +1714,84 @@ int GuiWidget_set_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 			wid->state = arg->int32a ? 1 : 0;
 			Gui_Widget_Set_State(wid, wid->state ? TRUE : FALSE);
 		}
+		break;
+
+	/*******************************************************************
+	**  Typography. Each of the four writes one part of a font which is
+	**  otherwise carried over from the control - see Set_Font_Part.
+	*******************************************************************/
+	case W_GUI_ARG_FONT: {
+		REBYTE *utf8 = NULL;
+		int     len = 0;
+		if (!Kind_Has_Font(wid->kind)) return PE_BAD_SET;
+		// `none` means "the platform's own font", which is what a NULL
+		// name asks a backend for.
+		if (*type == RXT_STRING) {
+			len = RL_GET_UTF8_STRING((REBSER*)arg->series, arg->index,
+			                         (void**)&utf8);
+			if (len < 0) return PE_BAD_SET;
+		} else if (*type != RXT_NONE) {
+			return PE_BAD_SET_TYPE;
+		}
+		if (!Set_Font_Part(wid, FONT_PART_NAME, utf8, (REBCNT)len, 0, 0, 0))
+			return PE_BAD_SET;
+		break; }
+
+	case W_GUI_ARG_FONT_SIZE: {
+		REBINT size;
+		if (!Kind_Has_Font(wid->kind)) return PE_BAD_SET;
+		if (*type == RXT_NONE) {
+			size = 0; // back to the platform's own size
+		} else if (*type == RXT_INTEGER) {
+			size = (REBINT)arg->int64;
+			if (size <= 0 || size > 1000) return PE_BAD_RANGE;
+		} else {
+			return PE_BAD_SET_TYPE;
+		}
+		if (!Set_Font_Part(wid, FONT_PART_SIZE, NULL, 0, size, 0, 0))
+			return PE_BAD_SET;
+		break; }
+
+	case W_GUI_ARG_BOLDQ:
+	case W_GUI_ARG_ITALICQ: {
+		REBCNT mask = (word == W_GUI_ARG_BOLDQ)
+			? GUI_FONT_BOLD : GUI_FONT_ITALIC;
+		if (!Kind_Has_Font(wid->kind)) return PE_BAD_SET;
+		if (*type != RXT_LOGIC) return PE_BAD_SET_TYPE;
+		if (!Set_Font_Part(wid, FONT_PART_STYLE, NULL, 0, 0,
+		                   arg->int32a ? mask : 0, mask))
+			return PE_BAD_SET;
+		break; }
+
+	case W_GUI_ARG_COLOR:
+		if (!Kind_Has_Font(wid->kind)) return PE_BAD_SET;
+		if (*type == RXT_NONE) {
+			wid->color = 0; // the platform decides again
+		} else if (*type == RXT_TUPLE) {
+			if (arg->tuple_len < 3) return PE_BAD_SET;
+			// A fourth byte would be alpha, which no control here blends.
+			wid->color = GUI_COLOR_OF(arg->tuple_bytes[0],
+			                          arg->tuple_bytes[1],
+			                          arg->tuple_bytes[2]);
+		} else {
+			return PE_BAD_SET_TYPE;
+		}
+		// A backend which cannot colour this particular control says so,
+		// and the value stands anyway - the accessor reports what was
+		// asked for, and the one platform gap is documented rather than
+		// turned into an error at an arbitrary moment.
+		Gui_Widget_Set_Color(wid);
+		break;
+
+	case W_GUI_ARG_EDGE:
+		// The backends read this flag at paint time, so turning a frame on
+		// or off is a repaint and never a rebuild of the control - which is
+		// also why nothing the panel holds moves.
+		if (wid->kind != W_GUI_WIDGET_PANEL) return PE_BAD_SET;
+		if (*type != RXT_LOGIC) return PE_BAD_SET_TYPE;
+		if (arg->int32a) wid->state |=  GUI_PANEL_EDGE;
+		else             wid->state &= ~(REBCNT)GUI_PANEL_EDGE;
+		Gui_Panel_Edge_Changed(wid);
 		break;
 
 	case W_GUI_ARG_VALUE: {

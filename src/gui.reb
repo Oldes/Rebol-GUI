@@ -47,11 +47,35 @@ c-header: {
 extern REBCNT Handle_GuiWindow;
 extern REBCNT Handle_GuiWidget;
 
+// How this extension describes a font when it is not inside a control.
+//
+// The name is a plain UTF-8 C string owned by the struct, NOT a Rebol
+// series: a handle context has exactly one GC-marked slot and the image
+// widget already uses it, so anything else kept here has to be invisible
+// to the collector. Whoever owns a GUIFONT frees its name.
+//
+// A widget does not carry one of these. Its font lives in the native
+// control, which is asked at every read - so a font set by any other means
+// is reported honestly, and nothing can drift out of step. Only a WINDOW
+// keeps a GUIFONT, because a default has to survive until the next widget
+// is created.
+typedef struct Gui_Font_Spec {
+	char   *name;   // family name; NULL means the platform's own
+	REBINT  size;   // in points; 0 means the platform's own
+	REBCNT  style;  // GUI_FONT_* bits
+} GUIFONT;
+
+#define GUI_FONT_BOLD    1
+#define GUI_FONT_ITALIC  2
+
 typedef struct Gui_Window_Context {
 	void   *handle;  // native window (HWND / NSWindow*)
 	REBHOB *hob;     // back reference, so the window proc can tag its events
 	REBCNT  flags;   // GUIW_* bits
 	void   *widgets; // head of the child widget list (GUIWIDGET*)
+	GUIFONT font;    // what a widget created from now on starts with; it is
+	                 // read at creation and never again, so restyling a
+	                 // window does not reach back into what it already holds
 } GUIWIN;
 
 // An image widget holds no pixels of its own: the image! series it was given
@@ -73,10 +97,32 @@ typedef struct Gui_Widget_Context {
 	REBCNT  group;   // radio group id; 0 for every other kind
 	REBCNT  state;   // check / radio: 1 when on. The extension is the source
 	                 // of truth here, not the native control - see the radio
-	                 // grouping note in gui-commands.c
+	                 // grouping note in gui-commands.c.
+	                 // panel: GUI_PANEL_EDGE when it draws a frame - read by
+	                 // the backend at paint time, so it can be turned on and
+	                 // off without touching the native control
+	REBCNT  color;   // text colour: 0 when the platform decides, otherwise
+	                 // GUI_COLOR_SET | 0xRRGGBB. Kept here rather than in the
+	                 // control because Win32 does not store one: the PARENT
+	                 // is asked for it, message by message, as each control
+	                 // is about to paint
 } GUIWIDGET;
 
 #define GUIW_VISIBLE  1
+
+// wid->state of a panel
+#define GUI_PANEL_EDGE 1
+
+// wid->color. The top byte is the "has one" flag, which is why a colour of
+// 0.0.0 is still distinguishable from no colour at all.
+#define GUI_COLOR_SET        0xFF000000
+#define GUI_COLOR_HAS(c)     (((c) & GUI_COLOR_SET) != 0)
+#define GUI_COLOR_R(c)       (((c) >> 16) & 0xFF)
+#define GUI_COLOR_G(c)       (((c) >>  8) & 0xFF)
+#define GUI_COLOR_B(c)        ((c)        & 0xFF)
+#define GUI_COLOR_OF(r,g,b)  (GUI_COLOR_SET | ((REBCNT)(r) << 16) \
+                                            | ((REBCNT)(g) <<  8) \
+                                            |  (REBCNT)(b))
 }
 
 ;; ---------------------------------------------------------------------------
@@ -128,11 +174,16 @@ handles: [
 		offset   pair!     pair!     "Position of the top-left corner on the screen"
 		id       integer!  none      "Native window handle as an integer"
 		open?    logic!    none      "False once the window has been closed"
+		;; Defaults for widgets created AFTERWARDS - see the note in the README.
+		font      string!  [string! none!] "Font family widgets are created with; none for the system font"
+		font-size integer! [integer! none!] "Point size widgets are created with; none for the system size"
+		bold?     logic!   logic!    "Whether widgets are created bold"
+		italic?   logic!   logic!    "Whether widgets are created italic"
 	]
 	widget: [
 		"GUI widget handle - a native control inside a window"
 		;NAME    GET       SET       DESCRIPTION
-		text     string!   string!   "Label or contents; the selected item of a drop-down, which is read-only; none for an image"
+		text     string!   string!   "Label or contents; the caption of a framed panel; the selected item of a drop-down, which is read-only; none for an image"
 		items    block!    block!    "Strings a drop-down offers; none for other kinds"
 		index    integer!  integer!  "Which item is picked, 1-based; 0 for none"
 		image    image!    image!    "Image shown by an image widget, none for other kinds"
@@ -142,6 +193,13 @@ handles: [
 		kind     word!     none      "What the control is: button, image, text, field, area, check, radio, slider, progress or drop-down"
 		value    percent!  [percent! decimal!] "Position of a slider or a progress bar; none for other kinds"
 		state    logic!    logic!    "Whether a check or a radio is on; none for other kinds"
+		edge     logic!    logic!    "Whether a panel draws a frame around itself; none for other kinds"
+		;; Typography. Every kind which has `text` has these; the rest answer none.
+		font      string!  [string! none!] "Font family; none puts it back to the system font"
+		font-size integer! [integer! none!] "Point size; none puts it back to the system size"
+		bold?     logic!   logic!    "Whether the text is bold"
+		italic?   logic!   logic!    "Whether the text is italic"
+		color     tuple!   [tuple! none!] "Text colour; none lets the platform decide"
 		group    integer!  none      "Which radio group it belongs to; 0 for everything else"
 		enabled? logic!    logic!    "Whether the control responds to the user"
 		parent   handle!   none      "Whatever holds it - a window, or a panel; none once gone"
@@ -246,6 +304,8 @@ commands: [
 		parent [handle!] "Window or panel to put it in"
 		offset [pair!]   "Position inside the client area"
 		size   [pair!]
+		/edge  "Draws a frame around it"
+		/title text [string!] "Caption set into the frame; implies /edge"
 	]
 ]
 

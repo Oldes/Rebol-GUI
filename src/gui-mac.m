@@ -83,6 +83,12 @@
 #define RebolGuiPopUp     GUI_CLASS(PopUp)
 #define RebolGuiPanel     GUI_CLASS(Panel)
 #define NSWINDOW_OF(win) ((NSWindow*)((win)->handle))
+#define NSPANEL_OF(wid)  ((RebolGuiPanel*)((wid)->handle))
+
+// How far in from the left edge a framed panel's caption starts. The same
+// number as in gui-win.c, so the two look alike even though each measures
+// the text with its own font.
+#define PANEL_CAPTION_X 9
 
 // Raised whenever anything is marked for drawing, cleared by the pump.
 //
@@ -147,6 +153,10 @@ static REBSER* From_NSString(NSString *str)
 // Defined with the widget code below, but needed by Gui_Close_Window above it.
 static void Detach_Control(GUIWIDGET *wid);
 
+// Likewise: a button's colour lives in its attributed title, so anything
+// which replaces that title - new text, a new font - has to rebuild it.
+static void Apply_Button_Color(GUIWIDGET *wid);
+
 
 //== content view =============================================================
 //
@@ -202,10 +212,25 @@ static void Detach_Control(GUIWIDGET *wid);
 @end
 
 
-// A container, and nothing else. It is flipped for the same reason the
-// window's content view is: so that what it holds is positioned from the
-// top-left, like every other offset in this extension.
+// A container, and - when asked for an edge - a frame around itself. It is
+// flipped for the same reason the window's content view is: so that what it
+// holds is positioned from the top-left, like every other offset in this
+// extension.
 @interface RebolGuiPanel : NSView
+{
+	GUIWIDGET *context;  // read at paint time for GUI_PANEL_EDGE and colour
+	NSString  *caption;  // retained; nil when the panel has no title
+	NSFont    *font;     // retained; nil for the small system font
+}
+- (void)setContext:(GUIWIDGET*)ctx;
+- (void)setCaption:(NSString*)text;
+- (NSString*)caption;
+// NSView has no font of its own, so the panel declares the two NSControl
+// accessors by hand - which is what lets the typography code treat every
+// widget the same way and keeps `panel/font-size` out of the shared layer
+// as a special case.
+- (void)setFont:(NSFont*)value;
+- (NSFont*)font;
 @end
 
 
@@ -296,18 +321,127 @@ static void Detach_Control(GUIWIDGET *wid);
 // offset in this extension.
 - (BOOL)isFlipped { return YES; }
 
-// It deliberately does NOT draw.
-//
-// It used to fill its bounds with windowBackgroundColor, and adding one to
-// a window made every widget already in that window vanish. A container
-// has no business painting a background: it has nothing to say, whatever
-// is beneath it should show through, and an opaque fill is what turns any
-// mistake about its frame into a blank window rather than a misplaced
-// rectangle. A view with no -drawRect: draws nothing at all.
-//
-// No setContext: and no mouse handlers either: a panel holds things, it
-// does not report. Detach_Control() asks before sending, so their absence
+- (void)setContext:(GUIWIDGET*)ctx { context = ctx; }
+
+- (void)setCaption:(NSString*)text
+{
+	if (text == caption) return;
+	[caption release];
+	caption = [text retain];
+	[self setNeedsDisplay:YES];
+}
+
+- (NSString*)caption { return caption; }
+
+- (void)setFont:(NSFont*)value
+{
+	if (value == font) return;
+	[font release];
+	font = [value retain];
+	[self setNeedsDisplay:YES];
+}
+
+- (NSFont*)font
+{
+	return font ? font : [NSFont systemFontOfSize:[NSFont smallSystemFontSize]];
+}
+
+- (void)dealloc
+{
+	[caption release];
+	[font release];
+	[super dealloc];
+}
+
+// No mouse handlers: a panel holds things, it does not report. Both
+// Detach_Control() and the event code ask before sending, so their absence
 // is fine.
+
+/***********************************************************************
+**  It draws the frame, and NOTHING ELSE - no background whatsoever.
+**
+**  That is a rule, not an implementation detail. An earlier version of
+**  this class filled its bounds with windowBackgroundColor, and adding
+**  one panel to a window made every widget already in that window
+**  vanish. A container has nothing to say about the pixels it covers:
+**  whatever is beneath it must show through, and an opaque fill turns
+**  any mistake about a frame into a blank window rather than a
+**  misplaced rectangle.
+**
+**  So the top line is drawn in two pieces with a gap for the caption,
+**  rather than the usual trick of painting the background back over the
+**  text. Breaking the line needs no colour and cannot cover anything.
+***********************************************************************/
+- (void)drawRect:(NSRect)dirty
+{
+	NSRect     bounds = [self bounds];
+	NSRect     frame;
+	CGFloat    inset  = 0.0;
+	NSSize     size   = NSZeroSize;
+	NSBezierPath *path;
+	NSDictionary *attrs = nil;
+
+	if (!context || !(context->state & GUI_PANEL_EDGE)) return;
+
+	if (caption && [caption length] > 0) {
+		// -font answers the small system font when none was set, so the
+		// caption follows `panel/font` and `panel/font-size` with no
+		// branch of its own. The colour likewise comes from the widget
+		// context, which is where `panel/color` put it.
+		attrs = @{
+			NSFontAttributeName: [self font],
+			NSForegroundColorAttributeName:
+				(GUI_COLOR_HAS(context->color)
+					? [NSColor colorWithSRGBRed:GUI_COLOR_R(context->color)/255.0
+					                      green:GUI_COLOR_G(context->color)/255.0
+					                       blue:GUI_COLOR_B(context->color)/255.0
+					                      alpha:1.0]
+					: [NSColor labelColor])
+		};
+		size  = [caption sizeWithAttributes:attrs];
+		inset = (CGFloat)(int)(size.height / 2.0);
+	}
+
+	// Half-pixel offsets keep a one-pixel stroke on the pixel grid rather
+	// than spread over two.
+	frame = NSMakeRect(0.5, inset + 0.5,
+	                   bounds.size.width - 1.0,
+	                   bounds.size.height - inset - 1.0);
+	if (frame.size.width <= 0.0 || frame.size.height <= 0.0) return;
+
+	// tertiaryLabelColor rather than a fixed grey: it follows the system
+	// appearance, so the frame is right in dark mode without asking.
+	[[NSColor tertiaryLabelColor] set];
+	path = [NSBezierPath bezierPath];
+	[path setLineWidth:1.0];
+
+	if (attrs) {
+		CGFloat gap_x1 = (CGFloat)PANEL_CAPTION_X - 2.0;
+		CGFloat gap_x2 = gap_x1 + size.width + 4.0;
+		if (gap_x2 > NSMaxX(frame)) gap_x2 = NSMaxX(frame);
+
+		// top line, in two pieces, with the caption sitting in the gap
+		[path moveToPoint:NSMakePoint(NSMinX(frame), NSMinY(frame))];
+		[path lineToPoint:NSMakePoint(gap_x1,        NSMinY(frame))];
+		[path moveToPoint:NSMakePoint(gap_x2,        NSMinY(frame))];
+		[path lineToPoint:NSMakePoint(NSMaxX(frame), NSMinY(frame))];
+	} else {
+		[path moveToPoint:NSMakePoint(NSMinX(frame), NSMinY(frame))];
+		[path lineToPoint:NSMakePoint(NSMaxX(frame), NSMinY(frame))];
+	}
+
+	// ... and the other three sides
+	[path moveToPoint:NSMakePoint(NSMaxX(frame), NSMinY(frame))];
+	[path lineToPoint:NSMakePoint(NSMaxX(frame), NSMaxY(frame))];
+	[path lineToPoint:NSMakePoint(NSMinX(frame), NSMaxY(frame))];
+	[path lineToPoint:NSMakePoint(NSMinX(frame), NSMinY(frame))];
+	[path stroke];
+
+	if (attrs) {
+		[caption drawAtPoint:NSMakePoint((CGFloat)PANEL_CAPTION_X, 0.0)
+		      withAttributes:attrs];
+	}
+}
 
 @end
 
@@ -1185,6 +1319,9 @@ REBSER* Gui_Widget_Get_Text(GUIWIDGET *wid)
 		case W_GUI_WIDGET_DROP_DOWN:
 			// An NSPopUpButton's own `title` is not what it displays.
 			return From_NSString([NSPOPUP_OF(wid) titleOfSelectedItem]);
+		case W_GUI_WIDGET_PANEL:
+			// A panel is a plain view; its caption is the extension's own.
+			return From_NSString([NSPANEL_OF(wid) caption]);
 		default:
 			return From_NSString([NSBUTTON_OF(wid) title]);
 		}
@@ -1209,10 +1346,210 @@ REBOOL Gui_Widget_Set_Text(GUIWIDGET *wid, const REBYTE *utf8, REBCNT len)
 		case W_GUI_WIDGET_FIELD:
 			[(NSTextField*)wid->handle setStringValue:value];
 			break;
+		case W_GUI_WIDGET_PANEL:
+			[NSPANEL_OF(wid) setCaption:value];
+			break;
 		default:
 			[NSBUTTON_OF(wid) setTitle:value];
+			// Setting a plain title drops the attributes, colour and all,
+			// so a coloured button has to be dressed again.
+			Apply_Button_Color(wid);
 			break;
 		}
+		return TRUE;
+	}
+}
+
+
+//== typography ===============================================================
+
+// Which object actually carries the font. Everything here answers -font and
+// -setFont: - NSControl declares both, the text view has its own, and the
+// panel declares them by hand - so one lookup serves every kind.
+static id Font_Target(GUIWIDGET *wid)
+{
+	if (!wid || !wid->handle) return nil;
+	if (wid->kind == W_GUI_WIDGET_AREA) return (id)Text_View_Of(wid);
+	return (id)wid->handle;
+}
+
+
+REBOOL Gui_Widget_Get_Font(GUIWIDGET *wid, REBSER **name, REBINT *size,
+                           REBCNT *style)
+{
+	@autoreleasepool {
+		id      target = Font_Target(wid);
+		NSFont *font;
+		NSFontTraitMask traits;
+
+		if (name)  *name  = NULL;
+		if (size)  *size  = 0;
+		if (style) *style = 0;
+
+		if (![target respondsToSelector:@selector(font)]) return FALSE;
+		font = [target font];
+		if (!font) return FALSE;
+
+		// The FAMILY, not the font name: "Georgia" rather than
+		// "Georgia-BoldItalic", so that reading a font back and setting it
+		// on something else does not carry a style along with it.
+		if (name) *name = From_NSString([font familyName]);
+		if (size) *size = (REBINT)([font pointSize] + 0.5);
+		if (style) {
+			traits = [[NSFontManager sharedFontManager] traitsOfFont:font];
+			if (traits & NSBoldFontMask)   *style |= GUI_FONT_BOLD;
+			if (traits & NSItalicFontMask) *style |= GUI_FONT_ITALIC;
+		}
+		return TRUE;
+	}
+}
+
+
+REBOOL Gui_Widget_Set_Font(GUIWIDGET *wid, const REBYTE *utf8, REBCNT len,
+                           REBINT size, REBCNT style)
+{
+	@autoreleasepool {
+		id       target = Font_Target(wid);
+		NSFontManager *manager = [NSFontManager sharedFontManager];
+		NSString *family = To_NSString(utf8, len);
+		NSFont   *font = nil;
+		CGFloat   points = (size > 0) ? (CGFloat)size : [NSFont systemFontSize];
+		NSFontTraitMask mask = 0;
+
+		if (![target respondsToSelector:@selector(setFont:)]) return FALSE;
+
+		if (style & GUI_FONT_BOLD)   mask |= NSBoldFontMask;
+		if (style & GUI_FONT_ITALIC) mask |= NSItalicFontMask;
+
+		if (family && [family length] > 0) {
+			font = [manager fontWithFamily:family traits:0 weight:5 size:points];
+			// A name which is a face rather than a family - "Georgia-Bold" -
+			// still resolves this way, so both are accepted.
+			if (!font) font = [NSFont fontWithName:family size:points];
+		}
+		if (!font) font = [NSFont systemFontOfSize:points];
+		if (!font) return FALSE;
+
+		// convertFont: hands back what it was given when a family has no
+		// such face, so a missing italic is a plain font rather than none.
+		if (mask) {
+			NSFont *styled = [manager convertFont:font toHaveTrait:mask];
+			if (styled) font = styled;
+		}
+
+		[target setFont:font];
+
+		// A button's colour lives in its attributed title, which carries
+		// the font as one of its attributes - so changing the font means
+		// building that string again.
+		Apply_Button_Color(wid);
+
+		[NSVIEW_OF(wid) setNeedsDisplay:YES];
+		Display_Pending = TRUE;
+		return TRUE;
+	}
+}
+
+
+/***********************************************************************
+**  The colour a widget draws its text in.
+**
+**  AppKit has no one way to say this: a text field and a text view take
+**  a colour directly, while a button, a check, a radio and a pop-up
+**  have none at all and are coloured by giving them an ATTRIBUTED
+**  title. The panel draws its own caption and simply reads the widget
+**  context at paint time.
+***********************************************************************/
+static NSColor* Widget_Color(GUIWIDGET *wid)
+{
+	if (!wid || !GUI_COLOR_HAS(wid->color)) return nil;
+	return [NSColor colorWithSRGBRed:GUI_COLOR_R(wid->color) / 255.0
+	                           green:GUI_COLOR_G(wid->color) / 255.0
+	                            blue:GUI_COLOR_B(wid->color) / 255.0
+	                           alpha:1.0];
+}
+
+static void Apply_Button_Color(GUIWIDGET *wid)
+{
+	NSButton *button;
+	NSColor  *color;
+	NSString *title;
+
+	if (!wid || !wid->handle) return;
+
+	// Only these three. A pop-up's title is whichever menu item is
+	// selected rather than a title of its own, so an attributed title
+	// would fight the menu; everything else here has no title at all.
+	switch (wid->kind) {
+	case W_GUI_WIDGET_BUTTON:
+	case W_GUI_WIDGET_CHECK:
+	case W_GUI_WIDGET_RADIO:
+		break;
+	default:
+		return;
+	}
+
+	button = NSBUTTON_OF(wid);
+	color  = Widget_Color(wid);
+	title  = [button title];
+	if (!title) return;
+
+	if (!color) {
+		// Setting the plain title is what REMOVES the attributes; there is
+		// no "no attributed title" to set.
+		[button setTitle:title];
+		return;
+	}
+
+	[button setAttributedTitle:
+		[[[NSAttributedString alloc] initWithString:title attributes:@{
+			NSFontAttributeName: [button font],
+			NSForegroundColorAttributeName: color
+		}] autorelease]];
+}
+
+
+REBOOL Gui_Widget_Set_Color(GUIWIDGET *wid)
+{
+	@autoreleasepool {
+		NSColor *color;
+
+		if (!wid || !wid->handle) return FALSE;
+		color = Widget_Color(wid);
+
+		switch (wid->kind) {
+		case W_GUI_WIDGET_AREA:
+			[Text_View_Of(wid) setTextColor:
+				(color ? color : [NSColor textColor])];
+			break;
+
+		case W_GUI_WIDGET_TEXT:
+			[(NSTextField*)wid->handle setTextColor:
+				(color ? color : [NSColor labelColor])];
+			break;
+
+		case W_GUI_WIDGET_FIELD:
+			[(NSTextField*)wid->handle setTextColor:
+				(color ? color : [NSColor textColor])];
+			break;
+
+		case W_GUI_WIDGET_PANEL:
+			// Read straight out of the widget context by -drawRect:.
+			break;
+
+		case W_GUI_WIDGET_DROP_DOWN:
+			// See Apply_Button_Color: a pop-up shows a menu item, not a
+			// title of its own, so this is the one control here whose
+			// colour AppKit will not take.
+			return FALSE;
+
+		default:
+			Apply_Button_Color(wid);
+			break;
+		}
+
+		[NSVIEW_OF(wid) setNeedsDisplay:YES];
+		Display_Pending = TRUE;
 		return TRUE;
 	}
 }
@@ -1258,7 +1595,8 @@ REBOOL Gui_Widget_Get_State(GUIWIDGET *wid)
 //-- panel --------------------------------------------------------------------
 
 REBOOL Gui_Create_Panel(GUIWIDGET *wid, GUIWIN *owner,
-                        REBINT x, REBINT y, REBINT w, REBINT h)
+                        REBINT x, REBINT y, REBINT w, REBINT h,
+                        const REBYTE *text, REBCNT len)
 {
 	@autoreleasepool {
 		RebolGuiPanel *panel;
@@ -1270,13 +1608,37 @@ REBOOL Gui_Create_Panel(GUIWIDGET *wid, GUIWIN *owner,
 		content = Parent_View(wid, owner);
 		if (!content) return FALSE;
 
+		// Deliberately not an NSBox, which is how AppKit usually draws a
+		// captioned frame: an NSBox puts its children in a contentView of
+		// its own and insets them by an amount it chooses, which would
+		// move everything a panel holds the moment it grew an edge, and
+		// by a different amount than Windows. A plain flipped view which
+		// strokes its own frame keeps a child's offset meaning the same
+		// thing on both platforms, framed or not.
 		panel = [[RebolGuiPanel alloc] initWithFrame:
 			NSMakeRect((CGFloat)x, (CGFloat)y, (CGFloat)w, (CGFloat)h)];
 		if (!panel) return FALSE;
 
+		[panel setContext:wid];
+		if (text && len > 0) [panel setCaption:To_NSString(text, len)];
+
 		[content addSubview:panel];
 		wid->handle = (void*)panel;
 		return TRUE;
+	}
+}
+
+
+void Gui_Panel_Edge_Changed(GUIWIDGET *wid)
+{
+	@autoreleasepool {
+		if (!wid || !wid->handle) return;
+		if (![NSThread isMainThread]) return;
+
+		// Marked, not displayed - Gui_Pump() does the drawing, for the
+		// reason given where Display_Pending is declared.
+		[NSPANEL_OF(wid) setNeedsDisplay:YES];
+		Display_Pending = TRUE;
 	}
 }
 

@@ -113,6 +113,50 @@ name/text: "world"
 print ["field text after setting it:" mold name/text]
 
 ;;=============================================================================
+print as-yellow "^/== Typography"
+;;=============================================================================
+
+;; Anything with `text` has `font`, `font-size`, `bold?`, `italic?` and
+;; `color`. The font is read back out of the CONTROL, so what is reported is
+;; what is really on screen - including whatever the platform started it with.
+print ["label started as:" mold label/font label/font-size "bold?" label/bold?]
+
+label/font-size: 15
+label/bold?:     true
+label/color:     30.90.170
+print ["... and is now:  " mold label/font label/font-size "bold?" label/bold?]
+print ["colour reads back as:" mold label/color]
+
+;; A control does NOT resize itself for a bigger font - the box laid out is
+;; the box kept, so leave room.
+print ["size is unchanged:" label/size]
+
+;; `none` puts a part back to whatever the platform uses.
+log/font: "Courier New"          ;; a missing family falls back, never fails
+log/font-size: 12
+name/color: 150.30.30
+
+;; Windows draws a push button's text itself, in the system colour, and only
+;; an owner-drawn button could say otherwise. The value is still kept and
+;; still reads back - it just does not show there. On macOS it does.
+counter/color: 200.110.0
+print ["button colour asked for:" mold counter/color]
+
+;; A window carries a default which widgets pick up AS THEY ARE CREATED.
+;; Setting it does not reach back into what is already on screen.
+win/font-size: 15
+win/italic?:   true
+note: add-text win "made after the window default was set" 300x395 320x24
+
+print ["window default:" win/font-size "italic?" win/italic?]
+print ["the new label took it:" note/font-size "italic?" note/italic?]
+print ["the first one did not: " label/font-size "italic?" label/italic?]
+
+;; Put it back, so the rest of this script builds ordinary widgets.
+win/font-size: none
+win/italic?:   false
+
+;;=============================================================================
 print as-yellow "^/== Checks and radios"
 ;;=============================================================================
 
@@ -120,16 +164,21 @@ toggle: add-check win "Counting enabled" 20x250 220x24
 toggle/state: true
 
 ;; A panel holds other widgets, and what it holds is positioned inside IT -
-;; these radios are at 10x10 within the panel, not within the window.
-box: add-panel win 20x285 260x60
+;; these radios are at 10x26 within the panel, not within the window.
+;;
+;; /title gives it a frame with a caption - a group box. The frame is drawn
+;; INSIDE the panel's own box and changes nothing about where a child sits:
+;; 10x5 means the same thing framed or not, so leaving room for the frame is
+;; the caller's job. Compare the two radios below, which are in the window.
+box: add-panel/title win 20x285 260x60 "Temperature"
 
 ;; Two independent groups. Radios turn each other off only within a group,
 ;; and the grouping is the extension's own - it does not depend on creation
 ;; order, on WS_GROUP flags, or on what AppKit considers a sibling. Note
 ;; that it does not depend on the panel either: warm and cool are in the
 ;; box, slow and fast are not, and the two groups still stand apart.
-warm: add-radio/group box "Warm"  10x5  110x22 1
-cool: add-radio/group box "Cool" 130x5  110x22 1
+warm: add-radio/group box "Warm"  10x26 110x22 1
+cool: add-radio/group box "Cool" 130x26 110x22 1
 slow: add-radio/group win "Slow"  20x350 110x22 2
 fast: add-radio/group win "Fast" 150x350 110x22 2
 
@@ -138,6 +187,14 @@ slow/state: true
 
 print ["check:" toggle/kind "state:" toggle/state]
 print ["radio:" warm/kind "group:" warm/group "state:" warm/state]
+
+;; The frame and its caption are readable and writable after the fact - both
+;; are drawn by the extension at paint time, so neither rebuilds the control
+;; and neither moves anything the panel holds.
+print ["panel edge:" box/edge "caption:" mold box/text]
+box/text: "Temperature (group box)"
+print ["... retitled to:" mold box/text]
+print ["a check has no edge:" mold toggle/edge]
 
 ;; `parent` is whatever holds it; `window` is the window either way.
 print ["warm sits in a" warm/parent/kind "at" warm/offset]
@@ -308,7 +365,7 @@ print ["the image survives:" type? pic pic/size]
 ;; The handles stay usable after the window is gone. Releasing them is
 ;; optional - the recycler would do it too.
 foreach handle reduce [
-	canvas counter closer label name log
+	canvas counter closer label name log note
 	toggle box warm cool slow fast level meter picker
 ][	release handle ]
 release win

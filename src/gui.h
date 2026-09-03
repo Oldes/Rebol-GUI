@@ -149,8 +149,26 @@ REBOOL  Gui_Create_Drop_Down(GUIWIDGET *wid, GUIWIN *owner,
 // NOTE for backends: `wid->parent` is set before any Gui_Create_* call, so
 // the native parent to attach to is the panel's when it is set and the
 // window's otherwise. Every creation function reads it that way.
+//
+// `wid->state & GUI_PANEL_EDGE` - set by the caller before this is called,
+// and changeable afterwards through the `edge` accessor - says whether the
+// panel draws a frame around itself, with `text` as its caption. Both are
+// read at PAINT time, never cached, which is what makes the accessor work
+// without recreating the control.
+//
+// The frame is drawn INSIDE the panel's own box and does not move anything:
+// a child is still positioned from the panel's top-left corner, framed or
+// not, so turning an edge on never shifts what the panel holds. Room for
+// the frame and the caption is the caller's to leave. The metrics come from
+// each platform's own font, so the two do not agree to the pixel - which is
+// exactly why they are not allowed to affect layout.
 REBOOL  Gui_Create_Panel(GUIWIDGET *wid, GUIWIN *owner,
-                         REBINT x, REBINT y, REBINT w, REBINT h);
+                         REBINT x, REBINT y, REBINT w, REBINT h,
+                         const REBYTE *text, REBCNT len);
+
+// Repaints a panel after its edge or caption changed. A backend which draws
+// the frame in its own paint handler only has to invalidate.
+void    Gui_Panel_Edge_Changed(GUIWIDGET *wid);
 
 REBCNT  Gui_Widget_Count_Items(GUIWIDGET *wid);
 REBSER* Gui_Widget_Get_Item(GUIWIDGET *wid, REBCNT n);   // 0-based
@@ -193,6 +211,39 @@ void    Gui_Destroy_Widget(GUIWIDGET *wid);
 
 REBSER* Gui_Widget_Get_Text(GUIWIDGET *wid);
 REBOOL  Gui_Widget_Set_Text(GUIWIDGET *wid, const REBYTE *utf8, REBCNT len);
+
+/***********************************************************************
+**  Typography.
+**
+**  One getter and one setter for the whole font, rather than a pair per
+**  property: a native font is one indivisible object on both platforms,
+**  so changing only the size means reading the font, changing the size
+**  and putting it back. The shared layer does exactly that, which is
+**  why `font`, `font-size`, `bold?` and `italic?` are four accessors
+**  above but two functions here.
+**
+**  The font is NOT shadowed in the widget context - it is read from the
+**  control every time, so what Rebol reports is what the control has.
+**
+**  `name` is a fresh Rebol string, the caller's to keep, and NULL when
+**  the control has no font of its own. `size` is in points, 0 when
+**  unknown. `style` is GUI_FONT_* bits. Any of the three may be NULL.
+***********************************************************************/
+REBOOL  Gui_Widget_Get_Font(GUIWIDGET *wid, REBSER **name, REBINT *size,
+                            REBCNT *style);
+
+// A NULL name asks for the platform's own font family, and a size of 0
+// for its own size, which is how `font: none` and `font-size: none` are
+// carried through.
+REBOOL  Gui_Widget_Set_Font(GUIWIDGET *wid, const REBYTE *name, REBCNT len,
+                            REBINT size, REBCNT style);
+
+// Applies `wid->color`, which the caller has already set - the colour is
+// shared-layer state, so there is nothing to pass and nothing to read
+// back. A backend which cannot colour a particular control (a Win32 push
+// button is the one case) returns FALSE, and the accessor still reports
+// the colour that was asked for.
+REBOOL  Gui_Widget_Set_Color(GUIWIDGET *wid);
 
 // Position and size travel together: both accessors read the whole box and
 // write back the half they changed.

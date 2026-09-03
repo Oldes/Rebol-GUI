@@ -141,6 +141,140 @@ static HFONT Get_Default_Font(void)
 }
 
 
+/***********************************************************************
+**  Fonts asked for from Rebol.
+**
+**  An HFONT is a GDI object which has to be deleted by whoever made it,
+**  and a control does not own the one it is given. Rather than hang one
+**  off every widget - and get it wrong at teardown exactly once - the
+**  fonts are kept in a small cache, shared by every control that asks
+**  for the same face, and deleted together in Gui_Quit_Platform().
+**
+**  A program restyling one label in a loop therefore creates one font,
+**  not one per assignment.
+***********************************************************************/
+typedef struct Gui_Font_Cache {
+	struct Gui_Font_Cache *next;
+	HFONT  font;
+	int    size;    // points
+	REBCNT style;   // GUI_FONT_* bits
+	WCHAR  name[LF_FACESIZE];
+} FONTCACHE;
+
+static FONTCACHE *Font_Cache = NULL;
+
+// Points per inch on this display, which is what turns a point size into
+// the pixel height a LOGFONT wants.
+static int Screen_DPI(void)
+{
+	HDC dc = GetDC(NULL);
+	int dpi = 96;
+	if (dc) {
+		int y = GetDeviceCaps(dc, LOGPIXELSY);
+		if (y > 0) dpi = y;
+		ReleaseDC(NULL, dc);
+	}
+	return dpi;
+}
+
+static void Free_Font_Cache(void)
+{
+	FONTCACHE *entry = Font_Cache;
+	while (entry) {
+		FONTCACHE *next = entry->next;
+		if (entry->font) DeleteObject(entry->font);
+		FREE_MEM(entry);
+		entry = next;
+	}
+	Font_Cache = NULL;
+}
+
+// A NULL or empty name means the shell's message font family, and a size
+// of 0 its size - which is how `font: none` and `font-size: none` arrive.
+static HFONT Font_For(const WCHAR *name, int size, REBCNT style)
+{
+	FONTCACHE *entry;
+	LOGFONTW   base, lf;
+	HFONT      font;
+
+	// Whatever is not being asked for comes from the default font, so a
+	// size on its own keeps the shell's family rather than falling back to
+	// something that looks nothing like the rest of the dialog.
+	ZeroMemory(&base, sizeof(base));
+	if (!GetObjectW(Get_Default_Font(), sizeof(base), &base)) return NULL;
+
+	ZeroMemory(&lf, sizeof(lf));
+	lf = base;
+	if (name && name[0]) {
+		lstrcpynW(lf.lfFaceName, name, LF_FACESIZE);
+	}
+	if (size > 0) {
+		lf.lfHeight = -MulDiv(size, Screen_DPI(), 72);
+		lf.lfWidth  = 0;
+	}
+	lf.lfWeight = (style & GUI_FONT_BOLD) ? FW_BOLD : FW_NORMAL;
+	lf.lfItalic = (style & GUI_FONT_ITALIC) ? TRUE : FALSE;
+
+	for (entry = Font_Cache; entry; entry = entry->next) {
+		if (entry->size == size && entry->style == style
+		    && lstrcmpW(entry->name, lf.lfFaceName) == 0)
+			return entry->font;
+	}
+
+	font = CreateFontIndirectW(&lf);
+	if (!font) return NULL;
+
+	entry = (FONTCACHE*)MAKE_MEM(sizeof(FONTCACHE));
+	if (!entry) { DeleteObject(font); return NULL; }
+	entry->font  = font;
+	entry->size  = size;
+	entry->style = style;
+	lstrcpynW(entry->name, lf.lfFaceName, LF_FACESIZE);
+	entry->next  = Font_Cache;
+	Font_Cache   = entry;
+
+	return font;
+}
+
+
+/***********************************************************************
+**  Answering a control's WM_CTLCOLOR* message.
+**
+**  Win32 has no "text colour" property on a control: a control about to
+**  paint asks its PARENT what to use, and this is that answer. The
+**  colour therefore lives in the widget context, which is looked up
+**  here from the child window the message came about.
+**
+**  Background stays COLOR_WINDOW throughout, which is what keeps a
+**  label on the same background the window and the panels fill with.
+***********************************************************************/
+static LRESULT Ctl_Color(HDC dc, HWND child, GUIWIN *win)
+{
+	GUIWIDGET *wid = NULL;
+
+	// The window's own widget list, rather than the child's GWLP_USERDATA.
+	// Not every window that sends this is one of ours - a combo box has an
+	// internal list box which sends WM_CTLCOLORLISTBOX in its own name, and
+	// whatever sits in ITS user data is not a GUIWIDGET to be dereferenced.
+	// The list is flat and window-wide, so one walk covers panels too.
+	if (child && win) {
+		GUIWIDGET *w = (GUIWIDGET*)win->widgets;
+		for (; w; w = (GUIWIDGET*)w->next) {
+			if ((HWND)w->handle == child) { wid = w; break; }
+		}
+	}
+
+	SetBkColor(dc, GetSysColor(COLOR_WINDOW));
+	SetTextColor(dc, (wid && GUI_COLOR_HAS(wid->color))
+		? RGB(GUI_COLOR_R(wid->color),
+		      GUI_COLOR_G(wid->color),
+		      GUI_COLOR_B(wid->color))
+		: GetSysColor(COLOR_WINDOWTEXT));
+
+	return (LRESULT)(HBRUSH)(COLOR_WINDOW + 1);
+}
+
+
 //== events ===================================================================
 
 static REBINT Modifiers(void)
@@ -342,9 +476,13 @@ static LRESULT CALLBACK Gui_Window_Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
 
 	// Static labels paint themselves onto whatever the parent supplies;
 	// this is what keeps them on the same background WM_PAINT fills with.
+	// It is also the only place a control's TEXT colour can be given, so
+	// `widget/color` is answered here rather than stored in the control.
 	case WM_CTLCOLORSTATIC:
-		SetBkColor((HDC)wp, GetSysColor(COLOR_WINDOW));
-		return (LRESULT)(HBRUSH)(COLOR_WINDOW + 1);
+	case WM_CTLCOLORBTN:
+	case WM_CTLCOLOREDIT:
+	case WM_CTLCOLORLISTBOX:
+		return Ctl_Color((HDC)wp, (HWND)lp, win);
 
 	case WM_ERASEBKGND:
 		return TRUE; // painted below, without the flicker
@@ -480,6 +618,11 @@ static LRESULT CALLBACK Gui_Image_Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp
 // the control from lParam rather than from the window that received the
 // message, so forwarding is all it takes.
 
+// How far in from the left edge a framed panel's caption starts. The same
+// number is used on macOS, so the two look alike even though each measures
+// the text with its own font.
+#define PANEL_CAPTION_X 9
+
 static LRESULT CALLBACK Gui_Panel_Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
 	switch (msg) {
@@ -488,22 +631,104 @@ static LRESULT CALLBACK Gui_Panel_Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp
 	case WM_HSCROLL:
 	case WM_VSCROLL:
 	case WM_CTLCOLORSTATIC:
-	case WM_CTLCOLORBTN: {
+	case WM_CTLCOLORBTN:
+	case WM_CTLCOLOREDIT:
+	case WM_CTLCOLORLISTBOX: {
 		HWND parent = GetParent(hwnd);
 		if (parent) return SendMessageW(parent, msg, wp, lp);
 		break; }
+
+	// A custom window class gets neither of these for free: DefWindowProc
+	// stores no font, so a panel keeps its own in the class's extra word.
+	// Without this, `panel/font-size` would be written and then read back
+	// as whatever the shell's message font is.
+	case WM_SETFONT:
+		SetWindowLongPtrW(hwnd, 0, (LONG_PTR)wp);
+		if (LOWORD(lp)) InvalidateRect(hwnd, NULL, TRUE);
+		return 0;
+
+	case WM_GETFONT:
+		return (LRESULT)GetWindowLongPtrW(hwnd, 0);
 
 	case WM_ERASEBKGND:
 		return TRUE; // WM_PAINT covers it
 
 	case WM_PAINT: {
 		PAINTSTRUCT ps;
-		RECT rect;
-		HDC dc = BeginPaint(hwnd, &ps);
+		RECT   rect, frame, gap;
+		HDC    dc = BeginPaint(hwnd, &ps);
+		GUIWIDGET *wid = (GUIWIDGET*)GetWindowLongPtrW(hwnd, GWLP_USERDATA);
+		int    caption_len = GetWindowTextLengthW(hwnd);
+		WCHAR *caption = NULL;
+		HFONT  font, old_font = NULL;
+		SIZE   text_size = {0, 0};
+		int    inset = 0;
+
 		GetClientRect(hwnd, &rect);
 		// The same background the window paints, so a panel is a place to
 		// put things rather than a visible slab.
 		FillRect(dc, &rect, (HBRUSH)(COLOR_WINDOW + 1));
+
+		if (!wid || !(wid->state & GUI_PANEL_EDGE)) {
+			EndPaint(hwnd, &ps);
+			return 0;
+		}
+
+		// The caption is kept as the panel's window text, and drawn with
+		// the panel's own font - which is what makes `panel/text`,
+		// `panel/font-size` and the rest work through the generic
+		// accessors, with no special case above this file.
+		font = (HFONT)SendMessageW(hwnd, WM_GETFONT, 0, 0);
+		if (!font) font = Get_Default_Font();
+		if (font) old_font = (HFONT)SelectObject(dc, font);
+
+		if (caption_len > 0) {
+			caption = (WCHAR*)MAKE_MEM((caption_len + 1) * sizeof(WCHAR));
+			if (caption) {
+				caption_len = GetWindowTextW(hwnd, caption, caption_len + 1);
+				// Without the extent there is no gap to leave and no line
+				// to break, so an unmeasurable caption is simply not drawn
+				// rather than drawn over the frame.
+				if (!GetTextExtentPoint32W(dc, caption, caption_len, &text_size)
+				    || text_size.cx <= 0) {
+					FREE_MEM(caption);
+					caption = NULL;
+				} else {
+					inset = text_size.cy / 2;
+				}
+			}
+		}
+
+		// The frame starts halfway down the caption, so the text sits ON the
+		// line - a classic group box - and the whole thing stays inside the
+		// panel's box, which is why no child ever has to move for it.
+		frame = rect;
+		frame.top += inset;
+		DrawEdge(dc, &frame, EDGE_ETCHED, BF_RECT);
+
+		if (caption) {
+			// The line is broken by painting the background back over the
+			// span the caption occupies. The panel owns that colour - it
+			// filled the whole client area with it above - so this is exact
+			// rather than a guess at what shows through.
+			gap.left   = PANEL_CAPTION_X - 2;
+			gap.top    = rect.top;
+			gap.right  = gap.left + text_size.cx + 4;
+			gap.bottom = rect.top + text_size.cy;
+			if (gap.right > rect.right) gap.right = rect.right;
+			FillRect(dc, &gap, (HBRUSH)(COLOR_WINDOW + 1));
+
+			SetBkMode(dc, TRANSPARENT);
+			SetTextColor(dc, GUI_COLOR_HAS(wid->color)
+				? RGB(GUI_COLOR_R(wid->color),
+				      GUI_COLOR_G(wid->color),
+				      GUI_COLOR_B(wid->color))
+				: GetSysColor(COLOR_WINDOWTEXT));
+			TextOutW(dc, PANEL_CAPTION_X, rect.top, caption, caption_len);
+			FREE_MEM(caption);
+		}
+
+		if (old_font) SelectObject(dc, old_font);
 		EndPaint(hwnd, &ps);
 		return 0; }
 	}
@@ -524,6 +749,9 @@ static REBOOL Register_Panel_Class(void)
 	wc.cbSize        = sizeof(wc);
 	wc.style         = CS_HREDRAW | CS_VREDRAW;
 	wc.lpfnWndProc   = Gui_Panel_Proc;
+	// One pointer of storage per panel, holding the HFONT it was given -
+	// see WM_SETFONT in the procedure above.
+	wc.cbWndExtra    = sizeof(LONG_PTR);
 	wc.hInstance     = App_Instance;
 	wc.hCursor       = LoadCursorW(NULL, IDC_ARROW);
 	wc.hbrBackground = NULL;
@@ -645,6 +873,7 @@ void Gui_Quit_Platform(void)
 		UnregisterClassW(Class_Name_Panel, App_Instance);
 		Panel_Class_Registered = FALSE;
 	}
+	Free_Font_Cache(); // every HFONT made for a `font` or `font-size`
 	if (Default_Font && Default_Font_Owned) {
 		DeleteObject(Default_Font); // a stock object must not be deleted
 		Default_Font_Owned = FALSE;
@@ -803,7 +1032,8 @@ static HWND Parent_Hwnd(GUIWIDGET *wid, GUIWIN *owner)
 
 
 REBOOL Gui_Create_Panel(GUIWIDGET *wid, GUIWIN *owner,
-                        REBINT x, REBINT y, REBINT w, REBINT h)
+                        REBINT x, REBINT y, REBINT w, REBINT h,
+                        const REBYTE *text, REBCNT len)
 {
 	HWND hwnd;
 
@@ -811,6 +1041,13 @@ REBOOL Gui_Create_Panel(GUIWIDGET *wid, GUIWIN *owner,
 	if (!Register_Panel_Class()) return FALSE;
 
 	// WS_CLIPCHILDREN keeps the panel from painting over what it holds.
+	//
+	// This is deliberately NOT a BS_GROUPBOX button, which is how Win32
+	// usually draws a captioned frame: a group box is not a container here
+	// but a sibling drawn behind other controls, and parenting children to
+	// one is where the classic repaint and tab-order trouble comes from.
+	// The panel keeps being a real container and draws the frame itself,
+	// which is also what lets the frame be turned on and off later.
 	hwnd = CreateWindowExW(
 		0, Class_Name_Panel, L"",
 		WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN,
@@ -824,7 +1061,23 @@ REBOOL Gui_Create_Panel(GUIWIDGET *wid, GUIWIN *owner,
 	SetWindowLongPtrW(hwnd, GWLP_USERDATA, (LONG_PTR)wid);
 
 	wid->handle = (void*)hwnd;
+
+	// The caption lives in the panel's window text, so the generic text
+	// accessor reaches it with no special case of its own.
+	// No repaint here: Attach_Widget() redraws every new widget, and it is
+	// the one place that decides so.
+	if (text && len > 0) Set_Text_Of(hwnd, text, len);
+
 	return TRUE;
+}
+
+
+void Gui_Panel_Edge_Changed(GUIWIDGET *wid)
+{
+	if (!wid || !wid->handle) return;
+	// TRUE erases first: an edge which has just been turned off has to have
+	// its own pixels painted over, not merely stop being drawn.
+	InvalidateRect(HWND_OF_WID(wid), NULL, TRUE);
 }
 
 
@@ -1003,6 +1256,87 @@ REBOOL Gui_Widget_Set_Text(GUIWIDGET *wid, const REBYTE *utf8, REBCNT len)
 {
 	if (!wid || !wid->handle) return FALSE;
 	return Set_Text_Of(HWND_OF_WID(wid), utf8, len);
+}
+
+
+//== typography ===============================================================
+
+REBOOL Gui_Widget_Get_Font(GUIWIDGET *wid, REBSER **name, REBINT *size,
+                           REBCNT *style)
+{
+	HWND     hwnd;
+	HFONT    font;
+	LOGFONTW lf;
+
+	if (name)  *name  = NULL;
+	if (size)  *size  = 0;
+	if (style) *style = 0;
+
+	if (!wid || !wid->handle) return FALSE;
+	hwnd = HWND_OF_WID(wid);
+
+	// WM_GETFONT answers NULL for a control still using the system font,
+	// which is not this extension's default - so the default is what an
+	// unanswered question means here.
+	font = (HFONT)SendMessageW(hwnd, WM_GETFONT, 0, 0);
+	if (!font) font = Get_Default_Font();
+	if (!font || !GetObjectW(font, sizeof(lf), &lf)) return FALSE;
+
+	if (name && lf.lfFaceName[0]) {
+		*name = RL_ENCODE_UTF8_STRING(lf.lfFaceName,
+			(REBCNT)lstrlenW(lf.lfFaceName), TRUE, 0);
+	}
+	if (size) {
+		// lfHeight is negative for a character height, positive for a cell
+		// height; both are pixels, and points is what Rebol asked about.
+		int pixels = lf.lfHeight < 0 ? -lf.lfHeight : lf.lfHeight;
+		*size = (REBINT)MulDiv(pixels, 72, Screen_DPI());
+	}
+	if (style) {
+		if (lf.lfWeight >= FW_SEMIBOLD) *style |= GUI_FONT_BOLD;
+		if (lf.lfItalic)                *style |= GUI_FONT_ITALIC;
+	}
+	return TRUE;
+}
+
+
+REBOOL Gui_Widget_Set_Font(GUIWIDGET *wid, const REBYTE *utf8, REBCNT len,
+                           REBINT size, REBCNT style)
+{
+	HWND   hwnd;
+	HFONT  font;
+	WCHAR *wide = NULL;
+
+	if (!wid || !wid->handle) return FALSE;
+	hwnd = HWND_OF_WID(wid);
+
+	if (utf8 && len > 0) wide = To_Wide(utf8, len);
+	font = Font_For(wide, (int)size, style);
+	if (wide) FREE_MEM(wide);
+	if (!font) return FALSE;
+
+	// A control does not resize itself for a bigger font, so the box a
+	// caller laid out is the box it keeps - which is the same promise the
+	// panel's frame makes.
+	SendMessageW(hwnd, WM_SETFONT, (WPARAM)font, MAKELPARAM(TRUE, 0));
+	InvalidateRect(hwnd, NULL, TRUE);
+	return TRUE;
+}
+
+
+REBOOL Gui_Widget_Set_Color(GUIWIDGET *wid)
+{
+	if (!wid || !wid->handle) return FALSE;
+
+	// Nothing to apply: the colour is read out of the widget context by
+	// the parent's WM_CTLCOLOR* handler, at the moment the control is
+	// about to paint. All that is needed is to make it paint.
+	InvalidateRect(HWND_OF_WID(wid), NULL, TRUE);
+
+	// ... except on a push button, which never asks. Win32 draws a
+	// BS_PUSHBUTTON's text itself, in the system colour, and only an
+	// owner-drawn button can say otherwise.
+	return (wid->kind == W_GUI_WIDGET_BUTTON) ? FALSE : TRUE;
 }
 
 
