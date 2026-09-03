@@ -146,10 +146,10 @@ print ["button colour asked for:" mold counter/color]
 ;; Setting it does not reach back into what is already on screen.
 win/font-size: 15
 win/italic?:   true
-note: add-text win "made after the window default was set" 300x395 320x24
+txt: add-text win "made after the window default was set" 300x395 320x24
 
 print ["window default:" win/font-size "italic?" win/italic?]
-print ["the new label took it:" note/font-size "italic?" note/italic?]
+print ["the new label took it:" txt/font-size "italic?" txt/italic?]
 print ["the first one did not: " label/font-size "italic?" label/italic?]
 
 ;; Put it back, so the rest of this script builds ordinary widgets.
@@ -365,7 +365,7 @@ print ["the image survives:" type? pic pic/size]
 ;; The handles stay usable after the window is gone. Releasing them is
 ;; optional - the recycler would do it too.
 foreach handle reduce [
-	canvas counter closer label name log note
+	canvas counter closer label name log txt
 	toggle box warm cool slow fast level meter picker
 ][	release handle ]
 release win
