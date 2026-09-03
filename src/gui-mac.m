@@ -145,6 +145,17 @@ static void Detach_Control(GUIWIDGET *wid);
 @end
 
 
+// Reports `change` while it is dragged. A progress bar needs no subclass -
+// it is an NSProgressIndicator, which nobody interacts with.
+@interface RebolGuiSlider : NSSlider
+{
+	GUIWIDGET *context;
+}
+- (void)setContext:(GUIWIDGET*)ctx;
+- (void)moved:(id)sender;
+@end
+
+
 // Paints itself straight from the image! series and reports its own mouse
 // events, which is what makes it usable as a canvas rather than a picture.
 @interface RebolGuiImageView : NSView
@@ -200,6 +211,23 @@ static void Detach_Control(GUIWIDGET *wid);
 - (void)controlTextDidChange:(NSNotification*)note       { [self queue:W_GUI_EVENT_CHANGE]; }
 - (void)controlTextDidBeginEditing:(NSNotification*)note { [self queue:W_GUI_EVENT_FOCUS]; }
 - (void)controlTextDidEndEditing:(NSNotification*)note   { [self queue:W_GUI_EVENT_UNFOCUS]; }
+
+@end
+
+
+@implementation RebolGuiSlider
+
+- (void)setContext:(GUIWIDGET*)ctx { context = ctx; }
+
+- (void)moved:(id)sender
+{
+	NSRect frame;
+	if (!context || !context->hob) return;
+	frame = [self frame];
+	Gui_Queue_Event(context->hob, W_GUI_EVENT_CHANGE,
+	                (REBINT)frame.origin.x, (REBINT)frame.origin.y,
+	                Modifier_Bits([NSEvent modifierFlags]));
+}
 
 @end
 
@@ -1050,6 +1078,86 @@ REBOOL Gui_Widget_Get_State(GUIWIDGET *wid)
 	@autoreleasepool {
 		if (!wid || !wid->handle) return FALSE;
 		return ([NSBUTTON_OF(wid) state] == NSControlStateValueOn) ? TRUE : FALSE;
+	}
+}
+
+
+REBOOL Gui_Create_Range_Control(GUIWIDGET *wid, GUIWIN *owner,
+                                REBINT x, REBINT y, REBINT w, REBINT h)
+{
+	@autoreleasepool {
+		NSView *content;
+		NSRect  rect = NSMakeRect((CGFloat)x, (CGFloat)y, (CGFloat)w, (CGFloat)h);
+
+		if (!wid || !owner || !owner->handle) return FALSE;
+		if (![NSThread isMainThread]) return FALSE;
+
+		content = [NSWINDOW_OF(owner) contentView];
+		if (!content) return FALSE;
+
+		if (wid->kind == W_GUI_WIDGET_SLIDER) {
+			RebolGuiSlider *slider = [[RebolGuiSlider alloc] initWithFrame:rect];
+			if (!slider) return FALSE;
+
+			[slider setMinValue:0.0];
+			[slider setMaxValue:1.0];
+			[slider setDoubleValue:0.0];
+			// Taller than wide means upright - the same rule the Windows
+			// backend applies, so a caller need not know either platform.
+			// A vertical NSSlider already has its minimum at the bottom.
+			if (h > w) [slider setVertical:YES];
+			// Reports while it is dragged, not only when it is let go.
+			[slider setContinuous:YES];
+
+			[slider setContext:wid];
+			[slider setTarget:slider];
+			[slider setAction:@selector(moved:)];
+
+			[content addSubview:slider];
+			wid->handle = (void*)slider;
+			return TRUE;
+		}
+
+		{
+			NSProgressIndicator *bar = [[NSProgressIndicator alloc] initWithFrame:rect];
+			if (!bar) return FALSE;
+
+			// Bar is the default style, and saying so explicitly would
+			// mean picking between two spellings of the constant which
+			// changed name across SDKs.
+			[bar setIndeterminate:NO];
+			[bar setMinValue:0.0];
+			[bar setMaxValue:1.0];
+			[bar setDoubleValue:0.0];
+
+			[content addSubview:bar];
+			wid->handle = (void*)bar;
+			return TRUE;
+		}
+	}
+}
+
+
+REBDEC Gui_Widget_Get_Value(GUIWIDGET *wid)
+{
+	@autoreleasepool {
+		if (!wid || !wid->handle) return 0.0;
+		if (wid->kind == W_GUI_WIDGET_SLIDER)
+			return (REBDEC)[(NSSlider*)wid->handle doubleValue];
+		return (REBDEC)[(NSProgressIndicator*)wid->handle doubleValue];
+	}
+}
+
+
+void Gui_Widget_Set_Value(GUIWIDGET *wid, REBDEC value)
+{
+	@autoreleasepool {
+		if (!wid || !wid->handle) return;
+		if (wid->kind == W_GUI_WIDGET_SLIDER) {
+			[(NSSlider*)wid->handle setDoubleValue:(double)value];
+		} else {
+			[(NSProgressIndicator*)wid->handle setDoubleValue:(double)value];
+		}
 	}
 }
 

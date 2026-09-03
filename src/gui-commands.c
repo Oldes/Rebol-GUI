@@ -293,6 +293,21 @@ static REBOOL Kind_Has_State(REBCNT kind)
 	     || kind == W_GUI_WIDGET_RADIO) ? TRUE : FALSE;
 }
 
+// ... and which sit somewhere between 0% and 100%.
+static REBOOL Kind_Has_Value(REBCNT kind)
+{
+	return (kind == W_GUI_WIDGET_SLIDER
+	     || kind == W_GUI_WIDGET_PROGRESS) ? TRUE : FALSE;
+}
+
+// An image is painted, not operated, and a progress bar takes no input at
+// all - neither has an enabled state worth reporting.
+static REBOOL Kind_Has_Enabled(REBCNT kind)
+{
+	return (kind != W_GUI_WIDGET_IMAGE
+	     && kind != W_GUI_WIDGET_PROGRESS) ? TRUE : FALSE;
+}
+
 static const char* Kind_Name(REBCNT kind)
 {
 	switch (kind) {
@@ -302,6 +317,8 @@ static const char* Kind_Name(REBCNT kind)
 	case W_GUI_WIDGET_AREA:  return "area";
 	case W_GUI_WIDGET_CHECK: return "check";
 	case W_GUI_WIDGET_RADIO: return "radio";
+	case W_GUI_WIDGET_SLIDER:   return "slider";
+	case W_GUI_WIDGET_PROGRESS: return "progress";
 	default:                 return "button";
 	}
 }
@@ -706,6 +723,68 @@ static int Add_Text_Control(RXIFRM *frm, REBCNT kind)
 	RETURN_HANDLE(hob);
 }
 
+/***********************************************************************
+**  add-slider / add-progress
+**      window [handle!] offset [pair!] size [pair!] /value val
+**
+**  Neither carries a label, so the arguments are one short of the rest.
+***********************************************************************/
+static int Add_Range_Control(RXIFRM *frm, REBCNT kind)
+{
+	REBHOB    *hob;
+	GUIWIDGET *wid;
+	GUIWIN    *win = Frm_Window(frm, 1);
+	REBINT     x, y, w, h;
+	REBDEC     value = 0.0;
+
+	if (!win || !win->handle) RETURN_ERROR(ERR_INVALID_HANDLE);
+
+	x = (REBINT)RXA_PAIR(frm, 2).x;
+	y = (REBINT)RXA_PAIR(frm, 2).y;
+	w = (REBINT)RXA_PAIR(frm, 3).x;
+	h = (REBINT)RXA_PAIR(frm, 3).y;
+	if (w <= 0 || h <= 0) RETURN_ERROR(ERR_BAD_SIZE);
+
+	if (RXA_REF(frm, 4)) { // /value
+		value = RXA_DEC64(frm, 5);
+		if (value < 0.0) value = 0.0;
+		if (value > 1.0) value = 1.0;
+	}
+
+	hob = RL_MAKE_HANDLE_CONTEXT(Handle_GuiWidget);
+	if (hob == NULL) RETURN_ERROR(ERR_NO_HANDLE);
+
+	wid = (GUIWIDGET*)hob->data;
+	wid->hob   = hob;
+	wid->kind  = kind;
+	wid->owner = win;
+
+	if (!Gui_Create_Range_Control(wid, win, x, y, w, h)) {
+		wid->owner = NULL;
+		RL_FREE_HANDLE_CONTEXT(hob);
+		RETURN_ERROR(ERR_NO_WIDGET);
+	}
+	Gui_Widget_Set_Value(wid, value);
+
+	wid->next = win->widgets;
+	win->widgets = wid;
+
+	hob->flags |= HANDLE_CONTEXT_LOCKED;
+
+	RETURN_HANDLE(hob);
+}
+
+COMMAND cmd_gui_add_slider(RXIFRM *frm, void *ctx)
+{
+	return Add_Range_Control(frm, W_GUI_WIDGET_SLIDER);
+}
+
+COMMAND cmd_gui_add_progress(RXIFRM *frm, void *ctx)
+{
+	return Add_Range_Control(frm, W_GUI_WIDGET_PROGRESS);
+}
+
+
 COMMAND cmd_gui_add_text(RXIFRM *frm, void *ctx)
 {
 	return Add_Text_Control(frm, W_GUI_WIDGET_TEXT);
@@ -956,6 +1035,14 @@ int GuiWidget_get_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 		arg->int64 = (i64)wid->group;
 		break;
 
+	case W_GUI_ARG_VALUE:
+		if (!Kind_Has_Value(wid->kind)) { *type = RXT_NONE; break; }
+		// Reported as a percent!, which is what a fraction of a range
+		// reads as in Rebol - `50%` rather than `0.5`.
+		*type = RXT_PERCENT;
+		arg->dec64 = (double)Gui_Widget_Get_Value(wid);
+		break;
+
 	case W_GUI_ARG_SIZE:
 		if (!Gui_Widget_Get_Box(wid, &x, &y, &w, &h)) { *type = RXT_NONE; break; }
 		arg->pair.x = (float)w;
@@ -976,7 +1063,7 @@ int GuiWidget_get_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 		break;
 
 	case W_GUI_ARG_ENABLEDQ:
-		if (wid->kind == W_GUI_WIDGET_IMAGE) { *type = RXT_NONE; break; }
+		if (!Kind_Has_Enabled(wid->kind)) { *type = RXT_NONE; break; }
 		*type = RXT_LOGIC;
 		arg->int32a = Gui_Widget_Get_Enabled(wid);
 		break;
@@ -1050,8 +1137,19 @@ int GuiWidget_set_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 		}
 		break;
 
+	case W_GUI_ARG_VALUE: {
+		REBDEC value;
+		if (!Kind_Has_Value(wid->kind)) return PE_BAD_SET;
+		// A percent! is a decimal! underneath, so both arrive the same way.
+		if (*type != RXT_PERCENT && *type != RXT_DECIMAL) return PE_BAD_SET_TYPE;
+		value = (REBDEC)arg->dec64;
+		if (value < 0.0) value = 0.0;
+		if (value > 1.0) value = 1.0;
+		Gui_Widget_Set_Value(wid, value);
+		break; }
+
 	case W_GUI_ARG_ENABLEDQ:
-		if (wid->kind == W_GUI_WIDGET_IMAGE) return PE_BAD_SET;
+		if (!Kind_Has_Enabled(wid->kind)) return PE_BAD_SET;
 		if (*type != RXT_LOGIC) return PE_BAD_SET_TYPE;
 		Gui_Widget_Set_Enabled(wid, arg->int32a ? TRUE : FALSE);
 		break;

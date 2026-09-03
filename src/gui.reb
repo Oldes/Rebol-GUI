@@ -9,7 +9,7 @@ REBOL [
 	Exports: [
 		open-window close-window show-window hide-window
 		add-button add-image add-text add-field add-area
-		add-check add-radio
+		add-check add-radio add-slider add-progress
 		remove-widget redraw
 		poll-events do-events event-flags
 	]
@@ -105,6 +105,8 @@ words: [
 		area            ;; several lines of editable text, with a scrollbar
 		check           ;; a checkbox, toggled on its own
 		radio           ;; one of a group; see `group` below
+		slider          ;; draggable, reports `change`
+		progress        ;; shows a value, takes no input
 	]
 ]
 
@@ -128,7 +130,8 @@ handles: [
 		size     pair!     pair!     "Size of the control"
 		offset   pair!     pair!     "Position inside the window's client area"
 		id       integer!  none      "Native control handle as an integer"
-		kind     word!     none      "What the control is: button, image, text, field, area, check or radio"
+		kind     word!     none      "What the control is: button, image, text, field, area, check, radio, slider or progress"
+		value    percent!  [percent! decimal!] "Position of a slider or a progress bar; none for other kinds"
 		state    logic!    logic!    "Whether a check or a radio is on; none for other kinds"
 		group    integer!  none      "Which radio group it belongs to; 0 for everything else"
 		enabled? logic!    logic!    "Whether the control responds to the user"
@@ -205,6 +208,20 @@ commands: [
 		offset [pair!]   "Position inside the client area"
 		size   [pair!]
 		/group id [integer!] {Radios sharing an id turn each other off (default: 0)}
+	]
+	add-slider: [
+		"Creates a slider inside a window and returns its handle"
+		window [handle!]
+		offset [pair!] "Position inside the client area"
+		size   [pair!] "Taller than wide makes it vertical"
+		/value val [percent! decimal!] "Initial position (default: 0%)"
+	]
+	add-progress: [
+		"Creates a progress bar inside a window and returns its handle"
+		window [handle!]
+		offset [pair!] "Position inside the client area"
+		size   [pair!]
+		/value val [percent! decimal!] "Initial position (default: 0%)"
 	]
 ]
 

@@ -17,6 +17,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <windowsx.h> // GET_X_LPARAM
+#include <commctrl.h> // trackbar and progress bar
 
 // Windows uses this macro name too, and we want Rebol's meaning of it.
 #undef IS_ERROR
@@ -41,6 +42,10 @@ static REBOOL Setting_Text = FALSE;
 
 #define WINDOW_STYLE   (WS_OVERLAPPEDWINDOW)
 #define WINDOW_EXSTYLE (0)
+
+// Trackbars and progress bars work in whole steps, so the 0.0 - 1.0 range
+// the extension speaks is carried as one part in RANGE_STEPS.
+#define RANGE_STEPS 1000
 
 #define HWND_OF(win)      ((HWND)((win)->handle))
 #define HWND_OF_WID(wid)  ((HWND)((wid)->handle))
@@ -291,6 +296,24 @@ static LRESULT CALLBACK Gui_Window_Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
 		return 0;
 		not_handled: break; }
 
+	// A trackbar reports through its parent, like the button family does -
+	// but on the scroll messages rather than WM_COMMAND. lParam is the
+	// control; a zero there is a real scrollbar, which we do not create.
+	case WM_HSCROLL:
+	case WM_VSCROLL: {
+		HWND child = (HWND)lp;
+		GUIWIDGET *wid;
+		REBINT x = 0, y = 0, w = 0, h = 0;
+
+		if (!child) break;
+
+		wid = (GUIWIDGET*)GetWindowLongPtrW(child, GWLP_USERDATA);
+		if (wid && wid->hob && wid->kind == W_GUI_WIDGET_SLIDER) {
+			Gui_Widget_Get_Box(wid, &x, &y, &w, &h);
+			Gui_Queue_Event(wid->hob, W_GUI_EVENT_CHANGE, x, y, Modifiers());
+		}
+		return 0; }
+
 	// Static labels paint themselves onto whatever the parent supplies;
 	// this is what keeps them on the same background WM_PAINT fills with.
 	case WM_CTLCOLORSTATIC:
@@ -483,8 +506,15 @@ typedef BOOL    (WINAPI *SETPROCESSDPIAWARE_T)(void);
 void Gui_Init_Platform(void)
 {
 	HMODULE shcore, user32;
+	INITCOMMONCONTROLSEX controls;
 
 	if (App_Instance == NULL) App_Instance = GetModuleHandleW(NULL);
+
+	// The trackbar and the progress bar live in comctl32 and their classes
+	// have to be registered before either can be created.
+	controls.dwSize = sizeof(controls);
+	controls.dwICC  = ICC_BAR_CLASSES | ICC_PROGRESS_CLASS | ICC_STANDARD_CLASSES;
+	InitCommonControlsEx(&controls);
 
 	shcore = LoadLibraryW(L"shcore.dll");
 	if (shcore) {
@@ -875,6 +905,95 @@ REBOOL Gui_Widget_Set_Box(GUIWIDGET *wid, REBINT x, REBINT y, REBINT w, REBINT h
 {
 	if (!wid || !wid->handle) return FALSE;
 	return MoveWindow(HWND_OF_WID(wid), x, y, w, h, TRUE) ? TRUE : FALSE;
+}
+
+
+REBOOL Gui_Create_Range_Control(GUIWIDGET *wid, GUIWIN *owner,
+                                REBINT x, REBINT y, REBINT w, REBINT h)
+{
+	HWND  hwnd;
+	const WCHAR *class_name;
+	DWORD style = WS_CHILD | WS_VISIBLE;
+
+	if (!wid || !owner || !owner->handle) return FALSE;
+
+	if (wid->kind == W_GUI_WIDGET_SLIDER) {
+		class_name = TRACKBAR_CLASSW;
+		style |= WS_TABSTOP | TBS_NOTICKS;
+		// Taller than wide means upright - the same rule the old View
+		// widgets used, and one less argument to pass.
+		if (h > w) style |= TBS_VERT;
+	} else {
+		class_name = PROGRESS_CLASSW;
+	}
+
+	hwnd = CreateWindowExW(
+		0, class_name, L"", style,
+		x, y, w, h,
+		HWND_OF(owner),
+		NULL,
+		App_Instance, NULL
+	);
+	if (!hwnd) return FALSE;
+
+	SetWindowLongPtrW(hwnd, GWLP_USERDATA, (LONG_PTR)wid);
+
+	if (wid->kind == W_GUI_WIDGET_SLIDER) {
+		SendMessageW(hwnd, TBM_SETRANGE, (WPARAM)TRUE,
+		             (LPARAM)MAKELONG(0, RANGE_STEPS));
+		SendMessageW(hwnd, TBM_SETPAGESIZE, 0, (LPARAM)(RANGE_STEPS / 10));
+	} else {
+		SendMessageW(hwnd, PBM_SETRANGE32, 0, (LPARAM)RANGE_STEPS);
+	}
+
+	wid->handle = (void*)hwnd;
+	return TRUE;
+}
+
+
+// A vertical trackbar puts position 0 at the TOP, which is upside down
+// compared with what a caller means by 0%. Both directions are flipped
+// here so that the extension's 0.0 is always the bottom.
+static REBOOL Is_Vertical_Slider(GUIWIDGET *wid)
+{
+	return (wid->kind == W_GUI_WIDGET_SLIDER
+	     && (GetWindowLongPtrW(HWND_OF_WID(wid), GWL_STYLE) & TBS_VERT))
+		? TRUE : FALSE;
+}
+
+
+REBDEC Gui_Widget_Get_Value(GUIWIDGET *wid)
+{
+	LRESULT pos;
+
+	if (!wid || !wid->handle) return 0.0;
+
+	if (wid->kind == W_GUI_WIDGET_SLIDER) {
+		pos = SendMessageW(HWND_OF_WID(wid), TBM_GETPOS, 0, 0);
+		if (Is_Vertical_Slider(wid)) pos = RANGE_STEPS - pos;
+	} else {
+		pos = SendMessageW(HWND_OF_WID(wid), PBM_GETPOS, 0, 0);
+	}
+	return (REBDEC)pos / (REBDEC)RANGE_STEPS;
+}
+
+
+void Gui_Widget_Set_Value(GUIWIDGET *wid, REBDEC value)
+{
+	LRESULT pos;
+
+	if (!wid || !wid->handle) return;
+
+	pos = (LRESULT)(value * RANGE_STEPS + 0.5);
+	if (pos < 0) pos = 0;
+	if (pos > RANGE_STEPS) pos = RANGE_STEPS;
+
+	if (wid->kind == W_GUI_WIDGET_SLIDER) {
+		if (Is_Vertical_Slider(wid)) pos = RANGE_STEPS - pos;
+		SendMessageW(HWND_OF_WID(wid), TBM_SETPOS, (WPARAM)TRUE, (LPARAM)pos);
+	} else {
+		SendMessageW(HWND_OF_WID(wid), PBM_SETPOS, (WPARAM)pos, 0);
+	}
 }
 
 

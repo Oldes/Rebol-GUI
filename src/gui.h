@@ -120,6 +120,18 @@ REBOOL  Gui_Create_Button_Control(GUIWIDGET *wid, GUIWIN *owner,
 REBOOL  Gui_Widget_Get_State(GUIWIDGET *wid);
 void    Gui_Widget_Set_State(GUIWIDGET *wid, REBOOL on);
 
+// The slider and the progress bar. Neither carries a label, so no text is
+// passed in; `wid->kind` picks between them, and a box taller than it is
+// wide makes a slider vertical.
+REBOOL  Gui_Create_Range_Control(GUIWIDGET *wid, GUIWIN *owner,
+                                 REBINT x, REBINT y, REBINT w, REBINT h);
+
+// Position as a fraction from 0.0 to 1.0. Both backends normalise it so
+// that a vertical slider reads 0.0 at the BOTTOM, whatever the platform's
+// own idea of which end is the origin.
+REBDEC  Gui_Widget_Get_Value(GUIWIDGET *wid);
+void    Gui_Widget_Set_Value(GUIWIDGET *wid, REBDEC value);
+
 // No pixels are passed in: the image lives in the handle's series and is
 // read again at every paint, so that drawing into it is all it takes to
 // change what is on screen.
