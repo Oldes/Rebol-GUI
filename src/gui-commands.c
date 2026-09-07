@@ -14,8 +14,11 @@
 #include "gen-gui.h"
 #include "gui.h"
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
+// MAKE_MEM / FREE_MEM are malloc and free behind a macro, and nothing in
+// rebol-extension.h declares either - a window's default font name is the
+// one thing this file allocates for itself.
+#include <stdlib.h>
 
 static const REBYTE* ERR_INVALID_HANDLE = (const REBYTE*)"Invalid GUI window handle!";
 static const REBYTE* ERR_NO_HANDLE      = (const REBYTE*)"Failed to create the window handle!";
@@ -23,6 +26,11 @@ static const REBYTE* ERR_NO_WINDOW      = (const REBYTE*)"Failed to create the w
 static const REBYTE* ERR_BAD_SIZE       = (const REBYTE*)"Size must be positive!";
 static const REBYTE* ERR_NO_WIDGET      = (const REBYTE*)"Failed to create the widget!";
 static const REBYTE* ERR_BAD_IMAGE      = (const REBYTE*)"Empty or invalid image!";
+
+// The menu dialect's separator. Not in a `words:` list because to-c-name
+// would spell it W_GUI_MENU____; it is one symbol, so it is mapped by name
+// in Gui_Init() instead. See Block_To_Menu().
+REBCNT Word_Separator = 0;
 
 
 //== event queue ==============================================================
@@ -406,6 +414,223 @@ static void Block_To_Items(GUIWIDGET *wid, REBSER *blk)
 }
 
 
+//== the menu dialect =========================================================
+//
+//   win/menu: [
+//       "File" [
+//           "New"     new  #"N"          ;; Ctrl+N / Cmd+N
+//           "Save As" save [shift #"S"]  ;; ... with extra modifiers
+//           ---                          ;; a dividing line
+//           "Recent" ["Nothing yet" nil] ;; a block after a label: a submenu
+//       ]
+//   ]
+//
+// One item is a LABEL followed by a WORD, which is the id that comes back
+// in the event - not the label, so that renaming "Save" does not break a
+// handler. A label followed by a BLOCK is a submenu instead.
+//
+// The whole thing is parsed here and pushed at the backend through the
+// Gui_Menu_* calls, so neither backend ever sees a Rebol value, and the
+// dialect is defined exactly once.
+
+// Item ids are 1-based indices into these two arrays, which grow together.
+static REBOOL Menu_Add_Id(GUIWIN *win, REBCNT word)
+{
+	REBCNT  n = win->menu_count;
+	REBCNT *ids;
+	REBYTE *on;
+
+	// Powers of two from 16: a menu bar is small, and this is built once.
+	if ((n & (n - 1)) == 0 && n >= 16) {
+		// n is a power of two and the arrays are exactly full
+		ids = (REBCNT*)MAKE_MEM(sizeof(REBCNT) * n * 2);
+		on  = (REBYTE*)MAKE_MEM(n * 2);
+		if (!ids || !on) {
+			if (ids) FREE_MEM(ids);
+			if (on)  FREE_MEM(on);
+			return FALSE;
+		}
+		COPY_MEM(ids, win->menu_ids, sizeof(REBCNT) * n);
+		COPY_MEM(on,  win->menu_on,  n);
+		FREE_MEM(win->menu_ids);
+		FREE_MEM(win->menu_on);
+		win->menu_ids = ids;
+		win->menu_on  = on;
+	} else if (n == 0) {
+		win->menu_ids = (REBCNT*)MAKE_MEM(sizeof(REBCNT) * 16);
+		win->menu_on  = (REBYTE*)MAKE_MEM(16);
+		if (!win->menu_ids || !win->menu_on) return FALSE;
+	}
+
+	win->menu_ids[n] = word;
+	win->menu_on[n]  = 1; // every item starts selectable
+	win->menu_count  = n + 1;
+	return TRUE;
+}
+
+static void Menu_Free_Ids(GUIWIN *win)
+{
+	if (win->menu_ids) FREE_MEM(win->menu_ids);
+	if (win->menu_on)  FREE_MEM(win->menu_on);
+	win->menu_ids   = NULL;
+	win->menu_on    = NULL;
+	win->menu_count = 0;
+}
+
+// A shortcut is either a bare char! - the platform's own menu modifier plus
+// that key - or a block of modifier words ending in one.
+static void Menu_Shortcut(REBCNT type, RXIARG *val, REBCNT *key, REBCNT *mods)
+{
+	*key  = 0;
+	*mods = 0;
+
+	if (type == RXT_CHAR) {
+		*key = (REBCNT)val->int32a;
+		return;
+	}
+	if (type != RXT_BLOCK) return;
+
+	{	REBSER *blk = (REBSER*)val->series;
+		REBCNT  n;
+		RXIARG  item;
+		REBCNT  t;
+
+		for (n = val->index; (t = RL_GET_VALUE(blk, n, &item)) != 0; n++) {
+			if (t == RXT_END) break;
+			if (t == RXT_CHAR) { *key = (REBCNT)item.int32a; continue; }
+			if (t != RXT_WORD) continue;
+			switch (RL_FIND_WORD(Gui_menu_words, (REBCNT)item.int32a)) {
+			case W_GUI_MENU_SHIFT:   *mods |= GUI_FLAG_SHIFT;   break;
+			case W_GUI_MENU_CONTROL: *mods |= GUI_FLAG_CONTROL; break;
+			case W_GUI_MENU_ALT:     *mods |= GUI_FLAG_ALT;     break;
+			}
+		}
+	}
+}
+
+/***********************************************************************
+**  Walks one level of the dialect, building into `parent` - which is
+**  NULL for the menu bar itself and a backend's popup handle below it.
+**
+**  Recursive, because a submenu is the same grammar again. The depth is
+**  whatever the caller wrote, and a block cannot contain itself, so
+**  there is nothing to guard against.
+***********************************************************************/
+static void Block_To_Menu(GUIWIN *win, REBSER *blk, REBCNT index, void *parent)
+{
+	REBCNT n;
+	REBCNT type;
+	RXIARG val;
+
+	if (!blk) return;
+
+	for (n = index; (type = RL_GET_VALUE(blk, n, &val)) != 0; n++) {
+		REBYTE *label = NULL;
+		int     label_len;
+		REBCNT  next_type;
+		RXIARG  next;
+
+		if (type == RXT_END) break;
+
+		// `---` on its own
+		if (type == RXT_WORD && (REBCNT)val.int32a == Word_Separator) {
+			Gui_Menu_Add_Separator(win, parent);
+			continue;
+		}
+
+		// Everything else starts with a label, and anything which is not
+		// one is skipped rather than refused: a menu is a description, and
+		// a stray value in it should not cost the caller the whole bar.
+		if (type != RXT_STRING) continue;
+		label_len = RL_GET_UTF8_STRING((REBSER*)val.series, val.index,
+		                               (void**)&label);
+		if (label_len < 0) continue;
+
+		next_type = RL_GET_VALUE(blk, n + 1, &next);
+
+		// label + block -> a submenu
+		if (next_type == RXT_BLOCK) {
+			void *popup = Gui_Menu_Add_Popup(win, parent, label,
+			                                 (REBCNT)label_len);
+			if (popup) {
+				Block_To_Menu(win, (REBSER*)next.series, next.index, popup);
+			}
+			n++;
+			continue;
+		}
+
+		// label + word -> an item, optionally followed by a shortcut
+		if (next_type == RXT_WORD) {
+			REBCNT key = 0, mods = 0;
+			RXIARG after;
+			REBCNT after_type;
+
+			if (!Menu_Add_Id(win, (REBCNT)next.int32a)) return;
+
+			after_type = RL_GET_VALUE(blk, n + 2, &after);
+			if (after_type == RXT_CHAR || after_type == RXT_BLOCK) {
+				Menu_Shortcut(after_type, &after, &key, &mods);
+				n++;
+			}
+			Gui_Menu_Add_Item(win, parent, label, (REBCNT)label_len,
+			                  win->menu_count, key, mods);
+			n++;
+			continue;
+		}
+
+		// A label with nothing after it is a dead item: it is shown, and
+		// it does nothing, which is more informative than dropping it.
+		if (Menu_Add_Id(win, 0)) {
+			Gui_Menu_Add_Item(win, parent, label, (REBCNT)label_len,
+			                  win->menu_count, 0, 0);
+		}
+	}
+}
+
+
+// Rebuilds the whole bar from a block, or takes it away when blk is NULL.
+static REBOOL Set_Menu(GUIWIN *win, REBSER *blk, REBCNT index)
+{
+	Gui_Menu_Free(win);
+	Menu_Free_Ids(win);
+	if (win->hob) win->hob->series = NULL;
+
+	if (!blk) return TRUE;
+
+	if (!Gui_Menu_Begin(win)) return FALSE;
+	Block_To_Menu(win, blk, index, NULL);
+	if (!Gui_Menu_End(win)) {
+		Gui_Menu_Free(win);
+		Menu_Free_Ids(win);
+		return FALSE;
+	}
+
+	// Kept so that `win/menu` can answer with the very block it was given.
+	// hob->series is the one slot the GC marks, and a window - unlike an
+	// image widget - has no other use for it.
+	if (win->hob) win->hob->series = blk;
+	return TRUE;
+}
+
+
+/***********************************************************************
+**  Called by a backend when an item is picked.
+**
+**  The native id is only ever an index into this window's table; the
+**  WORD is what reaches Rebol, which is why renaming a label cannot
+**  break a handler.
+***********************************************************************/
+void Gui_Menu_Picked(GUIWIN *win, REBCNT id)
+{
+	if (!win || !win->hob) return;
+	if (id == 0 || id > win->menu_count) return;
+	if (win->menu_ids[id - 1] == 0) return; // a label with no id of its own
+
+	Gui_Queue_Event(win->hob, W_GUI_EVENT_MENU, 0, 0,
+	                (REBINT)win->menu_ids[id - 1]);
+}
+
+
 // An image is painted, not operated, and a progress bar takes no input at
 // all - neither has an enabled state worth reporting.
 static REBOOL Kind_Has_Enabled(REBCNT kind)
@@ -494,7 +719,15 @@ static GUIWIN* Frm_Parent(RXIFRM *frm, REBCNT n, GUIWIDGET **panel)
 // apart as kinds are added.
 #define Kind_Has_Font(kind) Kind_Has_Text(kind)
 
-static void Attach_Widget(GUIWIDGET *wid, GUIWIN *win)
+/***********************************************************************
+**  Links a new widget to its window, and finishes it off.
+**
+**  `w` and `h` are what the caller ASKED for; a zero in either means
+**  "work it out", and this is where that is worked out - after the
+**  font, because the answer depends on it, and before the first draw,
+**  so nothing is ever seen at the placeholder size.
+***********************************************************************/
+static void Attach_Widget(GUIWIDGET *wid, GUIWIN *win, REBINT w, REBINT h)
 {
 	wid->next = win->widgets;
 	win->widgets = wid;
@@ -511,6 +744,17 @@ static void Attach_Widget(GUIWIDGET *wid, GUIWIN *win)
 			(const REBYTE*)win->font.name,
 			win->font.name ? (REBCNT)strlen(win->font.name) : 0,
 			win->font.size, win->font.style);
+	}
+
+	if (w <= 0 || h <= 0) {
+		REBINT nw = 0, nh = 0;
+		REBINT x, y, cw, ch;
+		if (Gui_Widget_Natural_Size(wid, &nw, &nh)
+		    && Gui_Widget_Get_Box(wid, &x, &y, &cw, &ch)) {
+			if (w <= 0 && nw > 0) cw = nw;
+			if (h <= 0 && nh > 0) ch = nh;
+			Gui_Widget_Set_Box(wid, x, y, cw, ch);
+		}
 	}
 
 	Gui_Widget_Redraw(wid);
@@ -643,6 +887,7 @@ COMMAND cmd_gui_open_window(RXIFRM *frm, void *ctx)
 	REBINT  h = (REBINT)RXA_PAIR(frm, 1).y;
 	REBYTE *title = NULL;
 	REBCNT  title_len = 0;
+	REBCNT  flags = 0;
 
 	if (w <= 0 || h <= 0) RETURN_ERROR(ERR_BAD_SIZE);
 
@@ -654,6 +899,8 @@ COMMAND cmd_gui_open_window(RXIFRM *frm, void *ctx)
 		x = (REBINT)RXA_PAIR(frm, 5).x;
 		y = (REBINT)RXA_PAIR(frm, 5).y;
 	}
+	if (RXA_REF(frm, 7)) flags |= GUI_WIN_FIXED;      // /fixed
+	if (RXA_REF(frm, 8)) flags |= GUI_WIN_BORDERLESS; // /borderless
 
 	hob = RL_MAKE_HANDLE_CONTEXT(Handle_GuiWindow);
 	if (hob == NULL) RETURN_ERROR(ERR_NO_HANDLE);
@@ -661,7 +908,7 @@ COMMAND cmd_gui_open_window(RXIFRM *frm, void *ctx)
 	win = (GUIWIN*)hob->data;
 	win->hob = hob; // the window procedure tags its events with it
 
-	if (!Gui_Open_Window(win, x, y, w, h, title, title_len)) {
+	if (!Gui_Open_Window(win, x, y, w, h, title, title_len, flags)) {
 		RL_FREE_HANDLE_CONTEXT(hob);
 		RETURN_ERROR(ERR_NO_WINDOW);
 	}
@@ -734,6 +981,29 @@ COMMAND cmd_gui_poll_events(RXIFRM *frm, void *ctx)
 
 	Gui_Pump();
 
+	/*******************************************************************
+	**  /wait sleeps ON THE OS QUEUE rather than on a clock, and only
+	**  when the pump above produced nothing. A loop which sleeps a
+	**  fixed interval and then drains is late for everything by up to
+	**  that interval; this one is woken by the message itself.
+	**
+	**  It matters most for a themed Windows control, whose hover and
+	**  check animations run on timer messages: served in bursts they
+	**  stutter, which reads as the whole control being slow to respond.
+	**  The timeout is still an upper bound, so the caller keeps control
+	**  of how long the interpreter can sit here.
+	*******************************************************************/
+	if (RXA_REF(frm, 1) && QUEUE_COUNT() == 0) {
+		REBDEC secs = (RXA_TYPE(frm, 2) == RXT_INTEGER)
+			? (REBDEC)RXA_INT64(frm, 2)
+			: (REBDEC)RXA_DEC64(frm, 2);
+		if (secs > 0) {
+			if (secs > 60.0) secs = 60.0; // never sit here indefinitely
+			Gui_Wait((REBINT)(secs * 1000.0 + 0.5));
+			Gui_Pump();
+		}
+	}
+
 	if (Event_Dropped) {
 		printf("GUI: dropped %u events (queue full)\n", Event_Dropped);
 		Event_Dropped = 0;
@@ -766,10 +1036,18 @@ COMMAND cmd_gui_poll_events(RXIFRM *frm, void *ctx)
 		val.pair.y = (float)evt->y;
 		RL_SET_VALUE(blk, i + 2, val, RXT_PAIR);
 
-		// 4. modifier bits, or the wheel delta in lines
+		// 4. modifier bits, or the wheel delta in lines - except for a
+		//    `menu` event, where the slot carries the item's WORD. It is
+		//    the one slot with no fixed type, and a word is what makes a
+		//    menu handler a `switch` rather than a table of numbers.
 		CLEARS(&val);
-		val.int64 = (i64)evt->value;
-		RL_SET_VALUE(blk, i + 3, val, RXT_INTEGER);
+		if (evt->type == W_GUI_EVENT_MENU) {
+			val.int32a = (i32)evt->value;
+			RL_SET_VALUE(blk, i + 3, val, RXT_WORD);
+		} else {
+			val.int64 = (i64)evt->value;
+			RL_SET_VALUE(blk, i + 3, val, RXT_INTEGER);
+		}
 	}
 
 	RL_PROTECT_GC(blk, 0);
@@ -799,7 +1077,7 @@ static int Add_Button_Control(RXIFRM *frm, REBCNT kind)
 	GUIWIN    *win = Frm_Parent(frm, 1, &panel);
 	REBYTE    *text = NULL;
 	REBCNT     text_len = 0;
-	REBINT     x, y, w, h;
+	REBINT     x, y, w, h, req_w, req_h;
 	int        len;
 
 	if (!win || !win->handle) RETURN_ERROR(ERR_INVALID_HANDLE);
@@ -811,7 +1089,15 @@ static int Add_Button_Control(RXIFRM *frm, REBCNT kind)
 	y = (REBINT)RXA_PAIR(frm, 3).y;
 	w = (REBINT)RXA_PAIR(frm, 4).x;
 	h = (REBINT)RXA_PAIR(frm, 4).y;
-	if (w <= 0 || h <= 0) RETURN_ERROR(ERR_BAD_SIZE);
+	if (w < 0 || h < 0) RETURN_ERROR(ERR_BAD_SIZE);
+
+	// A zero axis asks for the natural size. It cannot be measured before
+	// the control exists and has its font, so the control is created at a
+	// placeholder and Attach_Widget() resizes it - which is also why the
+	// REQUESTED size is what gets passed there.
+	req_w = w; req_h = h;
+	if (w <= 0) w = 1;
+	if (h <= 0) h = 1;
 
 	hob = RL_MAKE_HANDLE_CONTEXT(Handle_GuiWidget);
 	if (hob == NULL) RETURN_ERROR(ERR_NO_HANDLE);
@@ -836,7 +1122,7 @@ static int Add_Button_Control(RXIFRM *frm, REBCNT kind)
 
 	// Linked here rather than by the backend, so that the list has exactly
 	// one owner and both platforms behave the same.
-	Attach_Widget(wid, win);
+	Attach_Widget(wid, win, req_w, req_h);
 
 	RETURN_HANDLE(hob);
 }
@@ -910,7 +1196,7 @@ COMMAND cmd_gui_add_image(RXIFRM *frm, void *ctx)
 		RETURN_ERROR(ERR_NO_WIDGET);
 	}
 
-	Attach_Widget(wid, win);
+	Attach_Widget(wid, win, w, h);
 
 	RETURN_HANDLE(hob);
 }
@@ -974,7 +1260,7 @@ COMMAND cmd_gui_add_panel(RXIFRM *frm, void *ctx)
 		RETURN_ERROR(ERR_NO_WIDGET);
 	}
 
-	Attach_Widget(wid, win);
+	Attach_Widget(wid, win, w, h);
 
 	RETURN_HANDLE(hob);
 }
@@ -1012,7 +1298,7 @@ static int Add_Text_Control(RXIFRM *frm, REBCNT kind)
 	GUIWIN    *win = Frm_Parent(frm, 1, &panel);
 	REBYTE    *text = NULL;
 	REBCNT     text_len = 0;
-	REBINT     x, y, w, h;
+	REBINT     x, y, w, h, req_w, req_h;
 	int        len;
 
 	if (!win || !win->handle) RETURN_ERROR(ERR_INVALID_HANDLE);
@@ -1024,7 +1310,12 @@ static int Add_Text_Control(RXIFRM *frm, REBCNT kind)
 	y = (REBINT)RXA_PAIR(frm, 3).y;
 	w = (REBINT)RXA_PAIR(frm, 4).x;
 	h = (REBINT)RXA_PAIR(frm, 4).y;
-	if (w <= 0 || h <= 0) RETURN_ERROR(ERR_BAD_SIZE);
+	if (w < 0 || h < 0) RETURN_ERROR(ERR_BAD_SIZE);
+
+	// A zero axis asks for the natural size - see Add_Button_Control.
+	req_w = w; req_h = h;
+	if (w <= 0) w = 1;
+	if (h <= 0) h = 1;
 
 	hob = RL_MAKE_HANDLE_CONTEXT(Handle_GuiWidget);
 	if (hob == NULL) RETURN_ERROR(ERR_NO_HANDLE);
@@ -1043,7 +1334,7 @@ static int Add_Text_Control(RXIFRM *frm, REBCNT kind)
 		RETURN_ERROR(ERR_NO_WIDGET);
 	}
 
-	Attach_Widget(wid, win);
+	Attach_Widget(wid, win, req_w, req_h);
 
 	RETURN_HANDLE(hob);
 }
@@ -1095,7 +1386,7 @@ static int Add_Range_Control(RXIFRM *frm, REBCNT kind)
 	}
 	Gui_Widget_Set_Value(wid, value);
 
-	Attach_Widget(wid, win);
+	Attach_Widget(wid, win, w, h);
 
 	RETURN_HANDLE(hob);
 }
@@ -1110,7 +1401,7 @@ COMMAND cmd_gui_add_drop_down(RXIFRM *frm, void *ctx)
 	GUIWIDGET *wid;
 	GUIWIDGET *panel = NULL;
 	GUIWIN    *win = Frm_Parent(frm, 1, &panel);
-	REBINT     x, y, w, h;
+	REBINT     x, y, w, h, req_w, req_h;
 
 	if (!win || !win->handle) RETURN_ERROR(ERR_INVALID_HANDLE);
 
@@ -1118,7 +1409,12 @@ COMMAND cmd_gui_add_drop_down(RXIFRM *frm, void *ctx)
 	y = (REBINT)RXA_PAIR(frm, 3).y;
 	w = (REBINT)RXA_PAIR(frm, 4).x;
 	h = (REBINT)RXA_PAIR(frm, 4).y;
-	if (w <= 0 || h <= 0) RETURN_ERROR(ERR_BAD_SIZE);
+	if (w < 0 || h < 0) RETURN_ERROR(ERR_BAD_SIZE);
+
+	// A zero axis asks for the natural size - see Add_Button_Control.
+	req_w = w; req_h = h;
+	if (w <= 0) w = 1;
+	if (h <= 0) h = 1;
 
 	hob = RL_MAKE_HANDLE_CONTEXT(Handle_GuiWidget);
 	if (hob == NULL) RETURN_ERROR(ERR_NO_HANDLE);
@@ -1142,7 +1438,7 @@ COMMAND cmd_gui_add_drop_down(RXIFRM *frm, void *ctx)
 	// is a normal thing to want.
 	Gui_Widget_Set_Index(wid, RXA_REF(frm, 5) ? (REBINT)RXA_INT32(frm, 6) - 1 : -1);
 
-	Attach_Widget(wid, win);
+	Attach_Widget(wid, win, req_w, req_h);
 
 	RETURN_HANDLE(hob);
 }
@@ -1216,9 +1512,14 @@ int GuiWindow_free(void *hndl)
 	if (win->handle) Gui_Close_Window(win);
 
 	debug_print("releasing GUI window handle: %p\n", (void*)win);
-	// The default font's family name is plain malloc'd memory owned by the
-	// window - the GC knows nothing about it, so this is where it goes.
+	// The default font's family name and the menu's word table are plain
+	// malloc'd memory owned by the window - the GC knows nothing about
+	// either, so this is where they go. The menu BLOCK is in hob->series
+	// and needs nothing: dropping the reference is enough.
 	Font_Free(&win->font);
+	Gui_Menu_Free(win);
+	Menu_Free_Ids(win);
+	hob->series = NULL;
 	CLEARS(win);
 	UNMARK_HOB(hob);
 	return 0;
@@ -1233,7 +1534,13 @@ int GuiWindow_get_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 	word = RL_FIND_WORD(Gui_arg_words, word);
 
 	// A closed window still answers - with none, rather than an error.
-	if (!win->handle && word != W_GUI_ARG_OPENQ && word != W_GUI_ARG_ID) {
+	//
+	// `word != 0` first: RL_FIND_WORD answers 0 for a word this extension
+	// does not know, and PD_Handle only supplies `type` for a path this
+	// callback REFUSED. Answering none here would take `closed/type` with
+	// it, and a handle's type is true whether or not the window is gone.
+	if (word != 0 && !win->handle
+	    && word != W_GUI_ARG_OPENQ && word != W_GUI_ARG_ID) {
 		*type = RXT_NONE;
 		return PE_USE;
 	}
@@ -1271,6 +1578,23 @@ int GuiWindow_get_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 		arg->int32a = (win->handle != NULL);
 		break;
 
+	// Sizes are logical units everywhere, so this is only needed to make
+	// an IMAGE land on device pixels one for one - see the README.
+	case W_GUI_ARG_SCALE:
+		*type = RXT_DECIMAL;
+		arg->dec64 = (double)Gui_Get_Scale(win);
+		break;
+
+	case W_GUI_ARG_RESIZABLEQ:
+		*type = RXT_LOGIC;
+		arg->int32a = Gui_Get_Resizable(win) ? 1 : 0;
+		break;
+
+	case W_GUI_ARG_BORDERQ:
+		*type = RXT_LOGIC;
+		arg->int32a = Gui_Get_Border(win) ? 1 : 0;
+		break;
+
 	/*******************************************************************
 	**  What the NEXT widget will be created with - not a description of
 	**  anything currently on screen. Unlike a widget's font, which is
@@ -1301,6 +1625,44 @@ int GuiWindow_get_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 		*type = RXT_LOGIC;
 		arg->int32a = ((win->font.style & GUI_FONT_ITALIC) != 0);
 		break;
+
+	// The very block which was assigned, kept alive in hob->series.
+	case W_GUI_ARG_MENU:
+		if (!hob->series) { *type = RXT_NONE; break; }
+		arg->series = hob->series;
+		arg->index  = 0;
+		*type = RXT_BLOCK;
+		break;
+
+	/*******************************************************************
+	**  Every item's word and whether it is selectable, as pairs. It
+	**  reports ALL of them, while setting merges - so reading is a
+	**  picture of the whole bar and writing is a change to part of it.
+	*******************************************************************/
+	case W_GUI_ARG_MENU_ENABLEDQ: {
+		REBSER *blk;
+		REBCNT  n, out = 0;
+		RXIARG  val;
+
+		blk = (REBSER*)RL_MAKE_BLOCK(win->menu_count * 2);
+		if (!blk) { *type = RXT_NONE; break; }
+		RL_PROTECT_GC(blk, 1);
+
+		for (n = 0; n < win->menu_count; n++) {
+			if (win->menu_ids[n] == 0) continue; // a label with no id
+			CLEARS(&val);
+			val.int32a = (i32)win->menu_ids[n];
+			RL_SET_VALUE(blk, out++, val, RXT_WORD);
+			CLEARS(&val);
+			val.int32a = win->menu_on[n] ? 1 : 0;
+			RL_SET_VALUE(blk, out++, val, RXT_LOGIC);
+		}
+
+		RL_PROTECT_GC(blk, 0);
+		arg->series = blk;
+		arg->index  = 0;
+		*type = RXT_BLOCK;
+		break; }
 
 	default:
 		return PE_BAD_SELECT;
@@ -1376,6 +1738,65 @@ int GuiWindow_set_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 		else             win->font.style &= ~(REBCNT)GUI_FONT_ITALIC;
 		break;
 
+	case W_GUI_ARG_RESIZABLEQ:
+		if (*type != RXT_LOGIC) return PE_BAD_SET_TYPE;
+		Gui_Set_Resizable(win, arg->int32a ? TRUE : FALSE);
+		break;
+
+	// Taking the border off takes the title bar with it, so the window
+	// stops reporting `close` and can only be moved by `offset`.
+	case W_GUI_ARG_BORDERQ:
+		if (*type != RXT_LOGIC) return PE_BAD_SET_TYPE;
+		Gui_Set_Border(win, arg->int32a ? TRUE : FALSE);
+		break;
+
+	case W_GUI_ARG_MENU:
+		// A menu is replaced whole, never edited in place: the block is
+		// the description, and rebuilding from it is what keeps the two
+		// from disagreeing. `none` takes the bar off.
+		if (*type == RXT_NONE) {
+			if (!Set_Menu(win, NULL, 0)) return PE_BAD_SET;
+		} else if (*type == RXT_BLOCK) {
+			if (!Set_Menu(win, (REBSER*)arg->series, arg->index))
+				return PE_BAD_SET;
+		} else {
+			return PE_BAD_SET_TYPE;
+		}
+		break;
+
+	/*******************************************************************
+	**  Greying items out, as word/logic pairs. Only the words listed
+	**  change - anything left out keeps whatever it had, so this is a
+	**  small adjustment rather than a redeclaration of the menu.
+	*******************************************************************/
+	case W_GUI_ARG_MENU_ENABLEDQ: {
+		REBSER *blk;
+		REBCNT  n, t;
+		RXIARG  item;
+		REBCNT  word = 0;
+
+		if (*type != RXT_BLOCK) return PE_BAD_SET_TYPE;
+		blk = (REBSER*)arg->series;
+
+		for (n = arg->index; (t = RL_GET_VALUE(blk, n, &item)) != 0; n++) {
+			if (t == RXT_END) break;
+			if (t == RXT_WORD) { word = (REBCNT)item.int32a; continue; }
+			if (!word) continue;
+			if (t == RXT_LOGIC || t == RXT_NONE) {
+				REBOOL on = (t == RXT_LOGIC && item.int32a) ? TRUE : FALSE;
+				REBCNT i;
+				// Every item with that word, so one word used twice in a
+				// menu turns both on or both off.
+				for (i = 0; i < win->menu_count; i++) {
+					if (win->menu_ids[i] != word) continue;
+					win->menu_on[i] = on ? 1 : 0;
+					Gui_Menu_Enable(win, i + 1, on);
+				}
+			}
+			word = 0;
+		}
+		break; }
+
 	default:
 		return PE_BAD_SET;
 	}
@@ -1434,8 +1855,10 @@ int GuiWidget_get_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 	word = RL_FIND_WORD(Gui_arg_words, word);
 
 	// A widget whose window has gone answers with none, like a closed
-	// window does - except for `id`, which reports the null it now holds.
-	if (!wid->handle && word != W_GUI_ARG_ID) {
+	// window does - except for `id`, which reports the null it now holds,
+	// and for a word this extension does not know at all (word 0), which
+	// has to be refused so that PD_Handle can still answer `type`.
+	if (word != 0 && !wid->handle && word != W_GUI_ARG_ID) {
 		*type = RXT_NONE;
 		return PE_USE;
 	}

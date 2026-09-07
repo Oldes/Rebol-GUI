@@ -16,7 +16,8 @@ being the intended one), and `redraw` it.
 ## What it is not (yet)
 
 - no DRAW dialect, no compositor - just the image widget described below
-- no keyboard events and no menus
+- no keyboard events, beyond menu shortcuts
+- no checkable menu items, and no popup (context) menus
 - eleven native controls so far: button, image, text, field, area, check,
   radio, slider, progress, drop-down, panel
 - no `system/ports/event` integration - see below
@@ -33,6 +34,22 @@ The cost is an explicit loop. The benefit is that this builds and runs against
 an unmodified `r3`, with no host-lib callbacks and no `REBGOB` crossing the
 extension boundary - and the loop is one mezzanine function (`do-events`) which
 can be replaced the day the interpreter grows a poll hook.
+
+### Sleep on the queue, not on a clock
+
+`poll-events/wait 0.05` sleeps **inside the extension, on the OS queue**, and
+returns the moment anything arrives — `MsgWaitForMultipleObjects` on Windows,
+`nextEventMatchingMask:untilDate:` on macOS. The timeout is only a ceiling.
+`do-events` uses it, which is why it no longer calls `wait` at all.
+
+The difference is not just latency. A loop that sleeps a fixed interval and
+then drains serves everything **late and in bursts**, and a themed Windows
+control animates on *timer* messages — so its hover and check animations
+stutter, which reads as the control being slow to respond rather than slow to
+draw. Waking on the message hands the animation its timer when it is due.
+
+`poll-events` with no refinement is unchanged: it pumps, drains and returns at
+once. Use it when your loop has other work to get back to.
 
 ## Build
 
@@ -58,7 +75,7 @@ ok:  add-button win "OK" 20x20 100x32
 forever [
     foreach [type source position value] poll-events [
         print [type position value]
-        if all [type = 'click  source/id = ok/id] [print "clicked!"]
+        if all [type = 'click  source = ok] [print "clicked!"]
         if type = 'close [close-window win  halt]
     ]
     wait 0.01
@@ -87,6 +104,58 @@ Two notes on behaviour:
 A closed window's handle stays valid and reports `open?` as `false`; it never
 becomes a dangling pointer.
 
+### The window's frame
+
+```rebol
+open-window/fixed      400x300           ;; the user cannot resize it
+open-window/borderless 400x300           ;; no title bar, no frame at all
+
+win/resizable?                           ;; and both are readable ...
+win/border?: false                       ;; ... and writable afterwards
+```
+
+Both are read from the native window rather than from a note this extension
+kept, so what you get back is what the window has — including a style
+something else changed. And **changing either keeps the client size**: a frame
+appearing or going away re-splits the window rather than resizing it, so the
+room comes out of exactly the area everything is laid out in. The window is
+grown by what was lost, the same promise a menu bar makes.
+
+The two are separate properties. Turning a border back on does not turn
+resizing back on — the window may never have had it:
+
+```rebol
+win: open-window/fixed 400x300
+win/border?: false     ;; borderless
+win/border?: true      ;; framed again, still not resizable
+```
+
+**A borderless window has no title bar**, which is more than a matter of
+looks: no close box, so no `close` events, and nothing for the user to drag it
+by. The program is then the only thing that can move it (`win/offset:`) or
+close it (`close-window`), so give it its own way out — a button, a key, a
+timeout — before you open one.
+
+Dragging is deliberately not built in. Making the background draggable would
+mean swallowing the `down` and `move` events over it, which are the events an
+image widget exists to report. Doing it in Rebol costs a few lines and leaves
+you in charge of which part of the window is a handle:
+
+```rebol
+if type = 'down [grab: position]
+if all [grab  type = 'move] [win/offset: win/offset + position - grab]
+if type = 'up   [grab: none]
+```
+
+Each platform gets there its own way. Windows uses `WS_POPUP` in place of the
+caption and frame bits; macOS uses `NSWindowStyleMaskBorderless`, which is the
+*absence* of every other bit rather than a bit of its own — which is why
+`resizable?` refuses on a borderless window there instead of quietly giving it
+a title bar back. Cocoa also refuses to make a borderless window key, and a
+window which cannot become key has no field editor, so a `field` in it could be
+clicked and never typed into: every window this extension opens is an
+`NSWindow` subclass which answers `YES` to `canBecomeKeyWindow`.
+
 ## Widgets
 
 Each `add-*` puts a native control into a window's client area and returns a
@@ -95,13 +164,17 @@ size - except `add-image`, which takes an `image!` instead of a string:
 
 ```rebol
 btn:   add-button win "Click me"       20x20  140x32
-label: add-text   win "Type your name:" 20x60 220x24
-name:  add-field  win ""                20x90 240x26
-notes: add-area   win ""               20x130 300x200
-opt:   add-check  win "Enabled"        20x340 200x24
-one:   add-radio/group win "First"     20x370 110x22 1
+label: add-text   win "Type your name:" 20x60  220x0   ;; 0 = work it out
+name:  add-field  win ""                20x90  240x0
+notes: add-area   win ""               20x130  300x200
+opt:   add-check  win "Enabled"        20x340  200x24
+one:   add-radio/group win "First"     20x370  110x22 1
 pic:   add-image  win some-image       340x20
 ```
+
+Sizes are in logical units and a zero axis means "what does this need?" - both
+explained under [Sizes, DPI and the natural
+size](#sizes-dpi-and-the-natural-size).
 
 | kind     | control | reports |
 |----------|---------|---------|
@@ -136,14 +209,79 @@ btn/parent               ;; whatever holds it: a window, or a panel
 btn/window               ;; the window either way, however deeply nested
 ```
 
+### Sizes, DPI and the natural size
+
+**Every offset and size is a logical unit** — 96 to the inch, which is what
+macOS calls a point and what a Windows program means by a pixel at 100%
+scaling. So `240x26` is the same physical size on a 96 DPI screen, on a 175%
+one and on a Retina Mac, and one layout is right on all of them. Event
+coordinates come back in the same units.
+
+That is not free on Windows. The process asks for `PROCESS_SYSTEM_DPI_AWARE`,
+so nothing is scaled for it — but `SPI_GETNONCLIENTMETRICS` hands back the
+shell's message font **already scaled for the display**: 12px at 96 DPI, 21px
+at 175%. Left alone, a script's coordinates stay 96-DPI-sized while its text
+grows with the screen, which is a label too small for its own font and a text
+entry that clips its only line. The Win32 backend therefore converts at its own
+boundary, in both directions; the Cocoa backend has nothing to do.
+
+**A zero axis asks the widget what it needs.** The font decides how tall a line
+is, and the control knows its own border and padding, so neither belongs in
+your script:
+
+```rebol
+add-field  win ""     300x100 240x0   ;; your width, its height
+add-text   win "Name" 300x70  0x0     ;; fits the string
+add-button win "OK"   20x20   0x0     ;; fits the label
+name/size                             ;; what it settled on
+```
+
+It works on anything with text — button, label, field, area, check, radio,
+drop-down — and is refused on the rest, which have nothing to measure: an image
+has `/size`, and a slider, a progress bar or a panel is whatever size you say.
+A zero *width* on an entry does not mean the width of what happens to be in it
+(an empty field would come out a few pixels wide) but about twenty characters,
+the same guess a dialog makes. A zero *height* on an `area` gives four lines,
+the smallest thing that reads as multi-line.
+
+The measuring happens after the widget's font is settled — including a font
+inherited from `win/font-size` — and before it is first drawn, so nothing is
+ever seen at the wrong size.
+
+**`win/scale`** reports device pixels per unit: `1.0` at 100%, `1.75` at 175%,
+`2.0` on a Retina Mac. Sizes are logical, so you rarely need it — with one
+exception. An image widget stretches its `image!` into the box it was given, so
+a 240x160 image in a 240x160 box is drawn across 420x280 device pixels at 175%
+and looks soft. Render at `240x160 * win/scale` and give the box the size you
+meant:
+
+```rebol
+pic:    make image! to pair! 240x160 * win/scale
+canvas: add-image/size win pic 20x70 240x160
+```
+
 **`change` means the user changed it.** Writing `field/text: "x"` from Rebol
 does not raise one - on Windows that takes suppressing the `EN_CHANGE` which
 `SetWindowText` sends synchronously, while on macOS `setStringValue:` simply
 never calls the delegate. Same behaviour, two different reasons.
 
-Clicking one queues a `click` event whose `source` is the widget. `source/id`
-is what identifies it - handles are compared by the native handle behind them,
-not by `=`.
+Clicking one queues a `click` event whose `source` is the widget, and `=`
+identifies it — two handle values are equal when they name the same handle:
+
+```rebol
+if all [type = 'click  source = ok] [...]
+```
+
+This needs an interpreter whose `CT_Handle` compares identity. Older ones
+answer the *type* question in the loose mode, so `source = level` is true for
+every widget in the window — and `==` is no safer there, because it compares
+`VAL_HANDLE_FLAGS` alongside the context, and those flags carry the collector's
+`HANDLE_CONTEXT_MARKED` bit, which changes under a value that has not. On such
+a build, compare `source/id = ok/id` instead: `id` is the native
+`HWND`/`NSView*` as an integer and is stable for the life of the control. (It
+reads `0` for a removed widget and a closed window, so two dead handles compare
+equal that way — which never arises in an event loop, since a control that is
+gone sends nothing.)
 
 Accessors that belong to one kind answer `none` on the others - `btn/image`
 and `pic/text` are both `none`, and `widget/kind` says which is which.
@@ -311,6 +449,102 @@ Two things to know:
   messages and the control-colour messages straight up. That works because
   the handlers identify a control from `lParam` rather than from whichever
   window received the message.
+
+### Menu bars
+
+A menu is one block assigned to the window, the way a drop-down's list is one
+block assigned to the widget:
+
+```rebol
+win/menu: [
+    "File" [
+        "New"      new   #"N"          ;; Ctrl+N on Windows, Cmd+N on macOS
+        "Save As…" save  [shift #"S"]  ;; ... with extra modifiers
+        ---                            ;; a dividing line
+        "Recent" [                     ;; a block after a label: a submenu
+            "report.txt" recent-1
+            "notes.txt"  recent-2
+        ]
+        ---
+        "Close"    quit  #"W"
+    ]
+    "Help" ["About" about]
+]
+
+win/menu          ;; the very block you assigned, not a rebuilt one
+win/menu: none    ;; takes the bar away
+```
+
+The grammar is three rules:
+
+| | |
+|---|---|
+| `---` | a separator |
+| label + **block** | a submenu, described by the same grammar again |
+| label + **word** | an item, whose word is its id. A `char!` or a block of modifier words and a `char!` after it is a keyboard shortcut. |
+
+**The word is what comes back, not the label.** Renaming `"Save As…"` cannot
+break a handler, and the same word used on two items fires from either:
+
+```rebol
+foreach [type source pos val] poll-events [
+    if type = 'menu [
+        switch val [
+            new  [...]
+            quit [close-window win]
+        ]
+    ]
+]
+```
+
+A `menu` event puts the item's word in the fourth slot — the one a wheel event
+uses for its line count and a mouse event for its modifier bits. It is the only
+slot with no fixed type, which is what lets a menu handler be a `switch` rather
+than a table of numbers. `source` is the window.
+
+Greying an item out is by word, and **merges** — only what you name changes:
+
+```rebol
+win/menu-enabled?: [save false]
+win/menu-enabled?    ;; == [new true save false quit true about true]
+```
+
+Shortcuts are always on the platform's own menu modifier — Ctrl on Windows,
+Command on macOS — and `shift`, `control` and `alt` in a block add to it. That
+is deliberately not configurable: an application that hard-codes Ctrl on a Mac
+is wrong on a Mac.
+
+#### What the two platforms disagree about
+
+This is the widest gap in the extension, and it is not one an API can paper
+over:
+
+| | Windows | macOS |
+|---|---|---|
+| a menu bar belongs to | the **window**, and is drawn inside it | the **application**, at the top of the screen |
+| several windows | each shows its own | whichever window is key owns the bar |
+| a shortcut is | an entry in an accelerator table, which the message loop must translate | a property of the menu item |
+| the first menu | ordinary | the **application menu**, in bold under the process name |
+
+So on macOS a window's menu goes up when that window becomes key, which is how
+a Mac application with differently-menued windows behaves anyway. An
+application menu is inserted whether you ask for one or not — the alternative
+is your first menu silently becoming it — and its **Quit** reports a `close`
+event for the window rather than ending the process. This is an extension
+inside an interpreter: terminating would take the session with it, so what
+"quit" means is left to Rebol, like any other close.
+
+On Windows a menu bar **eats client area**. `SetMenu` does not resize a window,
+it re-splits it, so a bar appears by taking a row off the top of exactly the
+area everything is laid out in. The window is therefore grown by what was lost,
+measured rather than computed — a bar can wrap onto two rows — and removing the
+menu gives it back the same way. A widget never moves for a menu, the same
+promise a panel's frame makes.
+
+Shortcuts on Windows need `TranslateAccelerator` before a keystroke is
+dispatched, and `Gui_Pump` is the only message loop this extension owns, so it
+does that — looking the window up by class name rather than trusting
+`GWLP_USERDATA` on a window it did not create.
 
 ### Drop-downs
 
@@ -488,26 +722,25 @@ no part of the event queue is platform aware.
 | needs | user32, gdi32, comctl32 | AppKit, Foundation, a 10.13+ SDK |
 
 Coordinates are uniform: positions and sizes use a top-left origin with Y
-growing down, and `size` always means the *client* (content) area. The Cocoa
-backend flips every offset against the menu-bar screen on the way in and out,
-and its content view answers `YES` to `isFlipped` so that event positions need
-no conversion at all.
+growing down, they are **logical units** on both platforms (see [Sizes, DPI and
+the natural size](#sizes-dpi-and-the-natural-size)), and `size` always means the
+*client* (content) area. The Cocoa backend flips every offset against the
+menu-bar screen on the way in and out, and its content view answers `YES` to
+`isFlipped` so that event positions need no conversion at all.
 
 Differences worth knowing about:
 
-- **Retina.** macOS sizes are in points, not pixels: a 640x480 window has a
-  1280x960 backing store. An image widget is scaled into its box in points, so
-  on a Retina display a 240x160 image is drawn across 480x320 device pixels
-  and looks soft. Asking for an image twice the size and a box of the intended
-  point size is the workaround until the backing scale factor is plumbed
-  through.
+- **Scaling.** Neither backend hands the caller device pixels, but they get
+  there differently: AppKit already works in points, so the Cocoa backend
+  converts nothing, while the Win32 one multiplies by the system DPI at its own
+  boundary — event coordinates included. `win/scale` reports the factor either
+  way. Windows is asked for `PROCESS_SYSTEM_DPI_AWARE`, so one scale covers the
+  process; per-monitor awareness would make it per window and would need
+  `WM_DPICHANGED` handling as well.
 - **Main thread.** AppKit requires every call to be made from the main thread,
   which is where the interpreter runs. `Gui_Init_Platform` also calls
   `finishLaunching` and sets a regular activation policy, without which a
   non-bundled `r3` opens windows that never come forward.
-- **No menu bar** is installed on macOS. A Quit item would terminate the
-  process behind Rebol's back, which is the very thing `close` events exist to
-  avoid.
 - **Wheel direction** follows the user's "natural scrolling" setting, like
   every other Mac application; the sign is not normalised.
 - **Dragging.** Cocoa reports movement with a button held as a drag rather
@@ -549,6 +782,56 @@ Differences worth knowing about:
   a fixed height of about 32 points; a taller button keeps its bezel that
   size and centres it, so `32` is the height to ask for.
 
+### Windows visual styles, and why they felt slow
+
+Once `r3` carries a Comctl32 v6 manifest, the common controls are drawn by the
+theme engine — and the theme engine **animates**. A check and a radio cross-fade
+between states over a couple of hundred milliseconds; a progress bar *slides*
+to a new position instead of jumping. The classic controls do none of this,
+which is why the difference shows up the moment the manifest is added and looks
+like the whole extension got slower.
+
+Three things were making that much worse than it had to be, all now fixed:
+
+- **A redundant `BM_SETCHECK` restarts the fade.** Radio grouping is done in
+  the shared layer, which re-asserts every radio in the window on every click —
+  correct, and nearly free with the classic look. Themed, it meant every radio
+  on screen beginning an animation each time any one of them was picked.
+  `Gui_Widget_Set_State` now asks the control first and returns if it is
+  already in that state.
+- **`PBM_SETPOS` animates.** A program setting a progress bar faster than the
+  animation (a slider driving a meter) watches it trail behind. The animation
+  only plays when the position *increases*, so the backend steps one past and
+  back, which lands exactly on the value with nothing left to play.
+- **The accelerator lookup was on the hot path.** Translating menu shortcuts
+  meant `GetAncestor` + `GetClassNameW` for *every* message, and a themed
+  control produces a great many — animation timers, mouse tracking, buffered
+  paint. It now runs only for keyboard messages.
+
+The fourth and largest part is the loop itself: see [Sleep on the queue, not on
+a clock](#sleep-on-the-queue-not-on-a-clock) above. An animation driven by timer
+messages needs a loop that wakes when a timer is due, not one that wakes on a
+clock of its own and drains whatever accumulated.
+
+**This is deliberately not solved with a UI thread.** A dedicated thread with a
+blocking `GetMessage` loop is the usual answer to a sluggish Win32 UI, and it
+would be wrong here:
+
+- `WM_PAINT` on an image widget reads the pixels straight out of a Rebol series
+  (`hob->series`) — that is the whole point of the widget. Today a paint can
+  only happen inside `poll-events`, which is to say while the interpreter is
+  inside this extension and not collecting. On another thread a paint could
+  land while the GC is moving or expanding that series. No amount of locking in
+  an extension can hold the collector still.
+- Window ownership on Win32 is per thread: every `add-*`, every accessor and
+  every `remove-widget` would have to be marshalled to the UI thread and waited
+  on. That is the entire backend, and the event ring would need real locking.
+- macOS cannot do it at all — AppKit demands the main thread — so the two
+  backends would stop being the same design, which is what `gui.h` exists to
+  prevent.
+- And it would not have fixed any of the four causes above. A redundant
+  `BM_SETCHECK` restarts an animation on any thread.
+
 ## Extension commands:
 
 
@@ -560,6 +843,8 @@ Creates a window and returns its handle
 * `/at`
 * `offset` `[pair!]` Position of the top-left corner on the screen
 * `/hidden` Creates the window without showing it
+* `/fixed` The user cannot resize it
+* `/borderless` No title bar and no frame - see the note in the README
 
 #### `close-window` `:window`
 Destroys the window
@@ -575,6 +860,8 @@ Hides the window without destroying it
 
 #### `poll-events`
 Dispatches pending OS messages and returns the collected events
+* `/wait`
+* `timeout` `[number!]` Seconds to sleep for if there is nothing to report; woken early by anything the OS delivers
 
 #### `add-button` `:parent` `:text` `:offset` `:size`
 Creates a native push button inside a window and returns its handle
@@ -682,10 +969,15 @@ Creates a panel - a widget which holds other widgets - and returns its handle
 /offset           pair!               pair!                         "Position of the top-left corner on the screen"
 /id               integer!            none                          "Native window handle as an integer"
 /open?            logic!              none                          "False once the window has been closed"
+/scale            decimal!            none                          "Device pixels per unit of size - 1.0 at 100%, 1.75 at 175%, 2.0 on a Retina Mac"
+/resizable?       logic!              logic!                        "Whether the user can resize it"
+/border?          logic!              logic!                        "Whether it has a title bar and a frame; a borderless window cannot be moved or closed by the user"
 /font             string!             [string! none!]               "Font family widgets are created with; none for the system font"
 /font-size        integer!            [integer! none!]              "Point size widgets are created with; none for the system size"
 /bold?            logic!              logic!                        "Whether widgets are created bold"
 /italic?          logic!              logic!                        "Whether widgets are created italic"
+/menu             block!              [block! none!]                "The menu bar, as the dialect described in the README; none removes it"
+/menu-enabled?    block!              block!                        "Which items are greyed out, as word/logic pairs; setting merges, it does not replace"
 ```
 
 #### __WIDGET__ - GUI widget handle - a native control inside a window
@@ -738,14 +1030,18 @@ do-events: function [
 	"Pumps window events until the given window is closed"
 	window  [handle!]
 	handler [any-function!] "Called as: handler type source position value"
-	/rate delay [number!] "Idle time between polls (default: 0.01)"
+	/rate delay [number!] {Longest it may sleep with nothing to do (default: 0.05)}
 ][
-	delay: any [delay 0.01]
+	;; NOT `wait delay` between polls: this sleeps INSIDE the extension,
+	;; on the OS queue, and wakes the moment anything arrives - which is
+	;; what keeps a themed control's animation smooth and the window
+	;; responsive without spinning. The delay is only a ceiling.
+	delay: any [delay 0.05]
 	forever [
-		foreach [type source pos val] poll-events [
+		foreach [type source pos val] poll-events/wait delay [
 			handler type source pos val
 			;; `close` only reports the request - closing is ours to do
-			if all [type = 'close  source/id = window/id] [
+			if all [type = 'close  source = window] [
 				close-window window
 			]
 			;; the handler is allowed to close it as well, and the rest
@@ -753,7 +1049,6 @@ do-events: function [
 			unless window/open? [break]
 		]
 		unless window/open? [exit]
-		wait delay
 	]
 ]
 ```

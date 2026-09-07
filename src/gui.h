@@ -85,7 +85,8 @@ void    Gui_Quit_Platform(void);
 // `w`/`h` are the CLIENT size; the frame is added on top of it. `title` is
 // UTF-8 and does not need to be null terminated.
 REBOOL  Gui_Open_Window(GUIWIN *win, REBINT x, REBINT y, REBINT w, REBINT h,
-                        const REBYTE *title, REBCNT title_len);
+                        const REBYTE *title, REBCNT title_len,
+                        REBCNT flags); // GUI_WIN_* bits
 void    Gui_Close_Window(GUIWIN *win);
 void    Gui_Show_Window(GUIWIN *win, REBOOL show);
 
@@ -98,9 +99,119 @@ REBOOL  Gui_Get_Offset(GUIWIN *win, REBINT *x, REBINT *y);
 REBOOL  Gui_Set_Size(GUIWIN *win, REBINT w, REBINT h);
 REBOOL  Gui_Set_Offset(GUIWIN *win, REBINT x, REBINT y);
 
+/***********************************************************************
+**  COORDINATES ARE LOGICAL UNITS, EVERYWHERE ACROSS THIS INTERFACE.
+**
+**  96 to the inch - which is what macOS calls a point, and what a
+**  Windows program means by a pixel at 100% scaling. So `240x26` is the
+**  same physical size on a 96 DPI screen, on a 175% one, and on a
+**  Retina Mac, and one layout is right on all of them.
+**
+**  A backend converts at its own boundary: the Cocoa one has nothing to
+**  do, because AppKit already works in points; the Win32 one multiplies
+**  by the system DPI on the way in and divides on the way out, INCLUDING
+**  the coordinates it puts into events. Nothing above gui.h knows the
+**  difference.
+**
+**  Pixels appear in exactly one place: an image widget's own pixels,
+**  which are stretched into whatever box it was given. Gui_Get_Scale()
+**  is how a caller sizes an image to land on device pixels one for one.
+***********************************************************************/
+REBDEC  Gui_Get_Scale(GUIWIN *win);
+
+// What a widget needs for the text it holds, in logical units - border,
+// padding and all. FALSE for a kind with no text, which has no natural
+// size to give. Called after the widget's font is settled, because the
+// answer depends on it.
+REBOOL  Gui_Widget_Natural_Size(GUIWIDGET *wid, REBINT *w, REBINT *h);
+
+/***********************************************************************
+**  The window's frame.
+**
+**  Both are read from the native window rather than shadowed, for the
+**  same reason a widget's font is: what is reported is then what is on
+**  screen, whatever else may have changed it.
+**
+**  Changing either changes how much of the window the frame takes, so
+**  both setters keep the CLIENT size the caller asked for - the same
+**  promise Gui_Menu_End() makes.
+**
+**  A window with no border has no title bar, which means no close box
+**  and nothing to drag: `close` events stop arriving and the program is
+**  the only thing that can move it (`offset`) or close it.
+***********************************************************************/
+REBOOL  Gui_Get_Resizable(GUIWIN *win);
+REBOOL  Gui_Set_Resizable(GUIWIN *win, REBOOL on);
+REBOOL  Gui_Get_Border(GUIWIN *win);
+REBOOL  Gui_Set_Border(GUIWIN *win, REBOOL on);
+
 // Allocates a Rebol string series; returns NULL on failure.
 REBSER* Gui_Get_Title(GUIWIN *win);
 REBOOL  Gui_Set_Title(GUIWIN *win, const REBYTE *utf8, REBCNT len);
+
+
+/***********************************************************************
+**  The menu bar.
+**
+**  Built rather than handed over: the shared layer walks the block the
+**  caller wrote and calls these in order, so the dialect is parsed once,
+**  in one place, and a backend never sees a Rebol value.
+**
+**      Gui_Menu_Begin(win)
+**        Gui_Menu_Add_Popup(win, NULL, "File")        -> handle
+**          Gui_Menu_Add_Item(win, file, "New", 1, ...)
+**          Gui_Menu_Add_Separator(win, file)
+**      Gui_Menu_End(win)
+**
+**  A NULL parent means the bar itself. The `parent` values are whatever
+**  the backend returned from Gui_Menu_Add_Popup - the shared layer only
+**  passes them back.
+**
+**  Item ids are 1-based indices into win->menu_ids, small enough for
+**  Win32, which carries a menu id in the low 16 bits of a WM_COMMAND.
+**  A backend reports a pick by calling Gui_Menu_Picked() below.
+***********************************************************************/
+/***********************************************************************
+**  Sleeps until the OS has something to deliver, or the timeout runs
+**  out - whichever comes first. Returns at once when something is
+**  already waiting.
+**
+**  This is what lets an event loop be responsive without spinning. It
+**  matters more than it looks: a themed control animates on TIMER
+**  messages, and a loop which sleeps a fixed interval and then drains
+**  serves those timers late and in bursts, which is what makes a modern
+**  Windows theme feel sluggish where the classic one - which does not
+**  animate at all - feels fine. Waking on the message itself hands the
+**  animation its timer the moment it is due.
+**
+**  It does NOT dispatch anything: Gui_Pump() still does that.
+***********************************************************************/
+void    Gui_Wait(REBINT ms);
+
+REBOOL  Gui_Menu_Begin(GUIWIN *win);
+void*   Gui_Menu_Add_Popup(GUIWIN *win, void *parent,
+                           const REBYTE *label, REBCNT len);
+void    Gui_Menu_Add_Item(GUIWIN *win, void *parent,
+                          const REBYTE *label, REBCNT len, REBCNT id,
+                          // `key` is 0 for no shortcut, otherwise the
+                          // character; `mods` is GUI_FLAG_* bits ON TOP of
+                          // the platform's own menu modifier - Ctrl on
+                          // Windows, Command on macOS.
+                          REBCNT key, REBCNT mods);
+void    Gui_Menu_Add_Separator(GUIWIN *win, void *parent);
+REBOOL  Gui_Menu_End(GUIWIN *win);
+
+// Takes the bar off the window and destroys everything Gui_Menu_Begin()
+// made. Safe to call when there is no menu, and on a closed window.
+void    Gui_Menu_Free(GUIWIN *win);
+
+// Greys one item out, or brings it back. The shared layer keeps the flag;
+// this only applies it.
+void    Gui_Menu_Enable(GUIWIN *win, REBCNT id, REBOOL enabled);
+
+// Called BY a backend when an item is picked - it queues the `menu` event
+// with the item's word, which is the shared layer's business.
+void    Gui_Menu_Picked(GUIWIN *win, REBCNT id);
 
 
 //-- widgets ------------------------------------------------------------------

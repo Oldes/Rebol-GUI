@@ -61,6 +61,11 @@ int Gui_Init(void) {
 	Handle_GuiWidget = RL_REGISTER_HANDLE_SPEC(cb_cast("GUI-WIDGET"), &spec);
 	if (Handle_GuiWidget == 0) return FALSE;
 
+	// The menu dialect's separator. Every other word it knows comes from a
+	// `words:` list in the specification; this one is mapped by name
+	// because `---` would generate an unreadable enum name.
+	Word_Separator = RL_MAP_WORD((REBYTE*)"---");
+
 	Gui_Init_Platform();
 	return TRUE;
 }

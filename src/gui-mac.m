@@ -82,6 +82,7 @@
 #define RebolGuiSlider    GUI_CLASS(Slider)
 #define RebolGuiPopUp     GUI_CLASS(PopUp)
 #define RebolGuiPanel     GUI_CLASS(Panel)
+#define RebolGuiWindow    GUI_CLASS(Window)
 #define NSWINDOW_OF(win) ((NSWindow*)((win)->handle))
 #define NSPANEL_OF(wid)  ((RebolGuiPanel*)((wid)->handle))
 
@@ -158,6 +159,26 @@ static void Detach_Control(GUIWIDGET *wid);
 static void Apply_Button_Color(GUIWIDGET *wid);
 
 
+/***********************************************************************
+**  The window.
+**
+**  A plain NSWindow would do for a titled one - this exists for the
+**  BORDERLESS case. AppKit refuses to make a borderless window key or
+**  main, and a window which cannot become key has no field editor: a
+**  `field` or an `area` in it could be clicked and never typed into.
+**  Two overrides fix that, and they say only what a titled window
+**  already answers, so every window here is one of these.
+***********************************************************************/
+
+@interface RebolGuiWindow : NSWindow
+@end
+
+@implementation RebolGuiWindow
+- (BOOL)canBecomeKeyWindow  { return YES; }
+- (BOOL)canBecomeMainWindow { return YES; }
+@end
+
+
 //== content view =============================================================
 //
 // One object in two roles: the window's content view (where mouse events
@@ -174,6 +195,10 @@ static void Apply_Button_Color(GUIWIDGET *wid);
 // GUIWIN, theirs take a GUIWIDGET, and a selector sent to `id` must have one
 // unambiguous signature across every class which declares it.
 - (void)setWindowContext:(GUIWIN*)ctx;
+// Menu items target the window's content view: it is the one object which
+// already knows the GUIWIN, and it lives exactly as long as the window.
+- (void)menuPicked:(id)sender;
+- (void)quitPicked:(id)sender;
 @end
 
 
@@ -745,6 +770,36 @@ static void Apply_Button_Color(GUIWIDGET *wid);
 	return NO;
 }
 
+/***********************************************************************
+**  The menu bar belongs to the APPLICATION on macOS, not to a window.
+**
+**  So the rule is: whichever window is key owns the bar. A window with
+**  a menu puts it up when it becomes key, and there is nothing to take
+**  down - the next window to become key replaces it, and one which has
+**  no menu of its own leaves the last one standing, exactly as an
+**  ordinary Mac application behaves.
+***********************************************************************/
+- (void)windowDidBecomeKey:(NSNotification*)note
+{
+	if (context && context->menu)
+		[NSApp setMainMenu:(NSMenu*)context->menu];
+}
+
+- (void)menuPicked:(id)sender
+{
+	if (context) Gui_Menu_Picked(context, (REBCNT)[(NSMenuItem*)sender tag]);
+}
+
+// The Quit item of the application menu, which macOS insists on having.
+// It reports `close` rather than ending the process: this is an extension
+// inside an interpreter, and terminating it would take the session with
+// it. What "quit" then means is Rebol's decision, like any other close.
+- (void)quitPicked:(id)sender
+{
+	if (context && context->hob)
+		Gui_Queue_Event(context->hob, W_GUI_EVENT_CLOSE, 0, 0, 0);
+}
+
 - (void)windowDidResize:(NSNotification*)note
 {
 	NSSize size;
@@ -794,7 +849,7 @@ void Gui_Quit_Platform(void)
 
 
 REBOOL Gui_Open_Window(GUIWIN *win, REBINT x, REBINT y, REBINT w, REBINT h,
-                       const REBYTE *title, REBCNT title_len)
+                       const REBYTE *title, REBCNT title_len, REBCNT flags)
 {
 	@autoreleasepool {
 		NSWindow *window;
@@ -808,12 +863,20 @@ REBOOL Gui_Open_Window(GUIWIN *win, REBINT x, REBINT y, REBINT w, REBINT h,
 
 		if (![NSThread isMainThread]) return FALSE;
 
+		// Borderless is a mask of its own, not the absence of bits: with
+		// no title bar there is no close box and nothing to resize by.
+		if (flags & GUI_WIN_BORDERLESS) {
+			style = NSWindowStyleMaskBorderless;
+		} else if (flags & GUI_WIN_FIXED) {
+			style &= ~NSWindowStyleMaskResizable;
+		}
+
 		// The rect is the CONTENT rect, so the requested size is the usable
 		// area - the same promise the Windows backend makes.
-		window = [[NSWindow alloc] initWithContentRect:rect
-		                                     styleMask:style
-		                                       backing:NSBackingStoreBuffered
-		                                         defer:NO];
+		window = [[RebolGuiWindow alloc] initWithContentRect:rect
+		                                          styleMask:style
+		                                            backing:NSBackingStoreBuffered
+		                                              defer:NO];
 		if (!window) return FALSE;
 
 		// Ours to release, not AppKit's to drop on close.
@@ -876,6 +939,10 @@ void Gui_Close_Window(GUIWIN *win)
 			}
 		}
 
+		// Before the content view goes: every menu item targets it, and
+		// the bar is this window's own object to release.
+		Gui_Menu_Free(win);
+
 		[(RebolGuiView*)[window contentView] setWindowContext:NULL];
 		[window setDelegate:nil];
 		[window orderOut:nil];
@@ -885,6 +952,211 @@ void Gui_Close_Window(GUIWIN *win)
 		// Same contract as WM_NCDESTROY on Windows: the window is really
 		// gone, so drop its queued events and unlock the handle.
 		if (win->hob) Gui_Window_Closed(win->hob);
+	}
+}
+
+
+//== menu bar =================================================================
+//
+// The asymmetry with Windows worth knowing about: a Win32 menu bar belongs
+// to a window and sits inside it, while on macOS there is ONE bar, at the
+// top of the screen, belonging to the application. This backend gives each
+// window its own NSMenu and installs it when that window becomes key - see
+// -windowDidBecomeKey: above - which is how a Mac application with several
+// differently-menued windows behaves anyway.
+//
+// The other macOS rule is that the FIRST menu is the application menu: it
+// is drawn in bold under the process name and is where Quit belongs. One
+// is inserted here whether the caller asked for it or not, because the
+// alternative is the caller's first menu silently becoming it.
+
+static void Add_App_Menu(GUIWIN *win, NSMenu *bar)
+{
+	NSString   *name = [[NSProcessInfo processInfo] processName];
+	NSMenuItem *slot = [[NSMenuItem alloc] initWithTitle:name
+	                                             action:NULL
+	                                      keyEquivalent:@""];
+	NSMenu     *menu = [[NSMenu alloc] initWithTitle:name];
+	NSMenuItem *quit;
+
+	// Off, so that an item is enabled because this extension says so and
+	// not because AppKit found a responder willing to take its action.
+	[menu setAutoenablesItems:NO];
+
+	quit = [[NSMenuItem alloc]
+		initWithTitle:[@"Quit " stringByAppendingString:name]
+		       action:@selector(quitPicked:)
+		keyEquivalent:@"q"];
+	[quit setKeyEquivalentModifierMask:NSEventModifierFlagCommand];
+	[quit setTarget:(id)[NSWINDOW_OF(win) contentView]];
+	[menu addItem:quit];
+	[quit release];
+
+	[slot setSubmenu:menu];
+	[bar addItem:slot];
+	[menu release];
+	[slot release];
+}
+
+
+REBOOL Gui_Menu_Begin(GUIWIN *win)
+{
+	@autoreleasepool {
+		NSMenu *bar;
+
+		if (!win || !win->handle) return FALSE;
+		if (![NSThread isMainThread]) return FALSE;
+
+		bar = [[NSMenu alloc] initWithTitle:@"MainMenu"];
+		if (!bar) return FALSE;
+		[bar setAutoenablesItems:NO];
+
+		Add_App_Menu(win, bar);
+
+		win->menu = (void*)bar; // retained; released by Gui_Menu_Free()
+		return TRUE;
+	}
+}
+
+
+void* Gui_Menu_Add_Popup(GUIWIN *win, void *parent,
+                         const REBYTE *label, REBCNT len)
+{
+	@autoreleasepool {
+		NSString   *title;
+		NSMenuItem *slot;
+		NSMenu     *menu;
+
+		if (!win || !win->menu) return NULL;
+		title = To_NSString(label, len);
+		if (!title) title = @"";
+
+		slot = [[NSMenuItem alloc] initWithTitle:title
+		                                  action:NULL
+		                           keyEquivalent:@""];
+		menu = [[NSMenu alloc] initWithTitle:title];
+		[menu setAutoenablesItems:NO];
+		[slot setSubmenu:menu];
+
+		[(parent ? (NSMenu*)parent : (NSMenu*)win->menu) addItem:slot];
+		[slot release];
+
+		// The NSMenu is retained by the item, which is retained by the
+		// menu it was just added to - so the whole tree hangs off the bar
+		// and one release in Gui_Menu_Free() takes all of it.
+		[menu autorelease];
+		return (void*)menu;
+	}
+}
+
+
+void Gui_Menu_Add_Item(GUIWIN *win, void *parent,
+                       const REBYTE *label, REBCNT len, REBCNT id,
+                       REBCNT key, REBCNT mods)
+{
+	@autoreleasepool {
+		NSString   *title;
+		NSString   *equiv = @"";
+		NSMenuItem *item;
+
+		if (!win || !win->menu) return;
+		title = To_NSString(label, len);
+		if (!title) title = @"";
+
+		// A key equivalent is a property of the item here - there is no
+		// accelerator table to keep in step, and no text to append: the
+		// menu draws the shortcut itself.
+		if (key) {
+			unichar ch = (unichar)((key >= 'A' && key <= 'Z') ? key + 32 : key);
+			equiv = [NSString stringWithCharacters:&ch length:1];
+		}
+
+		item = [[NSMenuItem alloc] initWithTitle:title
+		                                  action:@selector(menuPicked:)
+		                           keyEquivalent:equiv];
+		if (key) {
+			NSEventModifierFlags flags = NSEventModifierFlagCommand;
+			if (mods & GUI_FLAG_SHIFT)   flags |= NSEventModifierFlagShift;
+			if (mods & GUI_FLAG_CONTROL) flags |= NSEventModifierFlagControl;
+			if (mods & GUI_FLAG_ALT)     flags |= NSEventModifierFlagOption;
+			[item setKeyEquivalentModifierMask:flags];
+		}
+		[item setTag:(NSInteger)id];
+		[item setTarget:(id)[NSWINDOW_OF(win) contentView]];
+		[item setEnabled:YES];
+
+		[(parent ? (NSMenu*)parent : (NSMenu*)win->menu) addItem:item];
+		[item release];
+	}
+}
+
+
+void Gui_Menu_Add_Separator(GUIWIN *win, void *parent)
+{
+	@autoreleasepool {
+		if (!win || !win->menu) return;
+		[(parent ? (NSMenu*)parent : (NSMenu*)win->menu)
+			addItem:[NSMenuItem separatorItem]];
+	}
+}
+
+
+REBOOL Gui_Menu_End(GUIWIN *win)
+{
+	@autoreleasepool {
+		if (!win || !win->handle || !win->menu) return FALSE;
+
+		// Up straight away if this window is the one in front; otherwise
+		// it waits for the window to become key. Nothing here takes client
+		// area from the window, so unlike Windows there is no layout to
+		// put back.
+		if ([NSWINDOW_OF(win) isKeyWindow] || ![NSApp mainMenu])
+			[NSApp setMainMenu:(NSMenu*)win->menu];
+
+		return TRUE;
+	}
+}
+
+
+void Gui_Menu_Free(GUIWIN *win)
+{
+	@autoreleasepool {
+		if (!win || !win->menu) return;
+
+		// Only if it is still the one on screen: another window may have
+		// taken the bar since, and pulling it out from under that one is
+		// not this window's business.
+		if ([NSApp mainMenu] == (NSMenu*)win->menu)
+			[NSApp setMainMenu:[[[NSMenu alloc] initWithTitle:@""] autorelease]];
+
+		[(NSMenu*)win->menu release];
+		win->menu = NULL;
+	}
+}
+
+
+// Depth first, because an id may name an item in any submenu, and NSMenu
+// only searches the level it was asked about.
+static NSMenuItem* Item_With_Tag(NSMenu *menu, NSInteger tag)
+{
+	for (NSMenuItem *item in [menu itemArray]) {
+		if ([item tag] == tag && ![item hasSubmenu]) return item;
+		if ([item hasSubmenu]) {
+			NSMenuItem *found = Item_With_Tag([item submenu], tag);
+			if (found) return found;
+		}
+	}
+	return nil;
+}
+
+
+void Gui_Menu_Enable(GUIWIN *win, REBCNT id, REBOOL enabled)
+{
+	@autoreleasepool {
+		NSMenuItem *item;
+		if (!win || !win->menu) return;
+		item = Item_With_Tag((NSMenu*)win->menu, (NSInteger)id);
+		[item setEnabled:(enabled ? YES : NO)];
 	}
 }
 
@@ -913,6 +1185,24 @@ void Gui_Show_Window(GUIWIN *win, REBOOL show)
 **  not only those of our windows - which is what lets a plain
 **  `poll-events` loop work without a host side event device.
 ***********************************************************************/
+void Gui_Wait(REBINT ms)
+{
+	@autoreleasepool {
+		if (ms <= 0) return;
+		if (![NSThread isMainThread]) return;
+
+		// dequeue:NO - this only waits for something to be there. Taking it
+		// out of the queue and sending it is Gui_Pump()'s business, and
+		// doing it in two places is how events go missing.
+		[NSApp nextEventMatchingMask:NSEventMaskAny
+		                   untilDate:[NSDate dateWithTimeIntervalSinceNow:
+		                                 (NSTimeInterval)ms / 1000.0]
+		                      inMode:NSDefaultRunLoopMode
+		                     dequeue:NO];
+	}
+}
+
+
 void Gui_Pump(void)
 {
 	@autoreleasepool {
@@ -1017,6 +1307,91 @@ REBOOL Gui_Set_Offset(GUIWIN *win, REBINT x, REBINT y)
 			NSMakePoint((CGFloat)x, Screen_Height() - (CGFloat)y)];
 		return TRUE;
 	}
+}
+
+
+/***********************************************************************
+**  The frame.
+**
+**  Read from the window's own styleMask, never shadowed.
+**
+**  Changing the mask keeps the FRAME rect, so the content rect gains or
+**  loses whatever the title bar was taking - and everything in the
+**  window is laid out in the content rect. So the content size is taken
+**  first and given back afterwards, which is the same thing the Windows
+**  backend does by measuring the client area.
+***********************************************************************/
+static REBOOL Set_Window_Style_Mask(GUIWIN *win, NSUInteger mask)
+{
+	@autoreleasepool {
+		NSWindow *window;
+		NSRect    content;
+
+		if (!win || !win->handle) return FALSE;
+		if (![NSThread isMainThread]) return FALSE;
+
+		window = NSWINDOW_OF(win);
+		if ([window styleMask] == mask) return TRUE;
+
+		content = [window contentRectForFrameRect:[window frame]];
+		[window setStyleMask:mask];
+		[window setFrame:[window frameRectForContentRect:content] display:YES];
+
+		// Losing the title bar takes the first responder with it often
+		// enough to be worth putting back - a window with no key view has
+		// no field editor, and typing goes nowhere.
+		[window makeFirstResponder:[window contentView]];
+		return TRUE;
+	}
+}
+
+
+REBOOL Gui_Get_Resizable(GUIWIN *win)
+{
+	@autoreleasepool {
+		if (!win || !win->handle) return FALSE;
+		return ([NSWINDOW_OF(win) styleMask] & NSWindowStyleMaskResizable)
+			? TRUE : FALSE;
+	}
+}
+
+
+REBOOL Gui_Set_Resizable(GUIWIN *win, REBOOL on)
+{
+	@autoreleasepool {
+		NSUInteger mask;
+		if (!win || !win->handle) return FALSE;
+		mask = [NSWINDOW_OF(win) styleMask];
+		// Borderless is the absence of every bit, so setting one here would
+		// quietly give the window a title bar back.
+		if (mask == NSWindowStyleMaskBorderless) return FALSE;
+		if (on) mask |=  NSWindowStyleMaskResizable;
+		else    mask &= ~NSWindowStyleMaskResizable;
+		return Set_Window_Style_Mask(win, mask);
+	}
+}
+
+
+REBOOL Gui_Get_Border(GUIWIN *win)
+{
+	@autoreleasepool {
+		if (!win || !win->handle) return FALSE;
+		return ([NSWINDOW_OF(win) styleMask] & NSWindowStyleMaskTitled)
+			? TRUE : FALSE;
+	}
+}
+
+
+REBOOL Gui_Set_Border(GUIWIN *win, REBOOL on)
+{
+	if (!on) return Set_Window_Style_Mask(win, NSWindowStyleMaskBorderless);
+
+	// Coming back from borderless: a title bar and the buttons on it. Not
+	// resizable - whether it can be is its own property, and one this
+	// window may never have had.
+	return Set_Window_Style_Mask(win, NSWindowStyleMaskTitled
+	                                | NSWindowStyleMaskClosable
+	                                | NSWindowStyleMaskMiniaturizable);
 }
 
 
@@ -1301,6 +1676,80 @@ void Gui_Destroy_Widget(GUIWIDGET *wid)
 		[view removeFromSuperview];
 		[view release];
 		Display_Pending = TRUE; // the hole it left has to be repainted
+	}
+}
+
+
+/***********************************************************************
+**  Nothing to convert on this side: AppKit already works in points,
+**  which is what gui.h means by a logical unit. The scale is reported
+**  only so that a caller can size an IMAGE to the device pixels behind
+**  those points - 2.0 on a Retina display.
+***********************************************************************/
+REBDEC Gui_Get_Scale(GUIWIN *win)
+{
+	@autoreleasepool {
+		NSWindow *window;
+		NSScreen *screen = nil;
+
+		if (win && win->handle) {
+			window = NSWINDOW_OF(win);
+			screen = [window screen];        // nil while off screen
+			if (!screen) return (REBDEC)[window backingScaleFactor];
+		}
+		if (!screen) screen = [NSScreen mainScreen];
+		return screen ? (REBDEC)[screen backingScaleFactor] : 1.0;
+	}
+}
+
+
+REBOOL Gui_Widget_Natural_Size(GUIWIDGET *wid, REBINT *w, REBINT *h)
+{
+	@autoreleasepool {
+		NSSize   size;
+		NSFont  *font;
+		CGFloat  line;
+
+		if (!wid || !wid->handle) return FALSE;
+
+		switch (wid->kind) {
+		case W_GUI_WIDGET_BUTTON:
+		case W_GUI_WIDGET_CHECK:
+		case W_GUI_WIDGET_RADIO:
+		case W_GUI_WIDGET_TEXT:
+		case W_GUI_WIDGET_FIELD:
+		case W_GUI_WIDGET_DROP_DOWN:
+			// AppKit measures its own controls, bezel and all, which is a
+			// better answer than any padding table this file could keep.
+			size = [(NSControl*)wid->handle fittingSize];
+			break;
+
+		case W_GUI_WIDGET_AREA: {
+			// A scroll view fits to nothing useful - it is happy at any
+			// size - so the text view's font decides, and four lines is
+			// the smallest thing that reads as multi-line.
+			font = [Text_View_Of(wid) font];
+			if (!font) font = [NSFont systemFontOfSize:[NSFont systemFontSize]];
+			line = [font ascender] - [font descender] + [font leading];
+			size = NSMakeSize(0.0, line * 4.0 + 8.0);
+			break; }
+
+		default:
+			return FALSE; // no text, so no natural size to give
+		}
+
+		// A control with no title fits to almost nothing; an entry the
+		// user is meant to type into wants room whatever is in it now.
+		if (wid->kind == W_GUI_WIDGET_FIELD
+		 || wid->kind == W_GUI_WIDGET_AREA
+		 || wid->kind == W_GUI_WIDGET_DROP_DOWN) {
+			CGFloat least = 20.0 * [NSFont systemFontSize] * 0.55;
+			if (size.width < least) size.width = least;
+		}
+
+		if (w) *w = (REBINT)(size.width  + 0.5);
+		if (h) *h = (REBINT)(size.height + 0.5);
+		return TRUE;
 	}
 }
 
@@ -1852,13 +2301,21 @@ void Gui_Widget_Set_State(GUIWIDGET *wid, REBOOL on)
 	@autoreleasepool {
 		RebolGuiButton *button;
 		SEL action;
+		NSControlStateValue want;
 
 		if (!wid || !wid->handle) return;
 		button = NSBUTTON_OF(wid);
 
+		// Already there: nothing to do. The radio grouping above this file
+		// re-asserts every radio in the window on every click, and a
+		// control asked to become what it already is still redraws - and,
+		// where a theme animates the change, animates it again.
+		want = on ? NSControlStateValueOn : NSControlStateValueOff;
+		if ([button state] == want) return;
+
 		action = [button action];
 		[button setAction:NULL];
-		[button setState:(on ? NSControlStateValueOn : NSControlStateValueOff)];
+		[button setState:want];
 		[button setAction:action];
 	}
 }

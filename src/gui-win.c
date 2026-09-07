@@ -18,6 +18,10 @@
 #include <windows.h>
 #include <windowsx.h> // GET_X_LPARAM
 #include <commctrl.h> // trackbar and progress bar
+// MAKE_MEM / FREE_MEM are malloc and free behind a macro, and neither
+// rebol-extension.h nor windows.h is required to declare them - the wide
+// string conversions and the font cache here both allocate.
+#include <stdlib.h>
 
 // Windows uses this macro name too, and we want Rebol's meaning of it.
 #undef IS_ERROR
@@ -44,6 +48,17 @@ static REBOOL Setting_Text = FALSE;
 
 #define WINDOW_STYLE   (WS_OVERLAPPEDWINDOW)
 #define WINDOW_EXSTYLE (0)
+
+// What a window's frame is made of, as bits of the window style.
+//
+//   WS_THICKFRAME is the grab handle; WS_MAXIMIZEBOX goes with it, since
+//   a window which cannot be dragged bigger should not have a button
+//   which does it either.
+//   WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX are the title bar and what
+//   sits on it. Without them there is no close box, so no `close` event,
+//   and nothing to drag the window by.
+#define WINDOW_RESIZE_BITS (WS_THICKFRAME | WS_MAXIMIZEBOX)
+#define WINDOW_BORDER_BITS (WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX)
 
 // Trackbars and progress bars work in whole steps, so the 0.0 - 1.0 range
 // the extension speaks is carried as one part in RANGE_STEPS.
@@ -163,18 +178,73 @@ typedef struct Gui_Font_Cache {
 
 static FONTCACHE *Font_Cache = NULL;
 
-// Points per inch on this display, which is what turns a point size into
-// the pixel height a LOGFONT wants.
+/***********************************************************************
+**  Logical units.
+**
+**  Everything above this file speaks LOGICAL units - 96 to the inch,
+**  the same thing macOS calls a point - and this is where they become
+**  device pixels and back. `240x26` therefore describes the same
+**  physical size on a 96 DPI screen, on a 175% one, and on a Mac.
+**
+**  It has to be done here rather than left to the caller, because the
+**  process is DPI aware: Windows does not scale anything for us, and
+**  the shell's message font DOES come back already scaled for the
+**  display. Without this, a script's coordinates stay 96-DPI-sized
+**  while its text grows with the display - which is a label too small
+**  for its own font at 125%, and a text entry that clips its line at
+**  175%.
+**
+**  One scale for the process, cached: PROCESS_SYSTEM_DPI_AWARE means
+**  the system DPI is what everything is drawn at, whichever monitor a
+**  window is on. Per-monitor awareness would make this per window, and
+**  would need WM_DPICHANGED as well.
+***********************************************************************/
+static int Gui_DPI = 96;
+
+// Points per inch on this display, which is also what turns a point size
+// into the pixel height a LOGFONT wants.
 static int Screen_DPI(void)
 {
+	return Gui_DPI;
+}
+
+static void Read_Screen_DPI(void)
+{
 	HDC dc = GetDC(NULL);
-	int dpi = 96;
 	if (dc) {
 		int y = GetDeviceCaps(dc, LOGPIXELSY);
-		if (y > 0) dpi = y;
+		if (y > 0) Gui_DPI = y;
 		ReleaseDC(NULL, dc);
 	}
-	return dpi;
+}
+
+static REBINT To_Device(REBINT v)
+{
+	return (Gui_DPI == 96) ? v : (REBINT)MulDiv((int)v, Gui_DPI, 96);
+}
+
+static REBINT To_Logical(REBINT v)
+{
+	return (Gui_DPI == 96) ? v : (REBINT)MulDiv((int)v, 96, Gui_DPI);
+}
+
+// Whole boxes, which is how they nearly always travel.
+static void Box_To_Device(REBINT *x, REBINT *y, REBINT *w, REBINT *h)
+{
+	if (Gui_DPI == 96) return;
+	if (x) *x = To_Device(*x);
+	if (y) *y = To_Device(*y);
+	if (w) *w = To_Device(*w);
+	if (h) *h = To_Device(*h);
+}
+
+static void Box_To_Logical(REBINT *x, REBINT *y, REBINT *w, REBINT *h)
+{
+	if (Gui_DPI == 96) return;
+	if (x) *x = To_Logical(*x);
+	if (y) *y = To_Logical(*y);
+	if (w) *w = To_Logical(*w);
+	if (h) *h = To_Logical(*h);
 }
 
 static void Free_Font_Cache(void)
@@ -290,7 +360,9 @@ static REBINT Modifiers(void)
 static void Queue_Mouse(GUIWIN *win, REBCNT type, LPARAM lp, REBINT extra)
 {
 	if (!win || !win->hob) return;
-	Gui_Queue_Event(win->hob, type, GET_X_LPARAM(lp), GET_Y_LPARAM(lp),
+	// Reported in logical units, like every other coordinate here.
+	Gui_Queue_Event(win->hob, type,
+	                To_Logical(GET_X_LPARAM(lp)), To_Logical(GET_Y_LPARAM(lp)),
 	                Modifiers() | extra);
 }
 
@@ -300,7 +372,8 @@ static void Queue_Mouse(GUIWIN *win, REBCNT type, LPARAM lp, REBINT extra)
 static void Queue_Widget_Mouse(GUIWIDGET *wid, REBCNT type, LPARAM lp, REBINT extra)
 {
 	if (!wid || !wid->hob) return;
-	Gui_Queue_Event(wid->hob, type, GET_X_LPARAM(lp), GET_Y_LPARAM(lp),
+	Gui_Queue_Event(wid->hob, type,
+	                To_Logical(GET_X_LPARAM(lp)), To_Logical(GET_Y_LPARAM(lp)),
 	                Modifiers() | extra);
 }
 
@@ -384,14 +457,16 @@ static LRESULT CALLBACK Gui_Window_Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
 		ScreenToClient(hwnd, &pt);
 
 		if (win->hob)
-			Gui_Queue_Event(win->hob, W_GUI_EVENT_WHEEL, pt.x, pt.y,
+			Gui_Queue_Event(win->hob, W_GUI_EVENT_WHEEL,
+			                To_Logical(pt.x), To_Logical(pt.y),
 			                delta * (REBINT)lines);
 		return 0; }
 
 	case WM_SIZE:
 		if (wp != SIZE_MINIMIZED && win->hob)
 			Gui_Queue_Event(win->hob, W_GUI_EVENT_RESIZE,
-			                (REBINT)LOWORD(lp), (REBINT)HIWORD(lp), 0);
+			                To_Logical((REBINT)LOWORD(lp)),
+			                To_Logical((REBINT)HIWORD(lp)), 0);
 		return 0;
 
 	case WM_CLOSE:
@@ -408,6 +483,14 @@ static LRESULT CALLBACK Gui_Window_Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
 		GUIWIDGET *wid;
 		REBCNT type;
 		REBINT x = 0, y = 0, w = 0, h = 0;
+
+		// A menu pick and an accelerator arrive here too, and are told
+		// apart by having no control behind them: lParam is NULL, and the
+		// notification code is 0 for a menu, 1 for an accelerator.
+		if (!child && HIWORD(wp) <= 1) {
+			Gui_Menu_Picked(win, (REBCNT)LOWORD(wp));
+			return 0;
+		}
 
 		if (!child) break;
 
@@ -501,6 +584,14 @@ static LRESULT CALLBACK Gui_Window_Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
 		win->handle = NULL;
 		win->flags &= ~GUIW_VISIBLE;
 		SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+		// DestroyWindow destroys the menu it was given, so the handle is
+		// dropped rather than freed - destroying it again would be a
+		// double free. The accelerator table is ours and is not.
+		win->menu = NULL;
+		if (win->accel) {
+			DestroyAcceleratorTable((HACCEL)win->accel);
+			win->accel = NULL;
+		}
 		if (win->hob) Gui_Window_Closed(win->hob);
 		return 0;
 	}
@@ -621,7 +712,7 @@ static LRESULT CALLBACK Gui_Image_Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp
 // How far in from the left edge a framed panel's caption starts. The same
 // number is used on macOS, so the two look alike even though each measures
 // the text with its own font.
-#define PANEL_CAPTION_X 9
+#define PANEL_CAPTION_X To_Device(9)
 
 static LRESULT CALLBACK Gui_Panel_Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
@@ -711,9 +802,9 @@ static LRESULT CALLBACK Gui_Panel_Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp
 			// span the caption occupies. The panel owns that colour - it
 			// filled the whole client area with it above - so this is exact
 			// rather than a guess at what shows through.
-			gap.left   = PANEL_CAPTION_X - 2;
+			gap.left   = PANEL_CAPTION_X - To_Device(2);
 			gap.top    = rect.top;
-			gap.right  = gap.left + text_size.cx + 4;
+			gap.right  = gap.left + text_size.cx + To_Device(4);
 			gap.bottom = rect.top + text_size.cy;
 			if (gap.right > rect.right) gap.right = rect.right;
 			FillRect(dc, &gap, (HBRUSH)(COLOR_WINDOW + 1));
@@ -842,7 +933,8 @@ void Gui_Init_Platform(void)
 		if (fn) {
 			fn(1); // PROCESS_SYSTEM_DPI_AWARE
 			FreeLibrary(shcore);
-			return;
+			Read_Screen_DPI(); // AFTER declaring awareness - before it, the
+			return;            // system reports a polite 96 whatever it is
 		}
 		FreeLibrary(shcore);
 	}
@@ -853,6 +945,7 @@ void Gui_Init_Platform(void)
 		if (fn) fn();
 		FreeLibrary(user32);
 	}
+	Read_Screen_DPI();
 }
 
 
@@ -883,17 +976,33 @@ void Gui_Quit_Platform(void)
 
 
 REBOOL Gui_Open_Window(GUIWIN *win, REBINT x, REBINT y, REBINT w, REBINT h,
-                       const REBYTE *title, REBCNT title_len)
+                       const REBYTE *title, REBCNT title_len, REBCNT flags)
 {
 	HWND  hwnd;
 	RECT  rect;
 	WCHAR *wide;
+	DWORD style = WINDOW_STYLE;
 
 	if (!Register_Class()) return FALSE;
 
+	// A borderless window is WS_POPUP: no caption and no frame, so the
+	// resize bits would have nothing to attach to either.
+	if (flags & GUI_WIN_BORDERLESS) {
+		style = (style & ~(WINDOW_BORDER_BITS | WINDOW_RESIZE_BITS)) | WS_POPUP;
+	} else if (flags & GUI_WIN_FIXED) {
+		style &= ~WINDOW_RESIZE_BITS;
+	}
+
+	// Logical in, device out - see the note on Gui_DPI. The sentinel is
+	// not a coordinate and must not be scaled.
+	if (x != GUI_DEFAULT_POS) x = To_Device(x);
+	if (y != GUI_DEFAULT_POS) y = To_Device(y);
+	w = To_Device(w);
+	h = To_Device(h);
+
 	// The requested size is the CLIENT size - grow it by the frame.
 	rect.left = 0; rect.top = 0; rect.right = w; rect.bottom = h;
-	AdjustWindowRectEx(&rect, WINDOW_STYLE, FALSE, WINDOW_EXSTYLE);
+	AdjustWindowRectEx(&rect, style, FALSE, WINDOW_EXSTYLE);
 
 	// A missing - or empty - title gets a neutral default rather than an
 	// empty title bar.
@@ -903,7 +1012,7 @@ REBOOL Gui_Open_Window(GUIWIN *win, REBINT x, REBINT y, REBINT w, REBINT h,
 		WINDOW_EXSTYLE,
 		Class_Name,
 		wide ? wide : L"Rebol",
-		WINDOW_STYLE,
+		style,
 		(x == GUI_DEFAULT_POS) ? CW_USEDEFAULT : x,
 		(y == GUI_DEFAULT_POS) ? CW_USEDEFAULT : y,
 		rect.right - rect.left,
@@ -952,10 +1061,54 @@ void Gui_Show_Window(GUIWIN *win, REBOOL show)
 **  a host side event device - but it also means two extensions pumping
 **  the same thread would steal each other's messages.
 ***********************************************************************/
+// The GUIWIN behind a top-level window, or NULL for a window which is not
+// one of ours. The class name is the test: GWLP_USERDATA on a window this
+// extension did not create holds whatever its owner put there, which is
+// not a GUIWIN to be dereferenced.
+static GUIWIN* Our_Window(HWND hwnd)
+{
+	WCHAR cls[64];
+
+	if (!hwnd) return NULL;
+	if (!GetClassNameW(hwnd, cls, 64)) return NULL;
+	if (lstrcmpW(cls, Class_Name) != 0) return NULL;
+	return GUIWIN_OF(hwnd);
+}
+
+
+void Gui_Wait(REBINT ms)
+{
+	if (ms <= 0) return;
+	// QS_ALLINPUT includes WM_TIMER, which is what a themed control's
+	// animation runs on - so the loop wakes for an animation step exactly
+	// when one is due rather than at the next tick of a fixed interval.
+	MsgWaitForMultipleObjects(0, NULL, FALSE, (DWORD)ms, QS_ALLINPUT);
+}
+
+
 void Gui_Pump(void)
 {
 	MSG msg;
 	while (PeekMessageW(&msg, NULL, 0, 0, PM_REMOVE)) {
+		// A keyboard shortcut is not a property of a menu item on Win32 -
+		// it is an entry in an accelerator table which SOMETHING has to
+		// translate before the keystroke is dispatched, and this is the
+		// only loop this extension owns. The message may have been aimed
+		// at a control, so the window it belongs to is the root above it.
+		//
+		// Only for keyboard messages. Everything below is two USER32 calls
+		// per message, and a themed control produces a great many messages
+		// - animation timers, mouse tracking, buffered paint - none of
+		// which can possibly be a shortcut.
+		if (msg.message == WM_KEYDOWN    || msg.message == WM_SYSKEYDOWN
+		 || msg.message == WM_KEYUP      || msg.message == WM_SYSKEYUP
+		 || msg.message == WM_CHAR       || msg.message == WM_SYSCHAR) {
+			GUIWIN *win = Our_Window(GetAncestor(msg.hwnd, GA_ROOT));
+			if (win && win->accel && win->handle
+			    && TranslateAcceleratorW(HWND_OF(win), (HACCEL)win->accel, &msg))
+				continue;
+		}
+
 		TranslateMessage(&msg);
 		DispatchMessageW(&msg);
 	}
@@ -966,8 +1119,8 @@ REBOOL Gui_Get_Size(GUIWIN *win, REBINT *w, REBINT *h)
 {
 	RECT r;
 	if (!win || !win->handle || !GetClientRect(HWND_OF(win), &r)) return FALSE;
-	*w = r.right - r.left;
-	*h = r.bottom - r.top;
+	*w = To_Logical(r.right - r.left);
+	*h = To_Logical(r.bottom - r.top);
 	return TRUE;
 }
 
@@ -976,8 +1129,8 @@ REBOOL Gui_Get_Offset(GUIWIN *win, REBINT *x, REBINT *y)
 {
 	RECT r;
 	if (!win || !win->handle || !GetWindowRect(HWND_OF(win), &r)) return FALSE;
-	*x = r.left;
-	*y = r.top;
+	*x = To_Logical(r.left);
+	*y = To_Logical(r.top);
 	return TRUE;
 }
 
@@ -987,7 +1140,7 @@ REBOOL Gui_Set_Size(GUIWIN *win, REBINT w, REBINT h)
 	RECT r;
 	if (!win || !win->handle) return FALSE;
 
-	r.left = 0; r.top = 0; r.right = w; r.bottom = h;
+	r.left = 0; r.top = 0; r.right = To_Device(w); r.bottom = To_Device(h);
 	AdjustWindowRectEx(&r, (DWORD)GetWindowLongPtrW(HWND_OF(win), GWL_STYLE),
 	                   FALSE, (DWORD)GetWindowLongPtrW(HWND_OF(win), GWL_EXSTYLE));
 
@@ -1000,8 +1153,125 @@ REBOOL Gui_Set_Size(GUIWIN *win, REBINT w, REBINT h)
 REBOOL Gui_Set_Offset(GUIWIN *win, REBINT x, REBINT y)
 {
 	if (!win || !win->handle) return FALSE;
-	return SetWindowPos(HWND_OF(win), NULL, x, y, 0, 0,
+	return SetWindowPos(HWND_OF(win), NULL, To_Device(x), To_Device(y), 0, 0,
 	                    SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE) ? TRUE : FALSE;
+}
+
+
+// The client size before the frame changes - a menu bar appearing, a
+// border going away - so that it can be given straight back.
+static REBOOL Client_Size_Of(HWND hwnd, int *w, int *h)
+{
+	RECT r;
+	if (!GetClientRect(hwnd, &r)) return FALSE;
+	*w = r.right - r.left;
+	*h = r.bottom - r.top;
+	return TRUE;
+}
+
+/***********************************************************************
+**  Puts back whatever the frame took.
+**
+**  Neither SetMenu() nor a style change resizes a window - they
+**  re-split it, so a menu bar appears, or a border grows, by taking the
+**  room out of the CLIENT area. Everything a caller laid out is
+**  positioned in that area, so the window is grown by exactly what was
+**  lost and the layout does not move.
+**
+**  Measured rather than computed with AdjustWindowRect: a menu bar can
+**  wrap onto two rows, and the measurement is right either way.
+***********************************************************************/
+static void Keep_Client_Size(HWND hwnd, int was_w, int was_h)
+{
+	RECT r;
+	int now_w, now_h;
+
+	if (!Client_Size_Of(hwnd, &now_w, &now_h)) return;
+	if ((now_w == was_w && now_h == was_h) || !GetWindowRect(hwnd, &r)) return;
+
+	SetWindowPos(hwnd, NULL, 0, 0,
+		(r.right  - r.left) + (was_w - now_w),
+		(r.bottom - r.top)  + (was_h - now_h),
+		SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+}
+
+
+/***********************************************************************
+**  The frame.
+**
+**  Read from the window rather than remembered, so what is reported is
+**  what the window has - including a style someone else changed.
+**
+**  Changing it re-splits the window the way a menu bar does: the frame
+**  grows or shrinks and the CLIENT area gives up or gains the
+**  difference. Since everything in the window is laid out in that area,
+**  the window is resized by what was lost, measured rather than
+**  computed - Keep_Client_Size() again.
+***********************************************************************/
+static REBOOL Set_Window_Style_Bits(GUIWIN *win, DWORD off, DWORD on)
+{
+	HWND  hwnd;
+	DWORD style, next;
+	int   w, h;
+
+	if (!win || !win->handle) return FALSE;
+	hwnd = HWND_OF(win);
+
+	style = (DWORD)GetWindowLongPtrW(hwnd, GWL_STYLE);
+	next  = (style & ~off) | on;
+	if (next == style) return TRUE;
+
+	if (!Client_Size_Of(hwnd, &w, &h)) { w = h = 0; }
+
+	SetWindowLongPtrW(hwnd, GWL_STYLE, (LONG_PTR)next);
+	// SWP_FRAMECHANGED - without it the new style is stored but the frame
+	// on screen is still the old one until something else recalculates it.
+	SetWindowPos(hwnd, NULL, 0, 0, 0, 0,
+		SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE
+		| SWP_FRAMECHANGED);
+
+	if (w && h) Keep_Client_Size(hwnd, w, h);
+	return TRUE;
+}
+
+
+REBOOL Gui_Get_Resizable(GUIWIN *win)
+{
+	if (!win || !win->handle) return FALSE;
+	return (GetWindowLongPtrW(HWND_OF(win), GWL_STYLE) & WS_THICKFRAME)
+		? TRUE : FALSE;
+}
+
+
+REBOOL Gui_Set_Resizable(GUIWIN *win, REBOOL on)
+{
+	// A borderless window has no frame to grab, so this is only about the
+	// bits; turning it on there does nothing visible until a border is.
+	return on
+		? Set_Window_Style_Bits(win, 0, WINDOW_RESIZE_BITS)
+		: Set_Window_Style_Bits(win, WINDOW_RESIZE_BITS, 0);
+}
+
+
+REBOOL Gui_Get_Border(GUIWIN *win)
+{
+	if (!win || !win->handle) return FALSE;
+	return (GetWindowLongPtrW(HWND_OF(win), GWL_STYLE) & WS_CAPTION)
+		? TRUE : FALSE;
+}
+
+
+REBOOL Gui_Set_Border(GUIWIN *win, REBOOL on)
+{
+	if (!win) return FALSE;
+
+	if (on) {
+		// The resize bits are not restored here: whether the window can be
+		// resized is its own property, and one it may never have had.
+		return Set_Window_Style_Bits(win, WS_POPUP, WINDOW_BORDER_BITS);
+	}
+	return Set_Window_Style_Bits(win,
+		WINDOW_BORDER_BITS | WINDOW_RESIZE_BITS, WS_POPUP);
 }
 
 
@@ -1016,6 +1286,175 @@ REBOOL Gui_Set_Title(GUIWIN *win, const REBYTE *utf8, REBCNT len)
 {
 	if (!win || !win->handle) return FALSE;
 	return Set_Text_Of(HWND_OF(win), utf8, len);
+}
+
+
+//== menu bar =================================================================
+//
+// A Win32 menu belongs to the window, which is the easy half. The awkward
+// halves are that a menu bar EATS CLIENT AREA - so a window given one would
+// silently shrink under everything already laid out in it - and that a
+// shortcut is not a property of a menu item at all, but an entry in a
+// separate accelerator table which the message loop has to translate.
+
+// Accelerators collected between Gui_Menu_Begin() and Gui_Menu_End(). One
+// menu is built at a time, from a single thread, so a static is enough and
+// nothing has to be grown per window.
+#define GUI_MAX_ACCEL 128
+static ACCEL Accel_Build[GUI_MAX_ACCEL];
+static int   Accel_Count = 0;
+
+
+REBOOL Gui_Menu_Begin(GUIWIN *win)
+{
+	if (!win || !win->handle) return FALSE;
+
+	Accel_Count = 0;
+	win->menu = (void*)CreateMenu();
+	return win->menu != NULL;
+}
+
+
+void* Gui_Menu_Add_Popup(GUIWIN *win, void *parent,
+                         const REBYTE *label, REBCNT len)
+{
+	HMENU  popup;
+	WCHAR *wide;
+
+	if (!win || !win->menu) return NULL;
+
+	popup = CreatePopupMenu();
+	if (!popup) return NULL;
+
+	wide = To_Wide(label, len);
+	AppendMenuW(parent ? (HMENU)parent : (HMENU)win->menu,
+	            MF_STRING | MF_POPUP, (UINT_PTR)popup, wide ? wide : L"");
+	if (wide) FREE_MEM(wide);
+
+	return (void*)popup;
+}
+
+
+// "Ctrl+Shift+S", appended after a tab so that the menu right-aligns it.
+// Windows does not read the accelerator table to label an item - the text
+// is just text, and keeping the two in step is the caller's job, which
+// here means this function's.
+static void Append_Accel_Text(WCHAR *dst, size_t max, REBCNT key, REBCNT mods)
+{
+	WCHAR tail[40];
+	int   n;
+
+	lstrcpyW(tail, L"\tCtrl+");
+	if (mods & GUI_FLAG_SHIFT) lstrcatW(tail, L"Shift+");
+	if (mods & GUI_FLAG_ALT)   lstrcatW(tail, L"Alt+");
+	n = lstrlenW(tail);
+	tail[n++] = (WCHAR)((key >= 'a' && key <= 'z') ? key - 32 : key);
+	tail[n] = 0;
+
+	if ((size_t)(lstrlenW(dst) + lstrlenW(tail)) < max) lstrcatW(dst, tail);
+}
+
+
+void Gui_Menu_Add_Item(GUIWIN *win, void *parent,
+                       const REBYTE *label, REBCNT len, REBCNT id,
+                       REBCNT key, REBCNT mods)
+{
+	WCHAR  text[256];
+	WCHAR *wide;
+
+	if (!win || !win->menu) return;
+
+	wide = To_Wide(label, len);
+	lstrcpynW(text, wide ? wide : L"", 256);
+	if (wide) FREE_MEM(wide);
+
+	if (key) {
+		Append_Accel_Text(text, 256, key, mods);
+
+		if (Accel_Count < GUI_MAX_ACCEL) {
+			ACCEL *a = &Accel_Build[Accel_Count++];
+			a->fVirt = FVIRTKEY | FCONTROL;
+			if (mods & GUI_FLAG_SHIFT) a->fVirt |= FSHIFT;
+			if (mods & GUI_FLAG_ALT)   a->fVirt |= FALT;
+			// A letter or a digit IS its own virtual key; anything else is
+			// asked of the current keyboard layout.
+			if ((key >= '0' && key <= '9') || (key >= 'A' && key <= 'Z')) {
+				a->key = (WORD)key;
+			} else if (key >= 'a' && key <= 'z') {
+				a->key = (WORD)(key - 32);
+			} else {
+				a->key = (WORD)(VkKeyScanW((WCHAR)key) & 0xFF);
+			}
+			a->cmd = (WORD)id;
+		}
+	}
+
+	AppendMenuW(parent ? (HMENU)parent : (HMENU)win->menu,
+	            MF_STRING, (UINT_PTR)id, text);
+}
+
+
+void Gui_Menu_Add_Separator(GUIWIN *win, void *parent)
+{
+	if (!win || !win->menu) return;
+	AppendMenuW(parent ? (HMENU)parent : (HMENU)win->menu,
+	            MF_SEPARATOR, 0, NULL);
+}
+
+
+REBOOL Gui_Menu_End(GUIWIN *win)
+{
+	HWND hwnd;
+	int  w, h;
+
+	if (!win || !win->handle || !win->menu) return FALSE;
+	hwnd = HWND_OF(win);
+
+	if (!Client_Size_Of(hwnd, &w, &h)) { w = h = 0; }
+	if (!SetMenu(hwnd, (HMENU)win->menu)) return FALSE;
+	DrawMenuBar(hwnd);
+	if (w && h) Keep_Client_Size(hwnd, w, h);
+
+	if (Accel_Count > 0) {
+		win->accel = (void*)CreateAcceleratorTableW(Accel_Build, Accel_Count);
+	}
+	Accel_Count = 0;
+	return TRUE;
+}
+
+
+void Gui_Menu_Free(GUIWIN *win)
+{
+	if (!win) return;
+
+	if (win->handle) {
+		HWND hwnd = HWND_OF(win);
+		int  w, h;
+		if (win->menu) {
+			if (!Client_Size_Of(hwnd, &w, &h)) { w = h = 0; }
+			SetMenu(hwnd, NULL);
+			DrawMenuBar(hwnd);
+			// The room the bar was taking is given back the same way it
+			// was taken, so removing a menu does not move anything either.
+			if (w && h) Keep_Client_Size(hwnd, w, h);
+		}
+	}
+
+	// A submenu is destroyed with the menu holding it, so the bar is the
+	// only handle to destroy. It is NULL already when the window took it.
+	if (win->menu) DestroyMenu((HMENU)win->menu);
+	if (win->accel) DestroyAcceleratorTable((HACCEL)win->accel);
+	win->menu  = NULL;
+	win->accel = NULL;
+}
+
+
+void Gui_Menu_Enable(GUIWIN *win, REBCNT id, REBOOL enabled)
+{
+	if (!win || !win->menu) return;
+	EnableMenuItem((HMENU)win->menu, (UINT)id,
+	               MF_BYCOMMAND | (enabled ? MF_ENABLED : MF_GRAYED));
+	if (win->handle) DrawMenuBar(HWND_OF(win));
 }
 
 
@@ -1038,6 +1477,8 @@ REBOOL Gui_Create_Panel(GUIWIDGET *wid, GUIWIN *owner,
 	HWND hwnd;
 
 	if (!wid || !owner || !owner->handle) return FALSE;
+	// The caller's coordinates are logical units - see the note on Gui_DPI.
+	Box_To_Device(&x, &y, &w, &h);
 	if (!Register_Panel_Class()) return FALSE;
 
 	// WS_CLIPCHILDREN keeps the panel from painting over what it holds.
@@ -1090,6 +1531,8 @@ REBOOL Gui_Create_Button_Control(GUIWIDGET *wid, GUIWIN *owner,
 	DWORD  style = WS_CHILD | WS_VISIBLE | WS_TABSTOP;
 
 	if (!wid || !owner || !owner->handle) return FALSE;
+	// The caller's coordinates are logical units - see the note on Gui_DPI.
+	Box_To_Device(&x, &y, &w, &h);
 
 	switch (wid->kind) {
 	case W_GUI_WIDGET_CHECK:
@@ -1147,6 +1590,8 @@ REBOOL Gui_Create_Text_Control(GUIWIDGET *wid, GUIWIN *owner,
 	DWORD  exstyle = 0;
 
 	if (!wid || !owner || !owner->handle) return FALSE;
+	// The caller's coordinates are logical units - see the note on Gui_DPI.
+	Box_To_Device(&x, &y, &w, &h);
 
 	switch (wid->kind) {
 	case W_GUI_WIDGET_TEXT:
@@ -1199,6 +1644,8 @@ REBOOL Gui_Create_Image(GUIWIDGET *wid, GUIWIN *owner,
 	HWND hwnd;
 
 	if (!wid || !owner || !owner->handle) return FALSE;
+	// The caller's coordinates are logical units - see the note on Gui_DPI.
+	Box_To_Device(&x, &y, &w, &h);
 	if (!Register_Image_Class()) return FALSE;
 
 	hwnd = CreateWindowExW(
@@ -1340,6 +1787,101 @@ REBOOL Gui_Widget_Set_Color(GUIWIDGET *wid)
 }
 
 
+REBDEC Gui_Get_Scale(GUIWIN *win)
+{
+	// One scale for the process - the window is not consulted, but it is in
+	// the signature because macOS answers per screen.
+	return (REBDEC)Gui_DPI / 96.0;
+}
+
+
+/***********************************************************************
+**  What this widget needs for the text it is holding.
+**
+**  Answered in LOGICAL units, like every other size here, and only for
+**  the kinds which have text - the caller has already decided that a
+**  slider has no natural anything.
+**
+**  The padding numbers are the ones the shell's own dialogs use. They
+**  are in logical units and scaled on the way out, so they hold at any
+**  DPI.
+***********************************************************************/
+REBOOL Gui_Widget_Natural_Size(GUIWIDGET *wid, REBINT *w, REBINT *h)
+{
+	HWND    hwnd;
+	HDC     dc;
+	HFONT   font, old = NULL;
+	TEXTMETRICW tm;
+	SIZE    text = {0, 0};
+	int     len;
+	WCHAR  *caption = NULL;
+	REBINT  pad_x = 0, pad_y = 0;
+	REBINT  lines = 1;
+
+	if (!wid || !wid->handle) return FALSE;
+	hwnd = HWND_OF_WID(wid);
+
+	dc = GetDC(hwnd);
+	if (!dc) return FALSE;
+
+	font = (HFONT)SendMessageW(hwnd, WM_GETFONT, 0, 0);
+	if (!font) font = Get_Default_Font();
+	if (font) old = (HFONT)SelectObject(dc, font);
+
+	GetTextMetricsW(dc, &tm);
+
+	len = GetWindowTextLengthW(hwnd);
+	if (len > 0) {
+		caption = (WCHAR*)MAKE_MEM((len + 1) * sizeof(WCHAR));
+		if (caption) {
+			len = GetWindowTextW(hwnd, caption, len + 1);
+			GetTextExtentPoint32W(dc, caption, len, &text);
+			FREE_MEM(caption);
+		}
+	}
+
+	if (old) SelectObject(dc, old);
+	ReleaseDC(hwnd, dc);
+
+	switch (wid->kind) {
+	case W_GUI_WIDGET_BUTTON:
+		pad_x = To_Device(24); pad_y = To_Device(12);
+		break;
+	case W_GUI_WIDGET_CHECK:
+	case W_GUI_WIDGET_RADIO:
+		// The box or the dot, and the gap after it.
+		pad_x = GetSystemMetrics(SM_CXMENUCHECK) + To_Device(8);
+		pad_y = To_Device(6);
+		break;
+	case W_GUI_WIDGET_TEXT:
+		pad_y = To_Device(4);
+		break;
+	case W_GUI_WIDGET_AREA:
+		// One line is not a useful multi-line box; four is the smallest
+		// that looks like one.
+		lines = 4;
+		// fall through
+	case W_GUI_WIDGET_FIELD:
+	case W_GUI_WIDGET_DROP_DOWN:
+		// The sunken border, plus the padding the control keeps inside it.
+		pad_x = 2 * GetSystemMetrics(SM_CXEDGE) + To_Device(8);
+		pad_y = 2 * GetSystemMetrics(SM_CYEDGE) + To_Device(8);
+		// An entry's width should not be the width of whatever happens to
+		// be in it - an empty one would come out a few pixels wide. About
+		// twenty characters is what a dialog uses when it has no better
+		// idea, and the caller can always give a width of its own.
+		if (text.cx < 20 * tm.tmAveCharWidth) text.cx = 20 * tm.tmAveCharWidth;
+		break;
+	default:
+		return FALSE; // no text, so no natural size to give
+	}
+
+	if (w) *w = To_Logical((REBINT)text.cx + pad_x);
+	if (h) *h = To_Logical((REBINT)tm.tmHeight * lines + pad_y);
+	return TRUE;
+}
+
+
 REBOOL Gui_Widget_Get_Box(GUIWIDGET *wid, REBINT *x, REBINT *y, REBINT *w, REBINT *h)
 {
 	RECT  r;
@@ -1363,6 +1905,7 @@ REBOOL Gui_Widget_Get_Box(GUIWIDGET *wid, REBINT *x, REBINT *y, REBINT *w, REBIN
 		*w = r.right - r.left;
 		*h = (REBINT)SendMessageW(hwnd, CB_GETITEMHEIGHT, (WPARAM)-1, 0)
 		   + 2 * GetSystemMetrics(SM_CYEDGE);
+		Box_To_Logical(x, y, w, h);
 		return TRUE;
 	}
 
@@ -1379,6 +1922,7 @@ REBOOL Gui_Widget_Get_Box(GUIWIDGET *wid, REBINT *x, REBINT *y, REBINT *w, REBIN
 	*y = pt.y;
 	*w = r.right - r.left;
 	*h = r.bottom - r.top;
+	Box_To_Logical(x, y, w, h);
 	return TRUE;
 }
 
@@ -1386,7 +1930,9 @@ REBOOL Gui_Widget_Get_Box(GUIWIDGET *wid, REBINT *x, REBINT *y, REBINT *w, REBIN
 REBOOL Gui_Widget_Set_Box(GUIWIDGET *wid, REBINT x, REBINT y, REBINT w, REBINT h)
 {
 	if (!wid || !wid->handle) return FALSE;
-	// ... and the same room has to be added back when it is moved.
+	Box_To_Device(&x, &y, &w, &h);
+	// ... and the same room has to be added back when it is moved. It is a
+	// device-pixel constant, so it is added AFTER the conversion.
 	if (wid->kind == W_GUI_WIDGET_DROP_DOWN) h += DROP_LIST_ROOM;
 	return MoveWindow(HWND_OF_WID(wid), x, y, w, h, TRUE) ? TRUE : FALSE;
 }
@@ -1400,6 +1946,8 @@ REBOOL Gui_Create_Range_Control(GUIWIDGET *wid, GUIWIN *owner,
 	DWORD style = WS_CHILD | WS_VISIBLE;
 
 	if (!wid || !owner || !owner->handle) return FALSE;
+	// The caller's coordinates are logical units - see the note on Gui_DPI.
+	Box_To_Device(&x, &y, &w, &h);
 
 	if (wid->kind == W_GUI_WIDGET_SLIDER) {
 		class_name = TRACKBAR_CLASSW;
@@ -1475,8 +2023,35 @@ void Gui_Widget_Set_Value(GUIWIDGET *wid, REBDEC value)
 	if (wid->kind == W_GUI_WIDGET_SLIDER) {
 		if (Is_Vertical_Slider(wid)) pos = RANGE_STEPS - pos;
 		SendMessageW(HWND_OF_WID(wid), TBM_SETPOS, (WPARAM)TRUE, (LPARAM)pos);
-	} else {
-		SendMessageW(HWND_OF_WID(wid), PBM_SETPOS, (WPARAM)pos, 0);
+		return;
+	}
+
+	/*******************************************************************
+	**  A themed progress bar does not jump to a new position - it
+	**  SLIDES there, over a couple of hundred milliseconds, and a
+	**  program setting it faster than that (a slider driving a meter,
+	**  say) is left watching the bar trail behind by a visible margin.
+	**  The classic look has no animation, which is why this only shows
+	**  up once the v6 common controls are asked for.
+	**
+	**  The animation only plays when the position INCREASES. Going one
+	**  step past and stepping back therefore lands exactly on the value
+	**  with no animation left to play. The range is widened for a
+	**  moment when the value is already at the top, so that there is a
+	**  step to go past.
+	*******************************************************************/
+	{
+		HWND hwnd = HWND_OF_WID(wid);
+
+		if (pos >= RANGE_STEPS) {
+			SendMessageW(hwnd, PBM_SETRANGE32, 0, (LPARAM)(RANGE_STEPS + 1));
+			SendMessageW(hwnd, PBM_SETPOS, (WPARAM)(pos + 1), 0);
+			SendMessageW(hwnd, PBM_SETPOS, (WPARAM)pos, 0);
+			SendMessageW(hwnd, PBM_SETRANGE32, 0, (LPARAM)RANGE_STEPS);
+		} else {
+			SendMessageW(hwnd, PBM_SETPOS, (WPARAM)(pos + 1), 0);
+			SendMessageW(hwnd, PBM_SETPOS, (WPARAM)pos, 0);
+		}
 	}
 }
 
@@ -1489,6 +2064,8 @@ REBOOL Gui_Create_Drop_Down(GUIWIDGET *wid, GUIWIN *owner,
 	HWND hwnd;
 
 	if (!wid || !owner || !owner->handle) return FALSE;
+	// The caller's coordinates are logical units - see the note on Gui_DPI.
+	Box_To_Device(&x, &y, &w, &h);
 
 	hwnd = CreateWindowExW(
 		0, L"COMBOBOX", L"",
@@ -1592,11 +2169,34 @@ REBOOL Gui_Widget_Get_State(GUIWIDGET *wid)
 }
 
 
+/***********************************************************************
+**  Setting a check or a radio - but only when it is not already there.
+**
+**  Not an optimisation. With the v6 common controls a check and a radio
+**  CROSS-FADE between states, and BM_SETCHECK restarts that animation
+**  whether or not the state actually changed. The radio grouping above
+**  this file re-asserts every radio in the window on every click, so a
+**  redundant write here means every radio on screen begins a fade each
+**  time any one of them is picked - which is exactly the sluggishness
+**  the modern theme brings and the classic one does not.
+**
+**  The control is asked rather than trusting wid->state, because the
+**  user clicking a checkbox changes the control without going through
+**  this extension at all.
+***********************************************************************/
 void Gui_Widget_Set_State(GUIWIDGET *wid, REBOOL on)
 {
+	HWND    hwnd;
+	LRESULT want, has;
+
 	if (!wid || !wid->handle) return;
-	SendMessageW(HWND_OF_WID(wid), BM_SETCHECK,
-	             on ? BST_CHECKED : BST_UNCHECKED, 0);
+	hwnd = HWND_OF_WID(wid);
+
+	want = on ? BST_CHECKED : BST_UNCHECKED;
+	has  = SendMessageW(hwnd, BM_GETCHECK, 0, 0);
+	if (has == want) return;
+
+	SendMessageW(hwnd, BM_SETCHECK, (WPARAM)want, 0);
 }
 
 

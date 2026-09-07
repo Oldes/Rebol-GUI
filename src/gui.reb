@@ -46,6 +46,7 @@ c-prefix: GUI
 c-header: {
 extern REBCNT Handle_GuiWindow;
 extern REBCNT Handle_GuiWidget;
+extern REBCNT Word_Separator; // the menu dialect's `---`
 
 // How this extension describes a font when it is not inside a control.
 //
@@ -76,6 +77,19 @@ typedef struct Gui_Window_Context {
 	GUIFONT font;    // what a widget created from now on starts with; it is
 	                 // read at creation and never again, so restyling a
 	                 // window does not reach back into what it already holds
+
+	// The menu bar. `menu` is the native object (HMENU / NSMenu*) and
+	// `accel` the Win32 accelerator table, which has no counterpart on
+	// macOS - a key equivalent there belongs to the item itself.
+	//
+	// The BLOCK the caller assigned is kept in hob->series, the one slot
+	// the GC marks, which is free on a window - only an image widget uses
+	// its own. That is what `win/menu` reads back.
+	void   *menu;
+	void   *accel;
+	REBCNT *menu_ids;   // item id N (1-based) is the word menu_ids[N-1]
+	REBYTE *menu_on;    // ... and menu_on[N-1] is whether it is enabled
+	REBCNT  menu_count;
 } GUIWIN;
 
 // An image widget holds no pixels of its own: the image! series it was given
@@ -109,6 +123,12 @@ typedef struct Gui_Widget_Context {
 } GUIWIDGET;
 
 #define GUIW_VISIBLE  1
+
+// Passed to Gui_Open_Window(). Everything a window's frame can be is
+// decided at creation and changeable afterwards through `resizable?` and
+// `border?`, so these say only what it STARTS as.
+#define GUI_WIN_FIXED       1
+#define GUI_WIN_BORDERLESS  2
 
 // wid->state of a panel
 #define GUI_PANEL_EDGE 1
@@ -147,6 +167,13 @@ words: [
 		click           ;; a widget was activated; source = the widget
 		change          ;; the user edited a field or an area
 		focus unfocus   ;; keyboard focus entered or left a widget
+		menu            ;; a menu item was picked; value = its word, not a number
+	]
+	;; Words the menu dialect understands beyond the labels and the item
+	;; ids themselves. The separator `---` is NOT here: it would generate
+	;; `W_GUI_MENU____`, so it is mapped by name in Gui_Init() instead.
+	menu: [
+		shift control alt  ;; extra modifiers in a shortcut block
 	]
 	widget: [
 		button
@@ -174,11 +201,16 @@ handles: [
 		offset   pair!     pair!     "Position of the top-left corner on the screen"
 		id       integer!  none      "Native window handle as an integer"
 		open?    logic!    none      "False once the window has been closed"
+		scale    decimal!  none      "Device pixels per unit of size - 1.0 at 100%, 1.75 at 175%, 2.0 on a Retina Mac"
+		resizable? logic!  logic!    "Whether the user can resize it"
+		border?    logic!  logic!    "Whether it has a title bar and a frame; a borderless window cannot be moved or closed by the user"
 		;; Defaults for widgets created AFTERWARDS - see the note in the README.
 		font      string!  [string! none!] "Font family widgets are created with; none for the system font"
 		font-size integer! [integer! none!] "Point size widgets are created with; none for the system size"
 		bold?     logic!   logic!    "Whether widgets are created bold"
 		italic?   logic!   logic!    "Whether widgets are created italic"
+		menu      block!   [block! none!] "The menu bar, as the dialect described in the README; none removes it"
+		menu-enabled? block! block!  "Which items are greyed out, as word/logic pairs; setting merges, it does not replace"
 	]
 	widget: [
 		"GUI widget handle - a native control inside a window"
@@ -217,11 +249,17 @@ commands: [
 		/title text [string!] "Text shown in the title bar"
 		/at offset [pair!] "Position of the top-left corner on the screen"
 		/hidden "Creates the window without showing it"
+		/fixed  "The user cannot resize it"
+		/borderless "No title bar and no frame - see the note in the README"
 	]
 	close-window: ["Destroys the window" window [handle!]]
 	show-window:  ["Makes the window visible" window [handle!]]
 	hide-window:  ["Hides the window without destroying it" window [handle!]]
-	poll-events:  ["Dispatches pending OS messages and returns the collected events"]
+	poll-events: [
+		"Dispatches pending OS messages and returns the collected events"
+		/wait
+		 timeout [number!] {Seconds to sleep for if there is nothing to report; woken early by anything the OS delivers}
+	]
 	add-button: [
 		"Creates a native push button inside a window and returns its handle"
 		parent [handle!] "Window or panel to put it in"
@@ -333,14 +371,18 @@ mezzanine: [
 		"Pumps window events until the given window is closed"
 		window  [handle!]
 		handler [any-function!] "Called as: handler type source position value"
-		/rate delay [number!] "Idle time between polls (default: 0.01)"
+		/rate delay [number!] {Longest it may sleep with nothing to do (default: 0.05)}
 	][
-		delay: any [delay 0.01]
+		;; NOT `wait delay` between polls: this sleeps INSIDE the extension,
+		;; on the OS queue, and wakes the moment anything arrives - which is
+		;; what keeps a themed control's animation smooth and the window
+		;; responsive without spinning. The delay is only a ceiling.
+		delay: any [delay 0.05]
 		forever [
-			foreach [type source pos val] poll-events [
+			foreach [type source pos val] poll-events/wait delay [
 				handler type source pos val
 				;; `close` only reports the request - closing is ours to do
-				if all [type = 'close  source/id = window/id] [
+				if all [type = 'close  source = window] [
 					close-window window
 				]
 				;; the handler is allowed to close it as well, and the rest
@@ -348,7 +390,6 @@ mezzanine: [
 				unless window/open? [break]
 			]
 			unless window/open? [exit]
-			wait delay
 		]
 	]
 ]

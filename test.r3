@@ -23,18 +23,22 @@ if modules-dir: get-env 'REBOL_MODULES_DIR [
 gui: import 'gui
 ? gui
 
+NL: either system/platform = 'Windows [CRLF][LF]
+
 ;;=============================================================================
 print as-yellow "^/== Opening a window"
 ;;=============================================================================
 
 win: open-window/title/at 640x480 "Rebol GUI extension" 200x120
 
-print ["window:  " mold win]
+print ["window:  " win]
 print ["id:      " win/id]
 print ["open?:   " win/open?]
 print ["title:   " mold win/title]
 print ["size:    " win/size]
 print ["offset:  " win/offset]
+print ["scale:   " win/scale "(device pixels per unit - sizes below are logical)"]
+print ["resizable?" win/resizable? " border?" win/border?]
 
 ;; every accessor which can be read can also be written, except id and open?
 win/title: "Rebol GUI extension - move the mouse"
@@ -46,16 +50,19 @@ print as-yellow "^/== Native buttons"
 
 ;; Both are children of the window's client area, positioned from its
 ;; top-left corner - the same convention everything else here uses.
+;; A zero axis asks the control what it needs for its own text, in its
+;; own font - which is the only thing that knows. Everything else here is
+;; in LOGICAL units: 96 to the inch, the same number on any display.
 counter: add-button win "Click me"  20x20 140x32
-closer:  add-button win "Close it" 180x20 140x32
+closer:  add-button win "Close it" 180x20 0x0
 
-print ["button:   " mold counter]
+print ["button:   " counter]
 print ["kind:     " counter/kind]
 print ["text:     " mold counter/text]
 print ["offset:   " counter/offset]
 print ["size:     " counter/size]
 print ["enabled?: " counter/enabled?]
-print ["parent:   " mold counter/parent "^/is the window?" counter/parent/id = win/id]
+print ["parent:   " counter/parent "^/is the window?" counter/parent = win]
 
 ;;=============================================================================
 print as-yellow "^/== An image widget"
@@ -80,7 +87,7 @@ paint pic 0
 
 canvas: add-image win pic 20x70
 
-print ["image:    " mold canvas]
+print ["image:    " canvas]
 print ["kind:     " canvas/kind]
 print ["size:     " canvas/size]
 ;; Reading the image back out of the widget. NEVER mold an image! into the
@@ -100,11 +107,13 @@ print as-yellow "^/== Text widgets"
 
 ;; A label, a one-line entry and a multi-line entry. All three carry their
 ;; string in the same `text` accessor the button uses.
-label: add-text  win "Type your name:"  300x70  220x24
-name:  add-field win ""                 300x100 240x26
+label: add-text  win "Type your name:"  300x70  220x0
+name:  add-field win ""                 300x100 240x0
 log:   add-area  win "-- event log --"  300x140 300x200
 
 print ["label kind:" label/kind "  field kind:" name/kind "  area kind:" log/kind]
+print ["natural heights - label:" label/size "field:" name/size]
+print ["and the button that asked for one:" closer/size]
 print ["label text:" mold label/text]
 
 ;; Writing to a control from Rebol does NOT come back as a `change` event -
@@ -133,7 +142,7 @@ print ["size is unchanged:" label/size]
 
 ;; `none` puts a part back to whatever the platform uses.
 log/font: "Courier New"          ;; a missing family falls back, never fails
-log/font-size: 12
+log/font-size: 10
 name/color: 150.30.30
 
 ;; Windows draws a push button's text itself, in the system colour, and only
@@ -146,10 +155,10 @@ print ["button colour asked for:" mold counter/color]
 ;; Setting it does not reach back into what is already on screen.
 win/font-size: 15
 win/italic?:   true
-txt: add-text win "made after the window default was set" 300x395 320x24
+styled: add-text win "made after the window default was set" 300x395 320x24
 
 print ["window default:" win/font-size "italic?" win/italic?]
-print ["the new label took it:" txt/font-size "italic?" txt/italic?]
+print ["the new label took it:" styled/font-size "italic?" styled/italic?]
 print ["the first one did not: " label/font-size "italic?" label/italic?]
 
 ;; Put it back, so the rest of this script builds ordinary widgets.
@@ -198,8 +207,8 @@ print ["a check has no edge:" mold toggle/edge]
 
 ;; `parent` is whatever holds it; `window` is the window either way.
 print ["warm sits in a" warm/parent/kind "at" warm/offset]
-print ["... and its window is the same one:" warm/window/id = win/id]
-print ["slow sits directly in the window:" mold slow/parent/id = win/id]
+print ["... and its window is the same one:" warm/window = win]
+print ["slow sits directly in the window:" slow/parent = win]
 
 ;; Turning one on turns its own group off - and leaves the other alone.
 cool/state: true
@@ -214,7 +223,7 @@ print as-yellow "^/== Slider and progress"
 ;; Both carry a `value` from 0% to 100%. A slider taller than it is wide
 ;; would be vertical; these are horizontal.
 level: add-slider/value   win 20x370 240x28 25%
-meter: add-progress/value win 20x410 240x20 25%
+meter: add-progress/value win 20x410 240x10 25%
 
 print ["slider:" level/kind "value:" level/value]
 print ["progress:" meter/kind "value:" meter/value]
@@ -241,9 +250,71 @@ print ["after replacing the items:" picker/index mold picker/text]
 
 logged: copy "-- event log --"
 note: func ["Appends a line to the area" line [string!]][
-	append logged join newline line
+	logged: log/text
+	append logged join NL line
 	log/text: logged
 ]
+
+;;=============================================================================
+print as-yellow "^/== Window frames"
+;;=============================================================================
+
+;; `/fixed` opens a window the user cannot resize, and `/borderless` one with
+;; no title bar and no frame at all. Both are readable and writable afterwards
+;; - and changing either keeps the CLIENT size, so nothing inside moves.
+fixed: open-window/title/at/fixed 240x120 "Fixed size" 700x120
+print ["fixed window - resizable?" fixed/resizable? " border?" fixed/border?]
+print ["client size:" fixed/size]
+
+bare: open-window/at/borderless 240x120 700x280
+print ["bare window  - resizable?" bare/resizable? " border?" bare/border?]
+print ["client size:" bare/size "(unchanged by having no frame)"]
+
+;; A borderless window has no close box and nothing to drag, so the program
+;; is the only thing that can move or close it. Give this one a way out.
+add-text   bare "No border - and no way to close me" 10x10 220x0
+back-again: add-button bare "Give me a frame" 10x50 0x0
+
+;; Turning the border back on does not turn resizing back on: they are two
+;; properties, and this window never had the second one.
+fixed/resizable?: true
+print ["... and now the fixed one is resizable?" fixed/resizable?]
+
+;;=============================================================================
+print as-yellow "^/== Menu bar"
+;;=============================================================================
+
+;; A label followed by a WORD is an item - and it is the word, not the label,
+;; which comes back in the event, so renaming "Reset" would not break the
+;; handler below. A label followed by a BLOCK is a submenu. `---` divides.
+;;
+;; A char! after the id is a shortcut on the platform's own menu modifier -
+;; Ctrl on Windows, Cmd on macOS - and a block adds more modifiers to it.
+win/menu: [
+	"File" [
+		"Reset counter" reset  #"R"
+		"Log a note"    note   [shift #"L"]
+		---
+		"Close"         quit   #"W"
+	]
+	"View" [
+		"Image" [
+			"Repaint"   repaint
+			"Clear log" clear-log
+		]
+		---
+		"Big text"      big
+		"Normal text"   normal
+	]
+	"Help" ["About" about]
+]
+
+;; Reads back as the very block it was given - not a rebuilt one.
+print ["menu is a" type? win/menu "of" length? win/menu "menus"]
+
+;; Greying out is by word, and merges: only `note` changes here.
+win/menu-enabled?: [note false]
+print ["menu-enabled? reports:" mold win/menu-enabled?]
 
 ;;=============================================================================
 print as-yellow "^/== Events"
@@ -280,26 +351,61 @@ report: func [type source position value][
 	][	note ajoin [type " on " source/kind] ]
 
 	;; Picking from the drop-down shows up in the label.
-	if all [type = 'change  source/id = picker/id] [
+	if all [type = 'change  source = picker] [
 		label/text: ajoin ["Picked: " source/text " (" source/index ")"]
 	]
 
 	;; Dragging the slider drives the progress bar next to it.
-	if all [type = 'change  source/id = level/id] [
+	if all [type = 'change  source = level] [
 		meter/value: source/value
 	]
 
 	;; The field greets whoever is typing in it.
-	if all [type = 'change  source/id = name/id] [
+	if all [type = 'change  source = name] [
 		label/text: either empty? source/text [
 			"Type your name:"
 		][	ajoin ["Hello, " source/text "!"] ]
 	]
 
+	;; A `menu` event carries the item's WORD in the value slot - the one
+	;; slot with no fixed type - so a handler is a plain switch. `source` is
+	;; the window the menu belongs to.
+	if type = 'menu [
+		note ajoin ["menu: " value]
+		switch value [
+			reset     [clicks: 0  counter/text: "Click me"]
+			note      [note "a note"]
+			quit      [close-window win  exit]
+			repaint   [paint pic random 400  redraw canvas]
+			clear-log [logged: copy ""  log/text: ""]
+			big       [label/font-size: 20]
+			normal    [label/font-size: none]
+			about     [label/text: "Rebol/GUI extension"]
+		]
+		;; Once the counter is back at zero there is nothing to reset.
+		win/menu-enabled?: reduce ['reset clicks > 0  'note true]
+	]
+
+	;; The borderless window's own button gives it a frame back - and with
+	;; a title bar it has a close box again.
+	if all [type = 'click  source = back-again] [
+		bare/border?: true
+		bare/title: "There you go"
+	]
+
+	if all [type = 'close source = fixed] [
+		print "Closing fixed window."
+		close-window fixed
+	]
+	if all [type = 'close source = bare] [
+		print "Closing bare window."
+		close-window bare
+	]
+
 	;; For a click the source is the widget, not the window.
 	if type = 'click [
 		case [
-			source/id = closer/id [
+			source = closer [
 				close-window win
 				exit
 			]
@@ -312,7 +418,7 @@ report: func [type source position value][
 			source/kind = 'radio [
 				note ajoin ["group " source/group " -> " source/text]
 			]
-			source/id = counter/id [
+			source = counter [
 				clicks: clicks + 1
 				source/text: ajoin ["Clicked " clicks]
 
@@ -329,13 +435,17 @@ report: func [type source position value][
 		pad mold position 12
 		case [
 			type = 'wheel [ajoin ["lines: " value]]
-			type = 'click [mold source]
+			type = 'click [source]
 			;; the image widget reports its own mouse events
-			source/id = canvas/id [ajoin ["on the image " mold source]]
+			source = canvas [ajoin ["on the image " source]]
+			;; a `menu` event carries the item's word in this slot
+			type = 'menu [ajoin ["item: " value]]
 			true [
-				mold collect [
-					foreach [name bit] body-of event-flags [
-						if value and bit <> 0 [keep to word! name]
+				if integer? value [
+					mold collect [
+						foreach [name bit] event-flags [
+							if (value & bit) <> 0 [keep to word! name]
+						]
 					]
 				]
 			]
@@ -353,10 +463,14 @@ print ["what was typed: " mold attempt [name/text] "(none - the control is gone)
 
 ;; Widgets go with their window: the handles stay usable and simply report
 ;; themselves as removed, rather than pointing at freed controls.
-print ["button after close:" mold counter "parent:" mold counter/parent]
+print ["button after close:" counter "parent:" counter/parent]
 
 ;; Everything the panel held went with it, however it was reached.
-print ["a radio inside the panel:" mold warm "parent:" mold warm/parent]
+print ["a radio inside the panel:" warm "parent:" warm/parent]
+
+;; The extra windows go too - a `close` on the main one ends the loop, and
+;; these two have nothing watching them.
+foreach extra reduce [fixed bare] [if extra/open? [close-window extra]]
 
 ;; The image itself is untouched by any of this - the widget only ever held
 ;; a reference to it.
@@ -365,10 +479,11 @@ print ["the image survives:" type? pic pic/size]
 ;; The handles stay usable after the window is gone. Releasing them is
 ;; optional - the recycler would do it too.
 foreach handle reduce [
-	canvas counter closer label name log txt
+	canvas counter closer label name log styled
 	toggle box warm cool slow fast level meter picker
+	fixed bare back-again
 ][	release handle ]
 release win
-print ["released:" mold win]
+print ["released:" win]
 
 print "done"
