@@ -235,7 +235,7 @@ handles: [
 		items    block!    block!    "Strings a drop-down offers; none for other kinds"
 		index    integer!  integer!  "Which item is picked, 1-based; 0 for none"
 		image    image!    image!    "Image shown by an image widget, none for other kinds"
-		size     pair!     pair!     "Size of the control"
+		size     pair!     pair!     "Size of the control; a zero axis asks it what that axis needs, the same as at creation"
 		offset   pair!     pair!     "Position inside whatever holds it - a window or a panel"
 		id       integer!  none      "Native control handle as an integer"
 		kind     word!     none      "What the control is: button, image, text, field, area, check, radio, slider, progress or drop-down"

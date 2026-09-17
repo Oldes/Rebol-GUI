@@ -136,15 +136,37 @@ print as-yellow "^/== Typography"
 ;; what is really on screen - including whatever the platform started it with.
 print ["label started as:" mold label/font label/font-size "bold?" label/bold?]
 
+was: label/size
+
 label/font-size: 15
 label/bold?:     true
 label/color:     30.90.170
 print ["... and is now:  " mold label/font label/font-size "bold?" label/bold?]
 print ["colour reads back as:" mold label/color]
 
-;; A control does NOT resize itself for a bigger font - the box laid out is
-;; the box kept, so leave room.
-print ["size is unchanged:" label/size]
+;; Nothing re-measures itself: a control which was told how big to be keeps
+;; that size, whatever happens to its font, because the box a script laid out
+;; is the box it meant. A bigger font in the old box clips.
+print ["size after the font change:" label/size "(unchanged)"]
+
+;; Asking for a re-fit is a ZERO AXIS in `size` - the same convention `add-*`
+;; uses. `label` was created 220x0, so 220x0 is also how to say "keep the
+;; width you were given, measure the height again".
+label/size: 220x0
+print ["after asking to re-fit:   " label/size]
+print ["the measured height grew: " label/size/y > was/y]
+print ["the given width is kept:  " label/size/x = 220]
+
+;; 0x0 measures both. The width of a label is its text, so this one ends up
+;; snug around it - then back to a given width, which is how it is left for
+;; the rest of the script.
+label/size: 0x0
+print ["and 0x0 measures both:    " label/size]
+label/size: 220x0
+
+;; A kind with no size of its own refuses to be asked, rather than quietly
+;; doing nothing.
+print ["asking an image to re-fit:" error? try [canvas/size: 0x0]]
 
 ;; `none` puts a part back to whatever the platform uses.
 log/font: "Courier New"          ;; a missing family falls back, never fails

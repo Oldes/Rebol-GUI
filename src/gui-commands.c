@@ -776,6 +776,38 @@ static GUIWIN* Frm_Parent(RXIFRM *frm, REBCNT n, GUIWIDGET **panel)
 #define Kind_Has_Font(kind) Kind_Has_Text(kind)
 
 /***********************************************************************
+**  Gives a widget the size its own content asks for, on the axes named.
+**
+**  ONLY WHEN ASKED. Nothing here happens on its own: a widget which was
+**  told how big to be stays that size, whatever happens to its font or
+**  its text afterwards, because the box a script laid out is the box it
+**  meant. Re-fitting on every change would move widgets around under a
+**  layout that had already been settled.
+**
+**  Asking is a zero axis - the convention `add-*` already uses, both at
+**  creation and now through `widget/size:`.
+**
+**  Returns FALSE for a kind with nothing to measure: an image widget is
+**  whatever size it was given, and a panel is a container whose contents
+**  this layer knows nothing about.
+***********************************************************************/
+static REBOOL Fit_To_Content(GUIWIDGET *wid, REBOOL fit_w, REBOOL fit_h)
+{
+	REBINT nw = 0, nh = 0;
+	REBINT x, y, w, h;
+
+	if (!wid || (!fit_w && !fit_h)) return TRUE; // nothing asked for
+	if (!Gui_Widget_Natural_Size(wid, &nw, &nh)) return FALSE;
+	if (!Gui_Widget_Get_Box(wid, &x, &y, &w, &h)) return FALSE;
+
+	if (fit_w && nw > 0) w = nw;
+	if (fit_h && nh > 0) h = nh;
+
+	Gui_Widget_Set_Box(wid, x, y, w, h);
+	return TRUE;
+}
+
+/***********************************************************************
 **  Links a new widget to its window, and finishes it off.
 **
 **  `w` and `h` are what the caller ASKED for; a zero in either means
@@ -802,16 +834,12 @@ static void Attach_Widget(GUIWIDGET *wid, GUIWIN *win, REBINT w, REBINT h)
 			win->font.size, win->font.style);
 	}
 
-	if (w <= 0 || h <= 0) {
-		REBINT nw = 0, nh = 0;
-		REBINT x, y, cw, ch;
-		if (Gui_Widget_Natural_Size(wid, &nw, &nh)
-		    && Gui_Widget_Get_Box(wid, &x, &y, &cw, &ch)) {
-			if (w <= 0 && nw > 0) cw = nw;
-			if (h <= 0 && nh > 0) ch = nh;
-			Gui_Widget_Set_Box(wid, x, y, cw, ch);
-		}
-	}
+	// A zero axis asks the widget, once, here. A kind with nothing to
+	// measure keeps the placeholder box it was created at, which is why
+	// the answer is not checked: `add-panel win 20x20 0x0` is the caller
+	// asking a container how big its contents are, and there is no answer
+	// to that at this level.
+	Fit_To_Content(wid, w <= 0 ? TRUE : FALSE, h <= 0 ? TRUE : FALSE);
 
 	// Invalidate, do not paint. A script builds its whole layout with
 	// nothing pumping in between, so painting here would make the window
@@ -889,6 +917,10 @@ static REBOOL Set_Font_Part(GUIWIDGET *wid, REBCNT part,
 	else
 		style = (current_style & ~style_mask) | (style & style_mask);
 
+	// Deliberately no re-fit here. A bigger font in a box which was laid
+	// out for a smaller one clips, and the remedy is `widget/size:` with a
+	// zero axis - a decision for the script, which knows what else is
+	// around the widget, rather than for this function.
 	return Gui_Widget_Set_Font(wid, name, name_len, size, style);
 }
 
@@ -2250,12 +2282,36 @@ int GuiWidget_set_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 
 	// Both halves of the box are read back first, so that setting one does
 	// not disturb the other.
-	case W_GUI_ARG_SIZE:
+	/*******************************************************************
+	**  A ZERO AXIS ASKS THE WIDGET, exactly as at creation - which is
+	**  the whole of the re-fit interface:
+	**
+	**      lbl/size: 220x0   ;; keep the width, measure the height
+	**      lbl/size: 0x0     ;; measure both
+	**
+	**  Nothing re-measures on its own, so this is what a script calls
+	**  after changing a font or a label, when it wants the box to follow
+	**  and has decided there is room for it.
+	*******************************************************************/
+	case W_GUI_ARG_SIZE: {
+		REBOOL fit_w, fit_h;
 		if (*type != RXT_PAIR) return PE_BAD_SET_TYPE;
-		if (arg->pair.x <= 0 || arg->pair.y <= 0) return PE_BAD_RANGE;
+		if (arg->pair.x < 0 || arg->pair.y < 0) return PE_BAD_RANGE;
 		if (!Gui_Widget_Get_Box(wid, &x, &y, &w, &h)) return PE_BAD_SET;
-		Gui_Widget_Set_Box(wid, x, y, (REBINT)arg->pair.x, (REBINT)arg->pair.y);
-		break;
+
+		fit_w = arg->pair.x == 0 ? TRUE : FALSE;
+		fit_h = arg->pair.y == 0 ? TRUE : FALSE;
+
+		// The given axes first, so that measuring the other one happens
+		// against the box the caller is asking for.
+		if (!fit_w) w = (REBINT)arg->pair.x;
+		if (!fit_h) h = (REBINT)arg->pair.y;
+		Gui_Widget_Set_Box(wid, x, y, w, h);
+
+		// An image or a panel has no size of its own to report, so asking
+		// one is refused rather than quietly ignored.
+		if (!Fit_To_Content(wid, fit_w, fit_h)) return PE_BAD_SET;
+		break; }
 
 	case W_GUI_ARG_OFFSET:
 		if (*type != RXT_PAIR) return PE_BAD_SET_TYPE;

@@ -341,7 +341,18 @@ static LRESULT Ctl_Color(HDC dc, HWND child, GUIWIN *win)
 		      GUI_COLOR_B(wid->color))
 		: GetSysColor(COLOR_WINDOWTEXT));
 
-	return (LRESULT)(HBRUSH)(COLOR_WINDOW + 1);
+	// A REAL brush handle. `(HBRUSH)(COLOR_WINDOW + 1)` is the encoding
+	// WNDCLASS.hbrBackground and FillRect accept, and it is NOT a handle:
+	// returned from here it is an invalid one, and the control fills with
+	// whatever it falls back to - COLOR_3DFACE grey, darker than the
+	// window. Visible under the classic look, where a static, a check and
+	// a radio paint their own background with this brush, and hidden under
+	// visual styles, where the theme paints it and the brush is never
+	// used. That is why it only showed with the old look.
+	//
+	// GetSysColorBrush hands back a cached brush owned by the system: it
+	// needs no cleanup and must not be deleted.
+	return (LRESULT)GetSysColorBrush(COLOR_WINDOW);
 }
 
 
@@ -1892,7 +1903,15 @@ REBOOL Gui_Widget_Natural_Size(GUIWIDGET *wid, REBINT *w, REBINT *h)
 	}
 
 	if (w) *w = To_Logical((REBINT)text.cx + pad_x);
-	if (h) *h = To_Logical((REBINT)tm.tmHeight * lines + pad_y);
+
+	// tmHeight is ascent plus descent and NOTHING else: tmExternalLeading,
+	// the gap the font asks for between its lines, is not in it. A line box
+	// is the two together, which is what a multi-line control needs - and
+	// for a single line it is a pixel or two of slack in the only direction
+	// that matters, since a static draws from the top and anything short
+	// clips the descenders.
+	if (h) *h = To_Logical((REBINT)(tm.tmHeight + tm.tmExternalLeading) * lines
+	                       + pad_y);
 	return TRUE;
 }
 
