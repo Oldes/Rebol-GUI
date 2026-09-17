@@ -20,36 +20,87 @@ being the intended one), and `redraw` it.
 - no checkable menu items, and no popup (context) menus
 - eleven native controls so far: button, image, text, field, area, check,
   radio, slider, progress, drop-down, panel
-- no `system/ports/event` integration - see below
+- events are not posted to `system/ports/event` - see below
 - Windows and macOS; there is no X11/Wayland backend yet
 
-## Why `poll-events` and not the event port
+## The event model
 
-Events could be posted with `RL_Event`, but nothing would pump the OS message
-queue while the interpreter sits in `wait`: an extension cannot register a
-device, and `RDI_EVENT` is a fixed slot in the host's device table. So the
-extension keeps its own queue and `poll-events` both pumps and drains it.
+Two separate questions, and it is worth keeping them apart:
 
-The cost is an explicit loop. The benefit is that this builds and runs against
-an unmodified `r3`, with no host-lib callbacks and no `REBGOB` crossing the
-extension boundary - and the loop is one mezzanine function (`do-events`) which
-can be replaced the day the interpreter grows a poll hook.
+**Who pumps the OS message queue?** The host does, from inside `wait`. The
+extension registers a device with `RDO_AUTO_POLL`, which asks the host to poll
+it from `OS_Wait` even with nothing pending — and that poll calls `Gui_Pump`.
+So `wait` is what sleeps, and one sleep serves both queues: OS messages get
+dispatched, and everything else Rebol has waiting — ports, timers, awake
+handlers — is serviced at the same time.
 
-### Sleep on the queue, not on a clock
+That matters more than it sounds. The alternative, which this extension did
+until the device existed, is for the GUI loop to sleep inside the extension —
+and then for as long as a window is open, **nothing services Rebol's own
+queue**. A GUI program could not also hold a socket open.
 
-`poll-events/wait 0.05` sleeps **inside the extension, on the OS queue**, and
-returns the moment anything arrives — `MsgWaitForMultipleObjects` on Windows,
-`nextEventMatchingMask:untilDate:` on macOS. The timeout is only a ceiling.
-`do-events` uses it, which is why it no longer calls `wait` at all.
+**How does `wait` know to return early?** The poll *pushes* an event with
+`RL_Event`, and the signal that sets is what wakes `WAIT`. So a click is
+delivered as soon as it happens, and the 0.05 s in `do-events` is only a
+ceiling.
 
-The difference is not just latency. A loop that sleeps a fixed interval and
-then drains serves everything **late and in bursts**, and a themed Windows
-control animates on *timer* messages — so its hover and check animations
-stutter, which reads as the control being slow to respond rather than slow to
-draw. Waking on the message hands the animation its timer when it is due.
+It cannot do this by its return code. The poll always answers `DR_DONE`,
+whatever is queued — the request an `RDC_POLL` handler is handed is one `REBREQ`
+on `OS_Poll_Devices`' own C stack, lent to each auto-polled device in turn, and
+a non-zero answer makes `OS_Do_Device` attach that stack temporary to the
+device's pending list, where it stays after the frame is gone. The host then
+walks a list holding a dangling pointer, on behalf of every device on it, and
+the event loop stops working rather than becoming more responsive. (`DR_PEND`
+also makes `OS_Wait` answer -1 on every poll, so `wait` spins instead of
+sleeping.)
 
-`poll-events` with no refinement is unchanged: it pumps, drains and returns at
-once. Use it when your loop has other work to get back to.
+A pushed event has to be delivered somewhere, so the device serves a port: the
+`gui` scheme, opened once when the module is imported and reachable as
+`gui/event-port`. Nothing travels through it — GUI events stay in the
+extension's own queue, as below. It is a doorbell: its `awake` returning true is
+what puts it on `WAIT`'s waked list, `read` on it answers how many events are
+waiting behind it, and the GC marks it while an event of its own is queued. A
+program writing its own loop can wait on it alongside anything else:
+
+```rebol
+wait [my-socket gui/event-port 1]
+```
+
+It rings once per batch — on the first poll which finds the queue non-empty, and
+not again until `poll-events` has drained it — so a window nobody is draining
+cannot flood the system port. The condition is "anything waiting", not "anything
+new since the pump", because not every event arrives during a pump: a
+programmatic resize queues one from inside `win/size:`, and a user dragging a
+window runs a modal OS loop which dispatches for itself. Ringing from
+`Gui_Queue_Event` would be the obvious place and is the one thing that must not
+be done — that code can run inside such a modal loop, where growing a Rebol
+series is not safe.
+
+`gui-device-events` reports how many wakes have been pushed, which is the only
+way from Rebol to see this half of the arrangement working.
+
+`gui-device` reports the id the host assigned (any positive number means it was
+accepted) and `gui-device-polls` how many times it has been polled — the only
+way, from Rebol, to see that the arrangement is working.
+
+**Where do events go?** Into the extension's own queue, drained by
+`poll-events` — *not* into `system/ports/event`. Posting them with `RL_Event`
+would mean a `REBGOB` crossing the extension boundary and a scheme in the host
+to make sense of it. Keeping our own queue is what lets this build against an
+unmodified `r3`, and the loop is one mezzanine function (`do-events`) which can
+be replaced the day the interpreter grows something better.
+
+So a loop is `poll-events` to drain, then `wait` to sleep:
+
+```rebol
+forever [
+    foreach [type source position value] poll-events [...]
+    unless win/open? [break]
+    wait 0.05          ;; the device pumps the OS queue from in here
+]
+```
+
+`poll-events` never sleeps. The delay is only a ceiling.
 
 ## Build
 
@@ -78,7 +129,7 @@ forever [
         if all [type = 'click  source = ok] [print "clicked!"]
         if type = 'close [close-window win  halt]
     ]
-    wait 0.01
+    wait 0.05
 ]
 ```
 
@@ -808,10 +859,10 @@ Three things were making that much worse than it had to be, all now fixed:
   control produces a great many — animation timers, mouse tracking, buffered
   paint. It now runs only for keyboard messages.
 
-The fourth and largest part is the loop itself: see [Sleep on the queue, not on
-a clock](#sleep-on-the-queue-not-on-a-clock) above. An animation driven by timer
-messages needs a loop that wakes when a timer is due, not one that wakes on a
-clock of its own and drains whatever accumulated.
+The fourth and largest part is the loop itself: see [The event
+model](#the-event-model) above. An animation driven by timer messages needs to
+be pumped while the program is idle, not only when its loop comes round — which
+is what the device poll from inside `wait` gives it.
 
 **This is deliberately not solved with a UI thread.** A dedicated thread with a
 blocking `GetMessage` loop is the usual answer to a sluggish Win32 UI, and it
@@ -860,8 +911,6 @@ Hides the window without destroying it
 
 #### `poll-events`
 Dispatches pending OS messages and returns the collected events
-* `/wait`
-* `timeout` `[number!]` Seconds to sleep for if there is nothing to report; woken early by anything the OS delivers
 
 #### `add-button` `:parent` `:text` `:offset` `:size`
 Creates a native push button inside a window and returns its handle
@@ -957,6 +1006,33 @@ Creates a panel - a widget which holds other widgets - and returns its handle
 * `/title`
 * `text` `[string!]` Caption set into the frame; implies /edge
 
+#### `gui-device`
+Returns the id of the device this extension registered
+
+#### `gui-device-polls`
+Returns how many times the host has polled it
+
+#### `gui-device-events`
+Returns how many wake events the device has pushed
+
+#### `gui-port-open` `:port`
+Attaches a port to the GUI device
+* `port` `[port!]`
+
+#### `gui-port-close` `:port`
+Detaches it again
+* `port` `[port!]`
+
+#### `gui-port-read` `:port`
+Returns how many events are waiting
+* `port` `[port!]`
+
+#### `gui-device-pumps`
+Returns how many polls reached the OS pump
+
+#### `gui-device-messages`
+Returns how many OS messages those pumps dispatched
+
 
 ## Used handles and its getters / setters
 
@@ -1019,6 +1095,42 @@ event-flags: object [
 	double:  8
 ]
 
+;; -----------------------------------------------------------------------
+;; The event port - a doorbell, not a channel.
+;;
+;; The device pushes one Rebol event whenever the OS pump has put
+;; something in the extension's queue, and an event has to be delivered
+;; somewhere: EVM_PORT events resolve back to this port, its `awake` is
+;; what puts it on WAIT's waked list, and the GC marks it for as long as
+;; an event of its own is queued.
+;;
+;; The GUI events themselves never travel through it. They stay in the
+;; extension's queue and come out of `poll-events`. All this port says is
+;; "there is something to drain" - and `read` on it answers how much.
+;;
+;; It is open for the life of the module, which is what keeps the device's
+;; one port slot pointing at something valid. A program writing its own
+;; loop can wait on it alongside anything else:
+;;
+;;     wait [my-socket gui/event-port 1]
+sys/make-scheme [
+	title: "Rebol/GUI event doorbell"
+	name:  'gui
+	actor: object [
+		open:  func [port] [gui-port-open  port]
+		close: func [port] [gui-port-close port]
+		read:  func [port] [gui-port-read  port]
+	]
+]
+
+event-port: try [open [scheme: 'gui]]
+
+;; Returning TRUE is what wakes WAIT. Without an awake handler the system
+;; port takes the event off its queue, finds nothing to call, and drops
+;; it - the doorbell would ring into an empty hall and every wait would
+;; sleep out its full timeout.
+if port? event-port [event-port/awake: func [event] [true]]
+
 ;; `poll-events` always returns a block, so the four values of every
 ;; event can be taken apart directly:
 ;;
@@ -1032,13 +1144,21 @@ do-events: function [
 	handler [any-function!] "Called as: handler type source position value"
 	/rate delay [number!] {Longest it may sleep with nothing to do (default: 0.05)}
 ][
-	;; NOT `wait delay` between polls: this sleeps INSIDE the extension,
-	;; on the OS queue, and wakes the moment anything arrives - which is
-	;; what keeps a themed control's animation smooth and the window
-	;; responsive without spinning. The delay is only a ceiling.
+	;; `wait` does the sleeping, and that is the whole point: the
+	;; extension registers a device with RDO_AUTO_POLL, so the host pumps
+	;; the OS message queue from inside OS_Wait - and everything else
+	;; Rebol has waiting is serviced by the same sleep.
+	;;
+	;; Waiting on the event port as well as the delay is what makes this
+	;; responsive rather than merely correct: the device pushes an event
+	;; when the queue grows, so `wait` returns as soon as a click arrives
+	;; and the delay is only a ceiling. Without the port it still works,
+	;; just at the rate of the ceiling.
 	delay: any [delay 0.05]
+	wake:  either port? event-port [reduce [event-port delay]][delay]
+
 	forever [
-		foreach [type source pos val] poll-events/wait delay [
+		foreach [type source pos val] poll-events [
 			handler type source pos val
 			;; `close` only reports the request - closing is ours to do
 			if all [type = 'close  source = window] [
@@ -1049,6 +1169,7 @@ do-events: function [
 			unless window/open? [break]
 		]
 		unless window/open? [exit]
+		wait wake
 	]
 ]
 ```

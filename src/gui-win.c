@@ -1076,20 +1076,14 @@ static GUIWIN* Our_Window(HWND hwnd)
 }
 
 
-void Gui_Wait(REBINT ms)
-{
-	if (ms <= 0) return;
-	// QS_ALLINPUT includes WM_TIMER, which is what a themed control's
-	// animation runs on - so the loop wakes for an animation step exactly
-	// when one is due rather than at the next tick of a fixed interval.
-	MsgWaitForMultipleObjects(0, NULL, FALSE, (DWORD)ms, QS_ALLINPUT);
-}
-
-
-void Gui_Pump(void)
+REBCNT Gui_Pump(void)
 {
 	MSG msg;
+	REBCNT dispatched = 0;
+
 	while (PeekMessageW(&msg, NULL, 0, 0, PM_REMOVE)) {
+		dispatched++;
+
 		// A keyboard shortcut is not a property of a menu item on Win32 -
 		// it is an entry in an accelerator table which SOMETHING has to
 		// translate before the keystroke is dispatched, and this is the
@@ -1112,6 +1106,8 @@ void Gui_Pump(void)
 		TranslateMessage(&msg);
 		DispatchMessageW(&msg);
 	}
+
+	return dispatched;
 }
 
 

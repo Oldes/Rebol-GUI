@@ -1,13 +1,14 @@
 ////////////////////////////////////////////////////////////////////////
 // File: rebol-extension.h
 // Home: https://github.com/Oldes/Rebol3/
-// Date: 2-Sep-2026/9:35:48
+// Date: 17-Sep-2026/8:23:35
 // Note: This file is amalgamated from these sources:
 //
 //       reb-c.h
 //       reb-args.h
 //       reb-ext.h
 //       reb-ext-handler.h
+//       reb-codec.h
 //       reb-device.h
 //       reb-file.h
 //       reb-filereq.h
@@ -901,8 +902,8 @@ enum encoding_opts {
 ************************************************************************
 **
 **  Title: Extension Types (Isolators)
-**  Build: 3.22.5
-**  Date:  2-Sep-2026
+**  Build: 3.22.6
+**  Date:  17-Sep-2026
 **  File:  ext-types.h
 **
 **  AUTO-GENERATED FILE - Do not modify. (From: make-boot.reb)
@@ -950,7 +951,8 @@ enum REBOL_Ext_Types
 	RXT_GOB = 47,                 // 35
 	RXT_OBJECT = 48,              // 36
 	RXT_MODULE,                   // 37
-	RXT_STRUCT = 54,              // 38
+	RXT_PORT,                     // 38
+	RXT_STRUCT = 54,              // 39
     RXT_MAX
 };
 
@@ -1438,7 +1440,7 @@ enum {
 	REBCNT  flags;
 	union {
 		REBCNT size;	// used for vectors and bitsets
-		REBSER *series;	// MAP datatype uses this
+		REBSER *series;	// used by MAP (hashes) and by STRUCT (see below)
 		struct {
 			REBCNT wide:16;
 			REBCNT high:16;
@@ -2016,6 +2018,9 @@ enum {
 	VT_MAX,
 };
 
+// Elements are structs - their size is not encoded in the type identifier!
+#define VTSTRUCT  VT_MAX
+
 #define VECT_BB_MASK    0x00000003  // bits 1..0   -- bit-width code (0-3)
 #define VECT_SIGN_MASK  0x00000004  // bit  2      -- signed flag
 #define VECT_TYPE_MASK  0x00000008  // bit  3      -- float flag
@@ -2051,8 +2056,20 @@ enum {
 #define VECT_DECI(vtype) ((vtype & 8) != 0)
 #define VECT_DIMS(vtype) 1 // TODO!
 
+// Struct elements have an arbitrary size which cannot be derived from the type
+// identifier, so it is kept as the series width - and that one is 8 bits only!
+#define VECT_IS_STRUCT(vtype)  ((vtype) == VTSTRUCT)
+#define VECT_STRUCT_MAX_SIZE   255
+
+#define VAL_VEC_IS_STRUCT(v) VECT_IS_STRUCT(VAL_VEC_TYPE(v))
+// A vector of structs keeps the element's field list in the series link, just
+// like a struct's data series does, so that an element may be used as a struct
+// view. Both the fields and the specification are protected from the GC when
+// the struct is prepared, so there is nothing to mark here.
+#define VAL_VEC_STRUCT(v) (VAL_SERIES(v)->series)
+
 #define VAL_VEC_BITS(v)  (VECT_BITS(VAL_VEC_INFO(v)))
-#define VAL_VEC_WIDE(v)  (VECT_WIDE(VAL_VEC_INFO(v)))
+#define VAL_VEC_WIDE(v)  (VAL_VEC_IS_STRUCT(v) ? SERIES_WIDE(VAL_SERIES(v)) : VECT_WIDE(VAL_VEC_INFO(v)))
 #define VAL_VEC_SIGN(v)  (VECT_SIGN(VAL_VEC_INFO(v)))  
 #define VAL_VEC_DECI(v)  (VECT_DECI(VAL_VEC_INFO(v)))  
 
@@ -2518,6 +2535,14 @@ enum Handle_Flags {
 	HANDLE_CONTEXT_LOCKED = 1 << 5,  // so Rebol will not GC the handle if C side still depends on it
 };
 
+/***********************************************************************
+**  Which flags are part of what a handle IS.
+**
+**  The low three say what kind of payload the value carries; the rest
+**  are context bookkeeping which changes while the value does not.
+***********************************************************************/
+#define HANDLE_VALUE_FLAGS  (HANDLE_SERIES | HANDLE_RELEASABLE | HANDLE_CONTEXT)
+
 enum Handle_Spec_Flags {
 	HANDLE_REQUIRES_HOB_ON_FREE = 1 << 0
 };
@@ -2717,6 +2742,41 @@ typedef struct Reb_Struct_Info {
 #define VAL_STRUCT_NEEDS_MARK(v) ((((REBSTI *)BLK_HEAD(VAL_STRUCT_FIELDS(v)))->flags & 1) != 0)
 #define VAL_STRUCT_PROTECTED(v) ((((REBSTI *)BLK_HEAD(VAL_STRUCT_FIELDS(v)))->flags & 2) != 0)
 
+// A struct value is only a view into a data series: the root struct and the
+// values of all its (nested) struct fields share one data series and differ
+// just in the spec and the offset. The series link (otherwise used only by
+// MAP) holds the related field lists:
+//
+//     spec->series   field list (REBSTI + REBSTF array) of that specification
+//     data->series   field list of the ROOT struct of these data
+//
+// The root is needed by the GC: the data series is marked only once, so the
+// Rebol values in it must always be marked from the root of the data, even
+// when the data are reached from a value covering just a nested part of it.
+
+#define STRUCT_DATA_ROOT(s)     (STRUCT_DATA(s)->series)
+#define VAL_STRUCT_DATA_ROOT(v) (VAL_STRUCT_DATA(v)->series)
+
+// Accessors for a bare field list series (the GC has no REBSTU to use)
+#define FIELDS_INFO(ser)        ((REBSTI *)BLK_HEAD(ser))
+#define FIELDS_SPEC(ser)        ((ser)->series) // back-pointer to the spec block
+#define FIELDS_NEED_MARK(ser)   ((FIELDS_INFO(ser)->flags & STRUCT_FLAG_MARK) != 0)
+
+// Rebol values stored in a struct are accessed in place, so the fields
+// holding them must be aligned - see the `#pragma pack` above!
+#define STRUCT_VALUE_ALIGN 4
+
+// True when a struct field is a nested struct which holds Rebol values
+#define FIELD_SPEC_HAS_VALUES(f) \
+	((f)->spec && (f)->spec->series && FIELDS_NEED_MARK((f)->spec->series))
+
+enum {
+	STRUCT_FLAG_MARK      = 1, // holds Rebol values which the GC must mark
+	STRUCT_FLAG_PROTECTED = 2, // raw data modification is not allowed
+};
+
+
+
 /***********************************************************************
 **
 **	UTYPE - User defined types
@@ -2860,6 +2920,15 @@ typedef int (*DECOMPRESS_FUNC)(
 
 
 
+#ifndef API_EXPORT
+# define RL_API API_EXPORT
+# ifdef TO_WINDOWS
+#  define API_EXPORT __declspec(dllexport)
+# else
+#  define API_EXPORT __attribute__((visibility("default")))
+# endif
+#endif
+
 // RXIARG has 16bytes and so there is room only for 15 args, because
 // the first RXIARG in the RXIFRM contains types of all used command args.
 #define MAX_RXI_ARGS 15
@@ -2903,8 +2972,9 @@ typedef union rxi_arg_val {
 	};
 	struct {
 		void *image;
-		int width:16;
-		int height:16;
+		REBCNT width:16;
+		REBCNT height:16;
+		REBCNT image_index;
 	};
 	struct {
 		union {
@@ -2953,6 +3023,32 @@ typedef int (*RXICAL)(int cmd, RXIFRM *args, REBCEC *ctx);
 
 #pragma pack()
 
+// Resolved description of a struct argument, filled by RL_Struct_Info().
+//
+// A struct value is only a view into a data series: the root struct and every
+// (nested) struct field share one data series and differ just in the spec and
+// the offset. So the size of THIS struct can never be derived from the data
+// series - it lives in the specification and must be looked up by the id.
+typedef struct rxi_struct_info {
+	REBYTE *data;   // first byte of THIS struct (root data + offset)
+	REBCNT  size;   // size of THIS struct, in bytes
+	REBCNT  count;  // number of fields
+	REBCNT  id;     // spec id (hash of the specification block)
+	REBCNT  flags;  // STRUCT_FLAG_MARK | STRUCT_FLAG_PROTECTED
+	REBSER *fields; // field list series: REBSTI header + REBSTF[count]
+} RXISTRU;
+
+// Field list of a resolved struct (the REBSTI header is skipped).
+#define RXI_STRUCT_FIELDS(i)    ((REBSTF *)BLK_HEAD((i)->fields) + 1)
+
+// TRUE when an extension may write raw bytes into the struct's data.
+// STRUCT_FLAG_MARK data holds real REBVALs which the GC walks, and
+// STRUCT_FLAG_PROTECTED forbids raw modification outright. Reading is
+// always allowed - this gates writes only.
+#define RXI_STRUCT_WRITABLE(i)  \
+	(((i)->flags & (STRUCT_FLAG_MARK | STRUCT_FLAG_PROTECTED)) == 0)
+
+
 // Access macros (indirect access via RXIFRM pointer):
 #define RXA_ARG(f,n)            ((f)->args[n])
 #define RXA_COUNT(f)            (RXA_ARG(f,0).bytes[0]) // number of args
@@ -2975,6 +3071,7 @@ typedef int (*RXICAL)(int cmd, RXIFRM *args, REBCEC *ctx);
 #define RXA_INDEX(f,n)          (RXA_ARG(f,n).index)
 #define RXA_OBJECT(f,n)         (RXA_ARG(f,n).addr)
 #define RXA_MODULE(f,n)         (RXA_ARG(f,n).addr)
+#define RXA_PORT(f,n)           (RXA_ARG(f,n).addr)
 #define RXA_HANDLE(f,n)         (RXA_ARG(f,n).handle.ptr)
 #define RXA_HANDLE_CONTEXT(f,n) (RXA_ARG(f,n).handle.hob)
 #define RXA_HANDLE_TYPE(f,n)    (RXA_ARG(f,n).handle.type)
@@ -2984,11 +3081,21 @@ typedef int (*RXICAL)(int cmd, RXIFRM *args, REBCEC *ctx);
 #define RXA_IMAGE_BITS(f,n)     ((REBYTE *)RL_SERIES((RXA_ARG(f,n).image), RXI_SER_DATA))
 #define RXA_IMAGE_WIDTH(f,n)    (RXA_ARG(f,n).width)
 #define RXA_IMAGE_HEIGHT(f,n)   (RXA_ARG(f,n).height)
-#define RXA_STRUCT_SER(f,n)		  (RXA_ARG(f,n).structure.series)
-#define RXA_STRUCT_BIN(f,n)     ((REBYTE *)(SERIES_DATA(RXA_STRUCT_SER(f,n))) + RXA_INDEX(f,n))
-#define RXA_STRUCT_LEN(f,n)     (SERIES_TAIL(RXA_STRUCT_SER(f,n)) - RXA_INDEX(f,n)) // length in bytes
+#define RXA_IMAGE_INDEX(f,n)    (RXA_ARG(f,n).image_index)
+// The pixel the value is AT, and how many pixels are left from there -
+// the counterparts of VAL_IMAGE_DATA and VAL_IMAGE_LEN.
+#define RXA_IMAGE_DATA(f,n)     (RXA_IMAGE_BITS(f,n) + (RXA_IMAGE_INDEX(f,n) * 4))
+#define RXA_IMAGE_LEN(f,n)      (((REBCNT)RXA_IMAGE_WIDTH(f,n) * (REBCNT)RXA_IMAGE_HEIGHT(f,n)) \
+                                 - RXA_IMAGE_INDEX(f,n))
+
+#define RXA_STRUCT_SER(f,n)     (RXA_ARG(f,n).structure.series)
+#define RXA_STRUCT_OFFSET(f,n)  (RXA_ARG(f,n).structure.offset)
 #define RXA_STRUCT_ID(f,n)      (RXA_ARG(f,n).structure.id)
-#define RXA_STRUCT_SPEC(f,n)	(RL_STRUCT_SPEC(RXA_STRUCT_ID(f,n)))
+#define RXA_STRUCT_SPEC(f,n)    (RL_STRUCT_SPEC(RXA_STRUCT_ID(f,n)))
+// Resolve a struct argument in one lookup. Returns FALSE for an unknown spec
+// id or a view which does not fit into its data series - ALWAYS check it.
+#define RXA_STRUCT_INFO(f,n,i)  (RL_STRUCT_INFO(&RXA_ARG(f,n), (i)))
+
 #define RXA_VECTOR_SERIES(f,n)  (RXA_ARG(f,n).vector.series)
 #define RXA_VECTOR_INDEX(f,n)   (RXA_ARG(f,n).vector.index)
 #define RXA_VECTOR_INFO(f,n)    (RXA_ARG(f,n).vector.info)
@@ -3061,6 +3168,130 @@ enum {
 #define AS_WORD(w) RL_MAP_WORD(b_cast(w)) // may be used to awoid warning casting from char* to REBYTE*
 
 
+// File: reb-codec.h
+/***********************************************************************
+**
+**  REBOL [R3] Language Interpreter and Run-time Environment
+**
+**  Copyright 2012 REBOL Technologies
+**  Copyright 2021-2023 Rebol Open Source Developers
+**  REBOL is a trademark of REBOL Technologies
+**
+**  Licensed under the Apache License, Version 2.0 (the "License");
+**  you may not use this file except in compliance with the License.
+**  You may obtain a copy of the License at
+**
+**  http://www.apache.org/licenses/LICENSE-2.0
+**
+**  Unless required by applicable law or agreed to in writing, software
+**  distributed under the License is distributed on an "AS IS" BASIS,
+**  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+**  See the License for the specific language governing permissions and
+**  limitations under the License.
+**
+************************************************************************
+**
+**  Summary: REBOL Codec Definitions
+**  Module:  reb-codec.h
+**  Author:  Carl Sassenrath
+**  Notes:
+**
+***********************************************************************/
+#ifndef CODI_DEFINED
+#define CODI_DEFINED
+
+//#include "reb-c.h"
+
+// Codec image interface:
+//
+// If your codec routine returns CODI_IMAGE, it is expected that the
+// ->bits field contains a block of memory allocated with Make_Mem
+// of size (->w * ->h * 4).  This will be freed by the
+// REBNATIVE(do_codec) in n-system.c
+//
+// If your codec routine returns CODI_BINARY, it is
+// expected that the ->data field contains a block of memory
+// allocated with Make_Mem of size ->len.  This will be freed by
+// the REBNATIVE(do_codec) in n-system.c
+//
+// If your codec routine returns CODI_TEXT, it is
+// expected that the ->data field is 3rd input binary! argument in
+// the REBNATIVE(do_codec) in n-system.c
+// so the deallocation is left to GC
+//
+struct reb_codec_image {
+	int action;
+	int w;
+	int h;
+	u32 len;
+	union {
+		int alpha;
+		int type;  // used to provide info about prefered image type (codec)
+	};
+	unsigned char *data;
+	union {
+		unsigned int *bits;
+		void *other;
+	};
+	int error;
+};
+
+typedef struct reb_codec_image REBCDI;
+
+typedef int (*codo)(REBCDI *cdi);
+
+// Media types:
+enum {
+	CODI_ERROR,
+	CODI_CHECK,				// error code is inverted result (IDENTIFY)
+	CODI_BINARY,
+	CODI_TEXT,
+	CODI_IMAGE,
+	CODI_SOUND,
+	CODI_BLOCK,
+	CODI_STRING,			// result is in codi->other as a series (no need to copy).
+};
+
+// Codec commands:
+enum {
+	CODI_IDENTIFY,
+	CODI_DECODE,
+	CODI_ENCODE,
+};
+
+// Codec errors:
+enum {
+	CODI_ERR_NA = 1,		// Feature not available
+	CODI_ERR_NO_ACTION,		// Requested action unknown
+	CODI_ERR_ENCODING,		// Encoding method not supported
+	CODI_ERR_SIGNATURE,		// Header signature is not correct
+	CODI_ERR_BIT_LEN,		// Bit length is not supported
+	CODI_ERR_BAD_TABLE,		// Image tables are wrong
+	CODI_ERR_BAD_DATA,		// Generic
+};
+
+enum {
+	CODI_IMG_PNG,           // Portable Network Graphics
+	CODI_IMG_JPEG,          // Joint Photographic Experts Group
+	CODI_IMG_GIF,           // Graphics Interchange Format
+	CODI_IMG_DDS,           // DirectDraw Surface
+	CODI_IMG_DNG,           // Digital Negative
+	CODI_IMG_BMP,           // Device independent bitmap
+	CODI_IMG_ICO,
+	CODI_IMG_TIFF,          // Tagged Image File Format
+	CODI_IMG_JXR,           // Windows Digital Photo (JpegXR)
+	CODI_IMG_HEIF,          // High Efficiency Image Format
+	CODI_IMG_WEBP,          //
+	CODI_IMG_JP2,           // JPEG 2000 (JP2)
+};
+
+//#ifndef WINCODEC_ERR_COMPONENTNOTFOUND
+//#define WINCODEC_ERR_COMPONENTNOTFOUND  0x88982F50
+//#endif
+
+#endif
+
+
 // File: reb-device.h
 /***********************************************************************
 **
@@ -3111,8 +3342,9 @@ enum {
 	RDI_CRYPT,
 	RDI_SERIAL,
 	RDI_AUDIO,
-	RDI_MAX,
-	RDI_LIMIT = 32
+	RDI_MAX,		// number of built-in devices
+	RDI_LIMIT = 32	// size of the device table; RDI_MAX..RDI_LIMIT-1
+					// are assigned at run time by RL_Register_Device
 };
 
 
@@ -3179,6 +3411,14 @@ enum {
 	RDE_NO_DEVICE,	// command did not provide device
 	RDE_NO_COMMAND,	// command past end
 	RDE_NO_INIT,	// device has not been inited
+};
+
+// Device registration results (OS_Register_Device / RL_Register_Device).
+// A non-negative result is the assigned device id.
+enum {
+	RDR_TABLE_FULL   = -1,	// no free slot in the device table
+	RDR_BAD_DEVICE   = -2,	// device structure is not usable
+	RDR_BAD_REBDEV   = -3,	// caller built against a different REBDEV layout
 };
 
 enum {
@@ -3471,8 +3711,8 @@ enum {
 ************************************************************************
 **
 **  Title: Event Types
-**  Build: 3.22.5
-**  Date:  2-Sep-2026
+**  Build: 3.22.6
+**  Date:  17-Sep-2026
 **  File:  reb-evtypes.h
 **
 **  AUTO-GENERATED FILE - Do not modify. (From: make-boot.reb)
@@ -3584,8 +3824,8 @@ enum event_keys {
 ************************************************************************
 **
 **  Title: REBOL Host and Extension API
-**  Build: 3.22.5
-**  Date:  2-Sep-2026
+**  Build: 3.22.6
+**  Date:  17-Sep-2026
 **  File:  reb-lib.reb
 **
 **  AUTO-GENERATED FILE - Do not modify. (From: make-reb-lib.reb)
@@ -3597,7 +3837,7 @@ enum event_keys {
 // for compatiblity with the reb-lib DLL (using RL_Version.)
 #define RL_VER 3
 #define RL_REV 22
-#define RL_UPD 5
+#define RL_UPD 6
 
 // Bumped ONLY when an existing RL_API function's signature/semantics
 // change in a way that breaks old extension binaries calling it - i.e.
@@ -3671,32 +3911,29 @@ typedef struct rebol_ext_api {
 	void* (*mem_alloc)(void *opaque, size_t size);
 	void (*mem_free)(void* opaque, void* address);
 	int (*register_compress_method)(const REBYTE* name, COMPRESS_FUNC encoder, DECOMPRESS_FUNC decoder);
+	REBFLG (*struct_info)(RXIARG *arg, RXISTRU *out);
+	REBFLG (*make_struct)(RXIARG *out, REBCNT id, RXISTRU *info);
+	void* (*alloc)(size_t size);
+	void (*free)(void *mem, size_t size);
+	int (*register_device)(REBDEV *dev, u32 dev_size);
+	REBREQ *(*port_state)(REBSER *port, REBCNT device);
+	int (*do_device)(REBREQ *req, REBCNT command);
 } RL_LIB;
-
-#ifndef API_EXPORT
-# define RL_API API_EXPORT
-# ifdef TO_WINDOWS
-#  define API_EXPORT __declspec(dllexport)
-# else
-#  define API_EXPORT __attribute__((visibility("default")))
-# endif
-#endif
 
 // Extension entry point functions:
 #ifdef TO_WINDOWS
 #ifdef __cplusplus
-#define RXIEXT extern "C" API_EXPORT
+#define RXIEXT extern "C" __declspec(dllexport)
 #else
-#define RXIEXT API_EXPORT
+#define RXIEXT __declspec(dllexport)
 #endif
 #else
-#define RXIEXT extern API_EXPORT
+#define RXIEXT extern
 #endif
 
 RXIEXT const char *RX_Init(int opts, RL_LIB *lib);
 RXIEXT int RX_Quit(int opts);
 RXIEXT int RX_Call(int cmd, RXIFRM *frm, void *data);
-RXIEXT int RX_Abi(void);
 
 // The macros below will require this base pointer:
 extern RL_LIB *RL;  // is passed to the RX_Init() function
@@ -4597,6 +4834,154 @@ extern RL_LIB *RL;  // is passed to the RX_Init() function
 **		encoder - external compress function
 */
 
+#define RL_STRUCT_INFO(a,b)         RL->struct_info(a,b)
+/*
+**	REBFLG RL_Struct_Info(RXIARG *arg, RXISTRU *out)
+**
+**	Resolve a struct argument into a directly usable description.
+**
+**	A struct value is a view into a shared data series, so its size and
+**	flags live in the specification, not in the series. This performs the
+**	spec lookup once and validates that the view fits into the data.
+**
+**	Returns:
+**		TRUE when the argument describes a usable struct, else FALSE
+**		(no data series, unknown spec id, or the view runs past the data).
+**	Arguments:
+**		arg - struct argument as received in a command frame
+**		out - filled with data pointer, size, count, id, flags, field list
+*/
+
+#define RL_MAKE_STRUCT(a,b,c)       RL->make_struct(a,b,c)
+/*
+**	REBFLG RL_Make_Struct(RXIARG *out, REBCNT id, RXISTRU *info)
+**
+**	Create a new struct value of an already registered specification.
+**
+**	The specification must already exist in system/catalog/structs, where
+**	Prepare_Struct interns it when Rebol code evaluates `make struct!
+**	[...]` - so an extension instantiates a shape its own module declared
+**	rather than defining one in C. The data series is allocated zeroed and
+**	is owned by the struct.
+**
+**	The zeroing is required, not incidental: a zeroed `rebval!` field reads
+**	as END, which get_scalar reports as none and Mark_Struct_Fields skips.
+**	Uninitialized bytes there would be marked by the GC as garbage values.
+**
+**	Like RL_Make_String and RL_Make_Block, the result is protected from the
+**	GC only as a recently allocated series. Store it into a command frame
+**	argument and return it; do not hold it across a large number of other
+**	allocations.
+**
+**	Returns:
+**		TRUE when the struct was created, else FALSE (unknown spec id or
+**		a zero-sized specification).
+**	Arguments:
+**		out  - command frame argument which receives the new struct
+**		id   - spec id (hash of the specification block)
+**		info - filled like RL_Struct_Info; may be NULL
+*/
+
+#define RL_ALLOC(a)                 RL->alloc(a)
+/*
+**	void* RL_Alloc(size_t size)
+**
+**	Allocate memory that the interpreter itself may free.
+**
+**	Unlike RL_Mem_Alloc, this is the interpreter's plain accounted
+**	allocator - the same one used internally by Make_Mem - so a buffer
+**	handed back to the core (for example a codec's output, freed by
+**	DO-CODEC with a known size) must come from here, not from
+**	RL_Mem_Alloc, whose result carries a hidden header and may live in
+**	a memory pool. Free with RL_Free and the size passed to RL_Alloc.
+**
+**	Returns:
+**		Pointer to uninitialized memory, or 0 on failure.
+**	Arguments:
+**		size - number of bytes
+*/
+
+#define RL_FREE(a,b)                RL->free(a,b)
+/*
+**	void RL_Free(void *mem, size_t size)
+**
+**	Frees memory allocated with RL_Alloc. The size must match.
+**
+**	Returns:
+**		nothing
+**	Arguments:
+**		mem  - pointer to initialized memory
+**		size - number of bytes
+*/
+
+#define RL_REGISTER_DEVICE(a,b)     RL->register_device(a,b)
+/*
+**	int RL_Register_Device(REBDEV *dev, u32 dev_size)
+**
+**	Add a device to the device table at run time.
+**
+**	Returns:
+**		The assigned device id (>= RDI_MAX), or a negative RDR_ code:
+**		RDR_TABLE_FULL, RDR_BAD_DEVICE or RDR_BAD_REBDEV.
+**	Arguments:
+**		dev      - device structure, usually from DEFINE_DEV
+**		dev_size - sizeof(REBDEV) as the caller sees it
+**	Notes:
+**		The device and its command table must stay valid for the life
+**		of the process - devices cannot be unregistered, so a library
+**		which registers one must not be unloaded.
+**
+**		Pass the id as req->device to reach the device; events are
+**		posted with EVM_DEVICE and evt.req, as for built-in devices.
+*/
+
+#define RL_PORT_STATE(a,b)          RL->port_state(a,b)
+/*
+**	REBREQ *RL_Port_State(REBSER *port, REBCNT device)
+**
+**	Get the native request of a port, creating it if it does not exist.
+**
+**	This is the handle the event machinery recognizes: the request it
+**	returns has req->port set, so an EVM_DEVICE event carrying it wakes
+**	that port. An extension must not improvise one - Pending_Port reads
+**	port/state as a REBREQ without checking the handle type, so a handle
+**	of any other type parked there is read as a request.
+**
+**	Returns:
+**		The port's request, or 0 if `port` is not a usable port frame.
+**	Arguments:
+**		port   - port frame, as received in a port! command argument
+**		device - device id from RL_Register_Device
+**	Notes:
+**		The state is sized sizeof(REBREQ) for every device (see
+**		Init_Ports), so a device needing more must keep it behind
+**		req->handle, the way dev-midi.c does.
+**
+**		Allocating the handle can trap on out of memory, which longjmps
+**		out of the extension - do not hold resources that only a return
+**		would release across this call.
+*/
+
+#define RL_DO_DEVICE(a,b)           RL->do_device(a,b)
+/*
+**	int RL_Do_Device(REBREQ *req, REBCNT command)
+**
+**	Run a device command, as OS_Do_Device does for the built-in ports.
+**
+**	Returns:
+**		=0 command succeeded
+**		>0 command is pending (the request was attached for polling)
+**		<0 command failed; req->error holds the code
+**	Arguments:
+**		req     - request, usually from RL_Port_State
+**		command - RDC_ command code
+**	Notes:
+**		Only devices added by RL_Register_Device can be driven this way.
+**		The built-in devices are reached through their own port schemes,
+**		which apply the security policy (Secure_Port) before dispatching;
+**		an extension must not route around that.
+*/
+
 
 
 #define RL_MAKE_BINARY(s) RL_MAKE_STRING(s, FALSE)
@@ -4655,6 +5040,13 @@ RL_API REBCNT RL_Encode_UTF8_Char(REBYTE *dst, REBU32 chr);
 RL_API void* RL_Mem_Alloc(void *opaque, size_t size);
 RL_API void RL_Mem_Free(void* opaque, void* address);
 RL_API int RL_Register_Compress_Method(const REBYTE* name, COMPRESS_FUNC encoder, DECOMPRESS_FUNC decoder);
+RL_API REBFLG RL_Struct_Info(RXIARG *arg, RXISTRU *out);
+RL_API REBFLG RL_Make_Struct(RXIARG *out, REBCNT id, RXISTRU *info);
+RL_API void* RL_Alloc(size_t size);
+RL_API void RL_Free(void *mem, size_t size);
+RL_API int RL_Register_Device(REBDEV *dev, u32 dev_size);
+RL_API REBREQ *RL_Port_State(REBSER *port, REBCNT device);
+RL_API int RL_Do_Device(REBREQ *req, REBCNT command);
 
 #endif
 

@@ -52,6 +52,25 @@ enum {
 // a counter, which `poll-events` reports once instead of failing silently.
 void   Gui_Queue_Event(REBHOB *source, REBCNT type, REBINT x, REBINT y, REBINT value);
 
+/***********************************************************************
+**  What the device poll asks before doing anything - see Poll_Gui() in
+**  gui.c.
+**
+**  `Gui_Windows_Open` keeps an imported-but-unused extension from
+**  waking the window system on every WAIT.
+**
+**  `Gui_Ring_Doorbell` answers whether the poll should push the one
+**  Rebol event that wakes WAIT - true once per batch of queued events.
+**  Neither answer is what the poll RETURNS: an RDC_POLL handler must
+**  report DR_DONE however full the queue is, and Poll_Gui() says why at
+**  length.
+**
+**  `Gui_Event_Count` is what RDC_READ reports.
+***********************************************************************/
+REBOOL Gui_Windows_Open(void);
+REBOOL Gui_Ring_Doorbell(void);
+REBCNT Gui_Event_Count(void);
+
 // Called by the backend once a native window has really gone away, however
 // that happened: drops the queued events which point at the handle context
 // and releases the GC lock that an open window holds on it.
@@ -92,7 +111,13 @@ void    Gui_Show_Window(GUIWIN *win, REBOOL show);
 
 // Dispatches everything waiting in the OS queue, which is what turns
 // messages into Gui_Queue_Event() calls.
-void    Gui_Pump(void);
+//
+// Returns HOW MANY it dispatched, which is not a statistic: the OS queue
+// belongs to the thread, not to this extension, and anything else in the
+// process which removes from it takes our window's messages with it. A
+// pump which keeps finding nothing while the mouse is over a window is
+// the symptom, and the count is the only way to see it.
+REBCNT  Gui_Pump(void);
 
 REBOOL  Gui_Get_Size(GUIWIN *win, REBINT *w, REBINT *h);
 REBOOL  Gui_Get_Offset(GUIWIN *win, REBINT *x, REBINT *y);
@@ -171,23 +196,6 @@ REBOOL  Gui_Set_Title(GUIWIN *win, const REBYTE *utf8, REBCNT len);
 **  Win32, which carries a menu id in the low 16 bits of a WM_COMMAND.
 **  A backend reports a pick by calling Gui_Menu_Picked() below.
 ***********************************************************************/
-/***********************************************************************
-**  Sleeps until the OS has something to deliver, or the timeout runs
-**  out - whichever comes first. Returns at once when something is
-**  already waiting.
-**
-**  This is what lets an event loop be responsive without spinning. It
-**  matters more than it looks: a themed control animates on TIMER
-**  messages, and a loop which sleeps a fixed interval and then drains
-**  serves those timers late and in bursts, which is what makes a modern
-**  Windows theme feel sluggish where the classic one - which does not
-**  animate at all - feels fine. Waking on the message itself hands the
-**  animation its timer the moment it is due.
-**
-**  It does NOT dispatch anything: Gui_Pump() still does that.
-***********************************************************************/
-void    Gui_Wait(REBINT ms);
-
 REBOOL  Gui_Menu_Begin(GUIWIN *win);
 void*   Gui_Menu_Add_Popup(GUIWIN *win, void *parent,
                            const REBYTE *label, REBCNT len);

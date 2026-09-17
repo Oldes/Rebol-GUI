@@ -26,6 +26,13 @@ static const REBYTE* ERR_NO_WINDOW      = (const REBYTE*)"Failed to create the w
 static const REBYTE* ERR_BAD_SIZE       = (const REBYTE*)"Size must be positive!";
 static const REBYTE* ERR_NO_WIDGET      = (const REBYTE*)"Failed to create the widget!";
 static const REBYTE* ERR_BAD_IMAGE      = (const REBYTE*)"Empty or invalid image!";
+static const REBYTE* ERR_NO_PORT_STATE  = (const REBYTE*)"Not a usable port!";
+static const REBYTE* ERR_DEVICE_FAIL    = (const REBYTE*)"GUI device command failed!";
+
+// The device request behind a port. A port's state field is where the host
+// keeps it, and this is the only way an extension can reach the device it
+// registered: there is no OS_Do_Device in the RL_ API.
+#define GUI_DEV_REQ(n) RL_PORT_STATE(RXA_PORT(frm, n), (REBCNT)Gui_Dev_Id)
 
 // The menu dialect's separator. Not in a `words:` list because to-c-name
 // would spell it W_GUI_MENU____; it is one symbol, so it is mapped by name
@@ -111,6 +118,54 @@ static void Purge_Events(REBHOB *source)
 		kept++;
 	}
 	Event_Head = Event_Tail + kept;
+}
+
+
+/***********************************************************************
+**  What the device poll asks before doing anything.
+**
+**  The window count is kept rather than derived: there is no global
+**  window list, and the poll runs on every WAIT the program makes, so
+**  the answer has to be a load rather than a walk.
+***********************************************************************/
+static REBCNT Open_Windows = 0;
+
+REBOOL Gui_Windows_Open(void)
+{
+	return Open_Windows > 0 ? TRUE : FALSE;
+}
+
+// What RDC_READ reports for `read gui/event-port`.
+REBCNT Gui_Event_Count(void)
+{
+	return QUEUE_COUNT();
+}
+
+
+/***********************************************************************
+**  Answers TRUE exactly once per batch: the device rings its doorbell on
+**  the first poll which finds the queue non-empty, and not again until
+**  `poll-events` has drained it.
+**
+**  Why "anything waiting" rather than "anything new since the pump": not
+**  every event arrives during a pump. A programmatic resize dispatches
+**  WM_SIZE inside SetWindowPos, so the event is queued from the middle of
+**  `win/size:` - and the user dragging a window runs a modal OS loop
+**  which dispatches for itself and never comes through Gui_Pump at all.
+**
+**  And why it is asked HERE rather than done in Gui_Queue_Event, which
+**  would be the obvious place: that function is the one thing in this
+**  file which may run inside such a modal loop, where calling RL_Event
+**  would grow a Rebol series - see the note above it. The poll is on the
+**  interpreter's own thread of control and is safe.
+***********************************************************************/
+static REBOOL Event_Rung = FALSE;
+
+REBOOL Gui_Ring_Doorbell(void)
+{
+	if (QUEUE_COUNT() == 0 || Event_Rung) return FALSE;
+	Event_Rung = TRUE;
+	return TRUE;
 }
 
 
@@ -309,6 +364,7 @@ void Gui_Window_Closed(REBHOB *window)
 		}
 		win->widgets = NULL;
 	}
+	if (Open_Windows > 0) Open_Windows--;
 	Release_Handle(window);
 }
 
@@ -917,9 +973,95 @@ COMMAND cmd_gui_open_window(RXIFRM *frm, void *ctx)
 	// so the GC must leave it alone until the window is closed.
 	hob->flags |= HANDLE_CONTEXT_LOCKED;
 
+	Open_Windows++; // the device poll pumps only while one of these exists
+
 	if (!RXA_REF(frm, 6)) Gui_Show_Window(win, TRUE); // /hidden
 
 	RETURN_HANDLE(hob);
+}
+
+
+/***********************************************************************
+**  gui-device / gui-device-polls
+**
+**  Diagnostics, and the only way a script can tell from Rebol that the
+**  device was accepted and is being polled - which is the thing the
+**  whole event model now rests on.
+***********************************************************************/
+COMMAND cmd_gui_gui_device(RXIFRM *frm, void *ctx)
+{
+	RXA_INT64(frm, 1) = (i64)Gui_Dev_Id;
+	RXA_TYPE(frm, 1) = RXT_INTEGER;
+	return RXR_VALUE;
+}
+
+COMMAND cmd_gui_gui_device_polls(RXIFRM *frm, void *ctx)
+{
+	RXA_INT64(frm, 1) = (i64)Gui_Dev_Polls;
+	RXA_TYPE(frm, 1) = RXT_INTEGER;
+	return RXR_VALUE;
+}
+
+COMMAND cmd_gui_gui_device_events(RXIFRM *frm, void *ctx)
+{
+	RXA_INT64(frm, 1) = (i64)Gui_Dev_Events;
+	RXA_TYPE(frm, 1) = RXT_INTEGER;
+	return RXR_VALUE;
+}
+
+COMMAND cmd_gui_gui_device_pumps(RXIFRM *frm, void *ctx)
+{
+	RXA_INT64(frm, 1) = (i64)Gui_Dev_Pumps;
+	RXA_TYPE(frm, 1) = RXT_INTEGER;
+	return RXR_VALUE;
+}
+
+COMMAND cmd_gui_gui_device_messages(RXIFRM *frm, void *ctx)
+{
+	RXA_INT64(frm, 1) = (i64)Gui_Dev_Msgs;
+	RXA_TYPE(frm, 1) = RXT_INTEGER;
+	return RXR_VALUE;
+}
+
+
+/***********************************************************************
+**  gui-port-open / gui-port-close / gui-port-read
+**      port [port!]
+**
+**  The three actors of the `gui` scheme, which exists so that the device
+**  has somewhere to deliver the event that wakes WAIT. They are NOT
+**  exported: the scheme is defined in this extension's own mezzanine and
+**  is the only caller.
+**
+**  Each one hands the port's request to the device's command table, so a
+**  failure here means the device refused - not that the command is a
+**  polite no-op.
+***********************************************************************/
+COMMAND cmd_gui_gui_port_open(RXIFRM *frm, void *ctx)
+{
+	REBREQ *req = GUI_DEV_REQ(1);
+	if (!req) RETURN_ERROR(ERR_NO_PORT_STATE);
+	if (RL_DO_DEVICE(req, RDC_OPEN) < 0) RETURN_ERROR(ERR_DEVICE_FAIL);
+	return RXR_VALUE; // the port, unchanged
+}
+
+COMMAND cmd_gui_gui_port_close(RXIFRM *frm, void *ctx)
+{
+	REBREQ *req = GUI_DEV_REQ(1);
+	if (!req) RETURN_ERROR(ERR_NO_PORT_STATE);
+	if (RL_DO_DEVICE(req, RDC_CLOSE) < 0) RETURN_ERROR(ERR_DEVICE_FAIL);
+	return RXR_VALUE;
+}
+
+// Reports how many events `poll-events` would return, and drains nothing.
+COMMAND cmd_gui_gui_port_read(RXIFRM *frm, void *ctx)
+{
+	REBREQ *req = GUI_DEV_REQ(1);
+	if (!req) RETURN_ERROR(ERR_NO_PORT_STATE);
+	if (RL_DO_DEVICE(req, RDC_READ) < 0) RETURN_ERROR(ERR_DEVICE_FAIL);
+	RXA_INT64(frm, 1) = (i64)req->actual;
+	RXA_TYPE(frm, 1) = RXT_INTEGER;
+	return RXR_VALUE;
 }
 
 
@@ -979,30 +1121,15 @@ COMMAND cmd_gui_poll_events(RXIFRM *frm, void *ctx)
 	REBCNT  count, n;
 	RXIARG  val;
 
-	Gui_Pump();
-
 	/*******************************************************************
-	**  /wait sleeps ON THE OS QUEUE rather than on a clock, and only
-	**  when the pump above produced nothing. A loop which sleeps a
-	**  fixed interval and then drains is late for everything by up to
-	**  that interval; this one is woken by the message itself.
+	**  Pumps and drains, and never sleeps.
 	**
-	**  It matters most for a themed Windows control, whose hover and
-	**  check animations run on timer messages: served in bursts they
-	**  stutter, which reads as the whole control being slow to respond.
-	**  The timeout is still an upper bound, so the caller keeps control
-	**  of how long the interpreter can sit here.
+	**  Sleeping is WAIT's job: the extension registers a device with
+	**  RDO_AUTO_POLL, so the host pumps this same queue from inside
+	**  OS_Wait and reports pending events back to it. That is what lets
+	**  one sleep serve both queues - see Poll_Gui() in gui.c.
 	*******************************************************************/
-	if (RXA_REF(frm, 1) && QUEUE_COUNT() == 0) {
-		REBDEC secs = (RXA_TYPE(frm, 2) == RXT_INTEGER)
-			? (REBDEC)RXA_INT64(frm, 2)
-			: (REBDEC)RXA_DEC64(frm, 2);
-		if (secs > 0) {
-			if (secs > 60.0) secs = 60.0; // never sit here indefinitely
-			Gui_Wait((REBINT)(secs * 1000.0 + 0.5));
-			Gui_Pump();
-		}
-	}
+	Gui_Pump();
 
 	if (Event_Dropped) {
 		printf("GUI: dropped %u events (queue full)\n", Event_Dropped);
@@ -1052,6 +1179,9 @@ COMMAND cmd_gui_poll_events(RXIFRM *frm, void *ctx)
 
 	RL_PROTECT_GC(blk, 0);
 	Event_Tail += count;
+
+	// The queue is empty again, so the next event may ring the doorbell.
+	Event_Rung = FALSE;
 
 	RXA_SERIES(frm, 1) = blk;
 	RXA_INDEX(frm, 1) = 0;

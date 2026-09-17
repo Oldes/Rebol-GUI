@@ -155,7 +155,7 @@ print ["button colour asked for:" mold counter/color]
 ;; Setting it does not reach back into what is already on screen.
 win/font-size: 15
 win/italic?:   true
-styled: add-text win "made after the window default was set" 300x395 320x24
+styled: add-text win "made after the window default was set" 300x395 320x25
 
 print ["window default:" win/font-size "italic?" win/italic?]
 print ["the new label took it:" styled/font-size "italic?" styled/italic?]
@@ -254,6 +254,77 @@ note: func ["Appends a line to the area" line [string!]][
 	append logged join NL line
 	log/text: logged
 ]
+
+
+;;=============================================================================
+print as-yellow "^/== The GUI device"
+;;=============================================================================
+
+;; The extension registers a device with RDO_AUTO_POLL, which is what makes
+;; `wait` pump the OS message queue. Any positive id means the host accepted
+;; it; a refusal would be one of the negative RDR_ codes.
+print ["device id:" dev-id: gui-device]
+if dev-id <= 0 [print as-red "the host refused the device - see the note below"]
+
+;; Polled from OS_Wait, so a plain `wait` must move the counter. This is half
+;; the event model in one assertion: if it does not move, the window stops
+;; responding whenever Rebol is waiting rather than polling.
+;;
+;; And it must move by MORE than one: WAIT calls OS_Wait repeatedly inside a
+;; single wait, which is why the window keeps drawing and tracking the mouse
+;; for the whole time `do-events` may be asleep for.
+polls: gui-device-polls
+wait 0.2
+print ["polls before:" polls "after a 0.2 wait:" gui-device-polls]
+print ["the host polls the device:" gui-device-polls > polls]
+print ["and more than once:      " (gui-device-polls - polls) > 1]
+
+;; The other half: the device has a port, and pushes an event to it when
+;; there is something to drain. `read` on it reports how many - the request
+;; goes through the device's own command table, so a number coming back is
+;; also proof that RDC_OPEN reached it rather than being a no-op.
+print ["event port:      " mold gui/event-port]
+poll-events                      ;; drop whatever the sections above queued
+print ["nothing waiting: " zero? read gui/event-port]
+
+;; A quiet wait must SLEEP. A device cannot ask to be woken by its return
+;; code - a non-zero answer from a poll makes the host attach the REBREQ it
+;; lent off its own C stack to the device's pending list - so the ONLY thing
+;; that may shorten a wait is a pushed event.
+;;
+;; "Quiet" means the mouse is off the window: a `move` event is an event like
+;; any other and will ring the doorbell, which is the point.
+start:   now/precise
+wait 0.2
+elapsed: difference now/precise start
+print ["a quiet 0.2 wait took:" elapsed "(it must sleep, not spin)"]
+print ["slept:" elapsed >= 0:0:0.15 "(false if the mouse is over a window)"]
+
+;; ...and a wait with an event pushed into it must RETURN EARLY. Resizing the
+;; window from the program side produces one without touching the mouse: the
+;; OS reports the change back like any other event. Note it is queued from
+;; inside `win/size:`, NOT during a pump - which is why the doorbell asks
+;; "anything waiting?" rather than "anything new?".
+events: gui-device-events
+win/size: win/size + 1x1
+
+start:   now/precise
+wait reduce [gui/event-port 2]   ;; two seconds it must not take
+elapsed: difference now/precise start
+print ["a 2s wait on the port took:" elapsed]
+print ["woken early:         " elapsed < 0:0:1]
+print ["the device pushed it:" gui-device-events > events]
+print ["and it is waiting:   " (read gui/event-port) > 0]
+
+;; One push per batch, however many polls go by: a second wake for an event
+;; nobody has drained yet would be one more unhandled event on the system
+;; port every time the host looks.
+events: gui-device-events
+wait 0.3
+print ["no second push for the same batch:" gui-device-events = events]
+print ["drained:" mold extract poll-events 4]
+print ["and the doorbell is armed again:" zero? read gui/event-port]
+
 
 ;;=============================================================================
 print as-yellow "^/== Window frames"

@@ -1185,30 +1185,14 @@ void Gui_Show_Window(GUIWIN *win, REBOOL show)
 **  not only those of our windows - which is what lets a plain
 **  `poll-events` loop work without a host side event device.
 ***********************************************************************/
-void Gui_Wait(REBINT ms)
+REBCNT Gui_Pump(void)
 {
-	@autoreleasepool {
-		if (ms <= 0) return;
-		if (![NSThread isMainThread]) return;
+	REBCNT dispatched = 0;
 
-		// dequeue:NO - this only waits for something to be there. Taking it
-		// out of the queue and sending it is Gui_Pump()'s business, and
-		// doing it in two places is how events go missing.
-		[NSApp nextEventMatchingMask:NSEventMaskAny
-		                   untilDate:[NSDate dateWithTimeIntervalSinceNow:
-		                                 (NSTimeInterval)ms / 1000.0]
-		                      inMode:NSDefaultRunLoopMode
-		                     dequeue:NO];
-	}
-}
-
-
-void Gui_Pump(void)
-{
 	@autoreleasepool {
 		NSEvent *evt;
 
-		if (![NSThread isMainThread]) return;
+		if (![NSThread isMainThread]) return 0;
 
 		while ((evt = [NSApp nextEventMatchingMask:NSEventMaskAny
 		                                 untilDate:[NSDate distantPast]
@@ -1216,6 +1200,7 @@ void Gui_Pump(void)
 		                                   dequeue:YES]))
 		{
 			[NSApp sendEvent:evt];
+			dispatched++;
 		}
 		[NSApp updateWindows];
 
@@ -1243,6 +1228,8 @@ void Gui_Pump(void)
 			}
 		}
 	}
+
+	return dispatched;
 }
 
 
