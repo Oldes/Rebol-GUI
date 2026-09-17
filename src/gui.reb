@@ -2,7 +2,7 @@ REBOL [
 	Title:   "Rebol GUI extension"
 	Name:    gui
 	Version: 0.1.0
-	Needs:   3.22.5
+	Needs:   3.22.7
 	Author:  @Oldes
 	License: Apache-2.0
 	Options: [delay]

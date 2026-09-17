@@ -319,10 +319,29 @@ REBOOL  Gui_Create_Text_Control(GUIWIDGET *wid, GUIWIN *owner,
 // can move - so it is fetched here rather than cached anywhere.
 REBOOL  Gui_Widget_Pixels(GUIWIDGET *wid, REBYTE **data, REBINT *w, REBINT *h);
 
-// Marks the whole thing as needing a repaint. Both are safe on a closed
-// window or a removed widget, where they do nothing.
+// Marks the whole thing as needing a repaint AND paints it, so that the
+// pixels are on screen by the time these return. That is the contract the
+// `redraw` command promises, and the only reason to force a paint at all.
+//
+// Both are safe on a closed window or a removed widget, where they do
+// nothing.
 void    Gui_Widget_Redraw(GUIWIDGET *wid);
 void    Gui_Window_Redraw(GUIWIN *win);
+
+// Marks a widget as needing paint and returns WITHOUT painting it: the
+// next pump does the drawing, together with everything else which fell
+// due in the meantime.
+//
+// This is what building a layout uses. Painting each control as it is
+// created makes a window assemble itself visibly, one widget at a time,
+// because each `add-*` forces a frame of its own - and a script adds its
+// widgets with nothing pumping in between, so the whole layout could just
+// as well appear at once.
+//
+// It also brings Windows back in line with macOS, where AppKit is only in
+// a state to draw between events and Gui_Pump() has always been the one
+// place anything is displayed.
+void    Gui_Widget_Invalidate(GUIWIDGET *wid);
 
 // Destroys the native control. Safe on a widget whose window is already
 // gone - it then does nothing, because the OS took the control with it.

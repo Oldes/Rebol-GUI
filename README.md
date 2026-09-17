@@ -6,8 +6,10 @@ built on the current extension ABI.
 This is a deliberate restart of the old `host-window.c` / `host-event.c` /
 `host-compositor.c` / `host-draw.c` sources. It does not use `gob!`, it does
 not composite, and it does not evaluate the DRAW dialect. It opens windows and
-reports what the mouse did in them - and it does so without a single change to
-the interpreter.
+reports what the mouse did in them.
+
+It needs Rebol **3.22.7** or newer - see [Build](#build) for what changed in
+the interpreter and why.
 
 Drawing arrives through the image widget: build an `image!`, render into it
 with whatever draws pixels ([Blend2D](https://github.com/Siskin-framework/Rebol-Blend2D)
@@ -84,11 +86,12 @@ accepted) and `gui-device-polls` how many times it has been polled — the only
 way, from Rebol, to see that the arrangement is working.
 
 **Where do events go?** Into the extension's own queue, drained by
-`poll-events` — *not* into `system/ports/event`. Posting them with `RL_Event`
-would mean a `REBGOB` crossing the extension boundary and a scheme in the host
-to make sense of it. Keeping our own queue is what lets this build against an
-unmodified `r3`, and the loop is one mezzanine function (`do-events`) which can
-be replaced the day the interpreter grows something better.
+`poll-events` — *not* into `system/ports/event`. Posting the GUI events
+themselves would mean a `REBGOB` crossing the extension boundary and a scheme
+in the host to make sense of one; keeping our own queue means the events are
+plain Rebol values and the host needs to know nothing about windows. The loop
+is one mezzanine function (`do-events`), which can be replaced the day the
+interpreter grows something better.
 
 So a loop is `poll-events` to drain, then `wait` to sleep:
 
@@ -114,6 +117,37 @@ The build generates `src/gen-gui.h` and `src/gen-gui.c` from `src/gui.reb`, and
 refreshes the reference sections of this file from the same specification. The
 amalgamated `rebol-extension.h` of a matching Rebol3 build must be reachable by
 the compiler.
+
+### What this needs from the interpreter
+
+`Needs: 3.22.7` in the specification, which is also where the C side's
+`MIN_REBOL_VERSION` check comes from. Three things landed in the interpreter
+for this extension, and all three are load-bearing:
+
+**`RL_Register_Device`, `RL_Do_Device`, `RL_Port_State`.** The event model above
+is built on them: an extension that cannot add a device to the host table
+cannot have the OS queue pumped during `wait`, and one that cannot reach its
+own device from a port has nowhere to push a wake event.
+
+**Win32 `Query_Events` dispatches the message it removed.** `OS_Wait` calls it
+as its timing method, and it used to `GetMessage` a message off the thread
+queue and then dispatch it only under `REB_VIEW`, and only while one of View's
+own windows held the focus. Every other case dropped it. That was invisible for
+as long as the View host was the only thing in the process that could own a
+window - and fatal the moment an extension owns one, because `wait` then eats
+a message per call and clicks simply disappear. This extension is unusable
+without the fix; there is nothing it can do from its own side, since the
+message is gone before any poll of ours runs.
+
+**Handle comparison.** `=` on two handles compares their type, so two windows
+compare equal; `==` compares identity. `Cmp_Handle` orders context handles
+before plain ones and falls back to the type name. Both matter here, because
+every window and widget this extension hands out is a handle and test code
+compares them constantly.
+
+Two more the extension leans on, which were already in place: `image!` crossing
+the ABI ignores the series index (`RXIARG` overlaps `index` with the image
+dimensions), and a released context handle still answers `/type`.
 
 ## Usage
 
@@ -258,6 +292,32 @@ btn/kind                 ;; button | text | field | area | check | radio |
                          ;; slider | progress | drop-down | panel | image
 btn/parent               ;; whatever holds it: a window, or a panel
 btn/window               ;; the window either way, however deeply nested
+```
+
+### When anything actually paints
+
+Creating a widget, or giving an image widget a different `image!`, marks it as
+needing paint and returns. The drawing happens on the next pump — inside
+`poll-events`, or inside `wait` by way of the device. `redraw` is the one
+exception: it promises the pixels are on screen before it returns, which is
+what makes it the right thing to call after rendering into an image.
+
+This matters because a script builds its layout with nothing pumping in
+between. Painting each control as it was created made a window assemble itself
+visibly, one `add-*` at a time. Now everything added since the last pump
+appears together. (macOS worked this way from the start — AppKit is only in a
+state to draw between events, so `Gui_Pump` has always been the only place
+anything is displayed there. This brought Windows back in line.)
+
+A window that is already on screen while its layout is built still appears
+empty and fills in at the first pump. To have it arrive finished, build it
+hidden:
+
+```rebol
+win: open-window/hidden/title 400x300 "All at once"
+add-text   win "ready" 10x10 200x0
+add-button win "go"    10x40 0x0
+show-window win          ;; one frame, everything on it
 ```
 
 ### Sizes, DPI and the natural size

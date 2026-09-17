@@ -1637,6 +1637,20 @@ void Gui_Widget_Redraw(GUIWIDGET *wid)
 }
 
 
+// The same thing here, and deliberately so: AppKit is only in a state to
+// draw between events, so this backend has never painted anywhere but in
+// Gui_Pump(). The distinction the two names carry is a Win32 one; keeping
+// them apart is what lets that backend honour it.
+void Gui_Widget_Invalidate(GUIWIDGET *wid)
+{
+	@autoreleasepool {
+		if (!wid || !wid->handle) return;
+		[NSVIEW_OF(wid) setNeedsDisplay:YES];
+		Display_Pending = TRUE;
+	}
+}
+
+
 void Gui_Window_Redraw(GUIWIN *win)
 {
 	@autoreleasepool {

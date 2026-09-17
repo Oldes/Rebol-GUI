@@ -1044,7 +1044,16 @@ void Gui_Show_Window(GUIWIN *win, REBOOL show)
 	if (!win || !win->handle) return;
 	ShowWindow(HWND_OF(win), show ? SW_SHOWNORMAL : SW_HIDE);
 	if (show) {
-		UpdateWindow(HWND_OF(win));
+		// RDW_ALLCHILDREN, and not a plain UpdateWindow: the controls were
+		// invalidated as they were created and are waiting for the pump,
+		// so a window shown after its layout was built has to paint them
+		// along with itself. That is what makes
+		//
+		//     win: open-window/hidden ... ; add-* ... ; show-window win
+		//
+		// appear complete in one go instead of a frame at a time.
+		RedrawWindow(HWND_OF(win), NULL, NULL,
+		             RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW);
 		SetForegroundWindow(HWND_OF(win));
 		win->flags |= GUIW_VISIBLE;
 	} else {
@@ -1669,6 +1678,16 @@ void Gui_Widget_Redraw(GUIWIDGET *wid)
 	// Painted now rather than whenever the queue next runs dry, so that
 	// `redraw` means the pixels are on screen when it returns.
 	UpdateWindow(HWND_OF_WID(wid));
+}
+
+
+void Gui_Widget_Invalidate(GUIWIDGET *wid)
+{
+	if (!wid || !wid->handle) return;
+	// No UpdateWindow: the WM_PAINT this leaves behind is collected by the
+	// next pump, along with every other widget invalidated since. See the
+	// note in gui.h.
+	InvalidateRect(HWND_OF_WID(wid), NULL, FALSE);
 }
 
 

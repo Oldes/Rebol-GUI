@@ -1,6 +1,6 @@
 Rebol [
 	Title:   "Rebol/GUI extension test"
-	Needs:   3.22.5
+	Needs:   3.22.7
 	Purpose: {
 		Opens a window and prints the mouse events it produces. Meant to be
 		run by a human - close the window to end it.
@@ -29,7 +29,13 @@ NL: either system/platform = 'Windows [CRLF][LF]
 print as-yellow "^/== Opening a window"
 ;;=============================================================================
 
-win: open-window/title/at 640x480 "Rebol GUI extension" 200x120
+;; /hidden, and shown again once the layout below is complete.
+;;
+;; Nothing paints until the pump runs, so widgets no longer appear one at a
+;; time as they are created - but a window which is ALREADY on screen while
+;; its layout is built still shows up empty first and fills in at the first
+;; `wait`. Building it hidden is what makes it appear finished.
+win: open-window/title/at/hidden 640x480 "Rebol GUI extension" 200x120
 
 print ["window:  " win]
 print ["id:      " win/id]
@@ -155,7 +161,7 @@ print ["button colour asked for:" mold counter/color]
 ;; Setting it does not reach back into what is already on screen.
 win/font-size: 15
 win/italic?:   true
-styled: add-text win "made after the window default was set" 300x395 320x25
+styled: add-text win "made after the window default was set" 300x395 320x24
 
 print ["window default:" win/font-size "italic?" win/italic?]
 print ["the new label took it:" styled/font-size "italic?" styled/italic?]
@@ -255,6 +261,20 @@ note: func ["Appends a line to the area" line [string!]][
 	log/text: logged
 ]
 
+
+;;=============================================================================
+print as-yellow "^/== Showing the finished layout"
+;;=============================================================================
+
+;; Everything above was created while the window was hidden, and nothing
+;; painted: each `add-*` only invalidated its control. This is where the
+;; whole layout arrives, in one frame.
+;;
+;; WATCH THE SCREEN HERE: the window must appear complete. Widgets showing up
+;; one after another - or an empty window that fills in a moment later - means
+;; something is still forcing a paint per widget.
+show-window win
+print "the window is up - it should have arrived with everything on it"
 
 ;;=============================================================================
 print as-yellow "^/== The GUI device"

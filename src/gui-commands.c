@@ -813,7 +813,11 @@ static void Attach_Widget(GUIWIDGET *wid, GUIWIN *win, REBINT w, REBINT h)
 		}
 	}
 
-	Gui_Widget_Redraw(wid);
+	// Invalidate, do not paint. A script builds its whole layout with
+	// nothing pumping in between, so painting here would make the window
+	// assemble itself visibly, one widget per `add-*`. Left to the pump,
+	// every widget added since the last one appears together.
+	Gui_Widget_Invalidate(wid);
 }
 
 
@@ -2238,7 +2242,10 @@ int GuiWidget_set_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 		if (*type != RXT_IMAGE) return PE_BAD_SET_TYPE;
 		if (!arg->image) return PE_BAD_SET;
 		hob->series = (REBSER*)arg->image;
-		Gui_Widget_Redraw(wid);
+		// Invalidated, not painted - `redraw` is the one thing that still
+		// promises pixels on screen before it returns, and everything else
+		// waits for the pump.
+		Gui_Widget_Invalidate(wid);
 		break;
 
 	// Both halves of the box are read back first, so that setting one does
