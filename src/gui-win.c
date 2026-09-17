@@ -46,7 +46,21 @@ static REBOOL Default_Font_Owned = FALSE;
 // synchronously on this same thread, so a plain flag is enough.
 static REBOOL Setting_Text = FALSE;
 
-#define WINDOW_STYLE   (WS_OVERLAPPEDWINDOW)
+// WS_CLIPCHILDREN, for the same reason a panel has it: without it a
+// parent's WM_PAINT paints straight over the controls it holds. The DC
+// BeginPaint hands back covers the whole invalid region, children
+// included, so one FillRect erases every control it crosses - and only
+// the parts which then get a WM_PAINT of their own come back.
+//
+// What does NOT come back is anything in a control's NON-client area. An
+// entry's sunken border is drawn on WM_NCPAINT, which invalidating the
+// client area never raises, so the border stays missing until something
+// else disturbs it. That is what a field with its top edge rubbed out
+// after a neighbour was resized over it really was.
+//
+// With the flag, the parent is clipped out of every child rectangle and
+// physically cannot do it.
+#define WINDOW_STYLE   (WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN)
 #define WINDOW_EXSTYLE (0)
 
 // What a window's frame is made of, as bits of the window style.
@@ -1064,7 +1078,8 @@ void Gui_Show_Window(GUIWIN *win, REBOOL show)
 		//
 		// appear complete in one go instead of a frame at a time.
 		RedrawWindow(HWND_OF(win), NULL, NULL,
-		             RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW);
+		             RDW_INVALIDATE | RDW_ERASE | RDW_FRAME
+		             | RDW_ALLCHILDREN | RDW_UPDATENOW);
 		SetForegroundWindow(HWND_OF(win));
 		win->flags |= GUIW_VISIBLE;
 	} else {
@@ -1963,12 +1978,53 @@ REBOOL Gui_Widget_Get_Box(GUIWIDGET *wid, REBINT *x, REBINT *y, REBINT *w, REBIN
 
 REBOOL Gui_Widget_Set_Box(GUIWIDGET *wid, REBINT x, REBINT y, REBINT w, REBINT h)
 {
+	HWND hwnd, parent;
+	RECT before, after, dirty;
+
 	if (!wid || !wid->handle) return FALSE;
+	hwnd = HWND_OF_WID(wid);
+
 	Box_To_Device(&x, &y, &w, &h);
 	// ... and the same room has to be added back when it is moved. It is a
 	// device-pixel constant, so it is added AFTER the conversion.
 	if (wid->kind == W_GUI_WIDGET_DROP_DOWN) h += DROP_LIST_ROOM;
-	return MoveWindow(HWND_OF_WID(wid), x, y, w, h, TRUE) ? TRUE : FALSE;
+
+	// Where it is now, in the coordinates the new box is given in - the
+	// client area of whatever holds it, a window or a panel.
+	parent = GetParent(hwnd);
+	if (parent && GetWindowRect(hwnd, &before))
+		MapWindowPoints(NULL, parent, (POINT*)&before, 2);
+	else
+		parent = NULL;
+
+	if (!MoveWindow(hwnd, x, y, w, h, TRUE)) return FALSE;
+
+	/*******************************************************************
+	**  A control which moved or shrank leaves its old rectangle behind,
+	**  and that rectangle belongs to the PARENT: Windows invalidates it
+	**  there, and the parent paints its background over the lot.
+	**
+	**  Which erases any SIBLING control living in that area - and the
+	**  sibling is a window of its own, whose client area Windows still
+	**  considers valid, so it is never sent a WM_PAINT and never comes
+	**  back. Grow a label over a field, shrink it again, and the field
+	**  is left half painted.
+	**
+	**  RDW_ALLCHILDREN over the union of where the control was and where
+	**  it now is takes the siblings in with it. No RDW_UPDATENOW: this
+	**  marks, and the pump paints - see Gui_Widget_Invalidate.
+	*******************************************************************/
+	if (parent) {
+		SetRect(&after, x, y, x + w, y + h);
+		UnionRect(&dirty, &before, &after);
+		// RDW_FRAME as well as RDW_ERASE: a sibling is not clipped out of
+		// another sibling, so one can still paint over another's sunken
+		// border - and a border lives in the NON-client area, which
+		// invalidating the client area alone never repaints.
+		RedrawWindow(parent, &dirty, NULL,
+		             RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_ALLCHILDREN);
+	}
+	return TRUE;
 }
 
 

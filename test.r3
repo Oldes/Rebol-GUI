@@ -299,6 +299,37 @@ show-window win
 print "the window is up - it should have arrived with everything on it"
 
 ;;=============================================================================
+print as-yellow "^/== Moving a widget over a sibling"
+;;=============================================================================
+
+;; The area a widget vacates when it moves or shrinks belongs to the WINDOW,
+;; which paints its background across it - and that covers any sibling living
+;; there, whose own control Windows still considers valid and would not
+;; otherwise repaint.
+;;
+;; What makes it visible is the FIELD's sunken border. That border is in the
+;; control's non-client area, drawn on WM_NCPAINT, and invalidating a client
+;; area never raises one - so a border painted over stays painted over, which
+;; is what "not fully redrawn" looked like.
+;;
+;; WATCH THE TOP EDGE OF THE FIELD: the label grows down across it and shrinks
+;; back, and the field's frame must be unbroken afterwards.
+print ["label at" label/offset label/size " field at" name/offset name/size]
+
+label/font-size: 20        ;; the same thing the `big` menu item does
+label/size: 220x0          ;; ... and re-fit, which now reaches the field
+print ["label grown to:" label/size]
+wait 1
+
+label/font-size: none      ;; `normal` again
+label/size: 220x0
+print ["and back to:   " label/size]
+wait 1
+
+print ["the field is still there:" mold name/text]
+print ["and reports its own box: " name/offset name/size]
+
+;;=============================================================================
 print as-yellow "^/== The GUI device"
 ;;=============================================================================
 
@@ -491,8 +522,11 @@ report: func [type source position value][
 			quit      [close-window win  exit]
 			repaint   [paint pic random 400  redraw canvas]
 			clear-log [logged: copy ""  log/text: ""]
-			big       [label/font-size: 20]
-			normal    [label/font-size: none]
+			;; Re-fit after the font change, which is what makes the
+			;; label grow down over the field's top edge and back - the
+			;; interactive version of the repaint check above.
+			big       [label/font-size: 20   label/size: 220x0]
+			normal    [label/font-size: none label/size: 220x0]
 			about     [label/text: "Rebol/GUI extension"]
 		]
 		;; Once the counter is back at zero there is nothing to reset.
