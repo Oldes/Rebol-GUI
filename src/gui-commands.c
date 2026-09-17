@@ -735,20 +735,31 @@ static GUIWIDGET* Frm_Widget(RXIFRM *frm, REBCNT n)
 **  they sit inside it - which is what keeps the window's widget list flat
 **  and teardown a single walk.
 ***********************************************************************/
-static GUIWIN* Frm_Parent(RXIFRM *frm, REBCNT n, GUIWIDGET **panel)
+static GUIWIN* Frm_Parent(RXIFRM *frm, REBCNT n, GUIWIDGET **container)
 {
 	GUIWIDGET *wid;
 	GUIWIN *win;
 
-	*panel = NULL;
+	*container = NULL;
 
 	win = Frm_Window(frm, n);
 	if (win) return win;
 
 	wid = Frm_Widget(frm, n);
-	if (!wid || wid->kind != W_GUI_WIDGET_PANEL || !wid->handle) return NULL;
+	if (!wid || !wid->handle) return NULL;
 
-	*panel = wid;
+	// Which kinds may hold other widgets. A PANEL is the obvious one; an
+	// IMAGE is here so that a label or a check can sit ON rendered pixels
+	// rather than beside them - which only works if it is a CHILD of the
+	// image, because two overlapping siblings have no defined order on
+	// Win32 and would fight over the same pixels.
+	//
+	// Nothing else: a button with children inside it is not a thing, and
+	// the native control would not clip or move them.
+	if (wid->kind != W_GUI_WIDGET_PANEL && wid->kind != W_GUI_WIDGET_IMAGE)
+		return NULL;
+
+	*container = wid;
 	return wid->owner;
 }
 
@@ -2152,6 +2163,28 @@ int GuiWidget_get_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 		*type = RXT_TUPLE;
 		break;
 
+	case W_GUI_ARG_BACKGROUND:
+		// `none` covers both "the platform's own" and "nothing at all" -
+		// the second is what `transparent?` is for, and a transparent
+		// widget has no colour to report.
+		if (!Kind_Has_Font(wid->kind) || !GUI_COLOR_HAS(wid->background)) {
+			*type = RXT_NONE;
+			break;
+		}
+		CLEARS(arg);
+		arg->tuple_len      = 3;
+		arg->tuple_bytes[0] = (REBYTE)GUI_COLOR_R(wid->background);
+		arg->tuple_bytes[1] = (REBYTE)GUI_COLOR_G(wid->background);
+		arg->tuple_bytes[2] = (REBYTE)GUI_COLOR_B(wid->background);
+		*type = RXT_TUPLE;
+		break;
+
+	case W_GUI_ARG_TRANSPARENTQ:
+		if (!Kind_Has_Font(wid->kind)) { *type = RXT_NONE; break; }
+		arg->int32a = GUI_BG_IS_CLEAR(wid->background) ? 1 : 0;
+		*type = RXT_LOGIC;
+		break;
+
 	case W_GUI_ARG_GROUP:
 		*type = RXT_INTEGER;
 		arg->int64 = (i64)wid->group;
@@ -2397,6 +2430,33 @@ int GuiWidget_set_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 		// asked for, and the one platform gap is documented rather than
 		// turned into an error at an arbitrary moment.
 		Gui_Widget_Set_Color(wid);
+		break;
+
+	case W_GUI_ARG_BACKGROUND:
+		if (!Kind_Has_Font(wid->kind)) return PE_BAD_SET;
+		if (*type == RXT_NONE) {
+			wid->background = 0; // the platform decides again
+		} else if (*type == RXT_TUPLE) {
+			if (arg->tuple_len < 3) return PE_BAD_SET;
+			// Giving a colour is also how transparency is turned off: a
+			// widget cannot both fill with something and show through.
+			wid->background = GUI_COLOR_OF(arg->tuple_bytes[0],
+			                               arg->tuple_bytes[1],
+			                               arg->tuple_bytes[2]);
+		} else {
+			return PE_BAD_SET_TYPE;
+		}
+		Gui_Widget_Set_Background(wid);
+		break;
+
+	case W_GUI_ARG_TRANSPARENTQ:
+		if (!Kind_Has_Font(wid->kind)) return PE_BAD_SET;
+		if (*type != RXT_LOGIC) return PE_BAD_SET_TYPE;
+		// Turning it off goes back to the platform's own background rather
+		// than to a colour set earlier: one field holds both, because the
+		// two are answers to the same question.
+		wid->background = arg->int32a ? GUI_BG_CLEAR : 0;
+		Gui_Widget_Set_Background(wid);
 		break;
 
 	case W_GUI_ARG_EDGE:

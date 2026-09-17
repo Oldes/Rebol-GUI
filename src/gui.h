@@ -343,6 +343,22 @@ void    Gui_Window_Redraw(GUIWIN *win);
 // place anything is displayed.
 void    Gui_Widget_Invalidate(GUIWIDGET *wid);
 
+/***********************************************************************
+**  Applies wid->background, having been changed from Rebol.
+**
+**  The value is read from the widget rather than passed, because on
+**  Win32 it is read again on every WM_CTLCOLOR* anyway - the control has
+**  nowhere to keep a background of its own, so the parent answers for it
+**  and this call only has to make the control repaint.
+**
+**  A transparent widget is the interesting one. Nothing fills its box,
+**  so what is behind it has to be painted by SOMETHING: on Win32 the
+**  control renders its parent's background into its own DC, which is why
+**  every class that can hold a widget - the window, a panel, an image
+**  widget - answers WM_PRINTCLIENT. On macOS the view hierarchy does it.
+***********************************************************************/
+void    Gui_Widget_Set_Background(GUIWIDGET *wid);
+
 // Destroys the native control. Safe on a widget whose window is already
 // gone - it then does nothing, because the OS took the control with it.
 void    Gui_Destroy_Widget(GUIWIDGET *wid);

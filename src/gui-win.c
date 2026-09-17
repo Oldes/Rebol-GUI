@@ -88,6 +88,13 @@ static REBOOL Setting_Text = FALSE;
 #define HWND_OF_WID(wid)  ((HWND)((wid)->handle))
 #define GUIWIN_OF(hwnd)   ((GUIWIN*)GetWindowLongPtrW((hwnd), GWLP_USERDATA))
 
+// Which kinds can hold other widgets - decided in the shared layer, and
+// asked here because a container needs WS_CLIPCHILDREN to keep it from
+// painting over what it holds, and every repaint of one then has to name
+// its children explicitly to reach them.
+#define Kind_Is_Container(k) \
+	((k) == W_GUI_WIDGET_PANEL || (k) == W_GUI_WIDGET_IMAGE)
+
 
 //== string conversion ========================================================
 
@@ -321,6 +328,67 @@ static HFONT Font_For(const WCHAR *name, int size, REBCNT style)
 }
 
 
+// The brush handed back for a widget with a background colour of its own.
+// One slot, because WM_CTLCOLOR* is answered for one control at a time on
+// this thread and the brush is used before the next answer is given.
+static HBRUSH Ctl_Brush = NULL;
+
+// Defined further down, and used before that: a transparent panel needs
+// the first while painting itself, and a background change needs the
+// second to reach a container's children.
+static void Paint_Parent_Background(HWND hwnd, HDC dc);
+static void Repaint_Widget(GUIWIDGET *wid, REBOOL now);
+
+
+/***********************************************************************
+**  The colour a transparent widget should show - when whatever holds it
+**  has a flat one, which is nearly always.
+**
+**  Painting the container's own colour is INDISTINGUISHABLE from showing
+**  through it, and it is worth a great deal: the control keeps erasing
+**  itself normally, so it needs no subclass, and - the reason this
+**  exists - the themed animation keeps working.
+**
+**  A themed check or radio cross-fades between states through
+**  BufferedPaintAnimation, which paints into a memory DC and never
+**  sends WM_ERASEBKGND. A control told "fill with nothing" therefore
+**  animates from an empty buffer and vanishes for the length of the
+**  fade. Handing it a real colour is what stops that.
+**
+**  Returns FALSE only when the answer is not a colour at all - an image
+**  widget - where the pixels have to be fetched instead.
+***********************************************************************/
+static REBOOL Flat_Background_Of(GUIWIDGET *wid, COLORREF *rgb)
+{
+	GUIWIDGET *parent = wid ? (GUIWIDGET*)wid->parent : NULL;
+
+	while (parent) {
+		// Rendered pixels are not a colour.
+		if (parent->kind == W_GUI_WIDGET_IMAGE) return FALSE;
+
+		// A transparent container shows what IT sits on, so the question
+		// moves up. A panel inside a panel inside the window ends here.
+		if (GUI_BG_IS_CLEAR(parent->background)) {
+			parent = (GUIWIDGET*)parent->parent;
+			continue;
+		}
+
+		if (GUI_COLOR_HAS(parent->background)) {
+			*rgb = RGB(GUI_COLOR_R(parent->background),
+			           GUI_COLOR_G(parent->background),
+			           GUI_COLOR_B(parent->background));
+			return TRUE;
+		}
+		break; // a container with the platform's own background
+	}
+
+	// The window, or a container which left its background alone: both
+	// paint COLOR_WINDOW.
+	*rgb = GetSysColor(COLOR_WINDOW);
+	return TRUE;
+}
+
+
 /***********************************************************************
 **  Answering a control's WM_CTLCOLOR* message.
 **
@@ -348,13 +416,55 @@ static LRESULT Ctl_Color(HDC dc, HWND child, GUIWIN *win)
 		}
 	}
 
-	SetBkColor(dc, GetSysColor(COLOR_WINDOW));
 	SetTextColor(dc, (wid && GUI_COLOR_HAS(wid->color))
 		? RGB(GUI_COLOR_R(wid->color),
 		      GUI_COLOR_G(wid->color),
 		      GUI_COLOR_B(wid->color))
 		: GetSysColor(COLOR_WINDOWTEXT));
 
+	// A colour to fill with: either the widget's own, or - for a
+	// transparent one over a container whose background IS a colour - that
+	// container's, which looks the same and behaves far better. See
+	// Flat_Background_Of().
+	if (wid) {
+		COLORREF rgb;
+		REBOOL   have = FALSE;
+
+		if (GUI_BG_IS_CLEAR(wid->background)) {
+			have = Flat_Background_Of(wid, &rgb);
+		} else if (GUI_COLOR_HAS(wid->background)) {
+			rgb  = RGB(GUI_COLOR_R(wid->background),
+			           GUI_COLOR_G(wid->background),
+			           GUI_COLOR_B(wid->background));
+			have = TRUE;
+		}
+
+		if (have) {
+			// The brush has to outlive this return - the control fills
+			// with it immediately afterwards - and only one control is
+			// answered at a time on this thread, so one slot is enough.
+			// The previous brush is released on the way in rather than
+			// left to leak.
+			if (Ctl_Brush) DeleteObject(Ctl_Brush);
+			Ctl_Brush = CreateSolidBrush(rgb);
+			if (Ctl_Brush) {
+				SetBkColor(dc, rgb);
+				return (LRESULT)Ctl_Brush;
+			}
+		}
+
+		// Transparent over something which is not a colour - rendered
+		// pixels. TRANSPARENT stops the control filling as it draws the
+		// glyphs, and a hollow brush stops it filling the rest; what
+		// shows through is what Transparent_Proc() put there.
+		if (GUI_BG_IS_CLEAR(wid->background)) {
+			SetBkMode(dc, TRANSPARENT);
+			return (LRESULT)GetStockObject(NULL_BRUSH);
+		}
+	}
+
+	// The platform's own, which here means the window's.
+	//
 	// A REAL brush handle. `(HBRUSH)(COLOR_WINDOW + 1)` is the encoding
 	// WNDCLASS.hbrBackground and FillRect accept, and it is NOT a handle:
 	// returned from here it is an invalid one, and the control fills with
@@ -366,6 +476,7 @@ static LRESULT Ctl_Color(HDC dc, HWND child, GUIWIN *win)
 	//
 	// GetSysColorBrush hands back a cached brush owned by the system: it
 	// needs no cleanup and must not be deleted.
+	SetBkColor(dc, GetSysColor(COLOR_WINDOW));
 	return (LRESULT)GetSysColorBrush(COLOR_WINDOW);
 }
 
@@ -602,6 +713,15 @@ static LRESULT CALLBACK Gui_Window_Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
 		EndPaint(hwnd, &ps);
 		return 0; }
 
+	// What a transparent child asks for. The whole client rect, not a
+	// paint rect: the child shifted the origin of its own DC so that this
+	// draws the part it covers, and clipping does the rest.
+	case WM_PRINTCLIENT: {
+		RECT rect;
+		GetClientRect(hwnd, &rect);
+		FillRect((HDC)wp, &rect, (HBRUSH)(COLOR_WINDOW + 1));
+		return 0; }
+
 	case WM_NCDESTROY:
 		// The window is gone for good - whether we destroyed it or the
 		// system did. Drop the queued events which point at the handle and
@@ -631,6 +751,45 @@ static LRESULT CALLBACK Gui_Window_Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
 // itself straight from the image! series and reports its own mouse events,
 // which is what makes it usable as a canvas.
 
+/***********************************************************************
+**  The image widget's pixels, into a DC the caller owns - WM_PAINT's and
+**  a transparent child's WM_PRINTCLIENT alike.
+***********************************************************************/
+static void Paint_Image(HWND hwnd, HDC dc, GUIWIDGET *wid)
+{
+	RECT    rect;
+	REBYTE *bits = NULL;
+	REBINT  iw = 0, ih = 0;
+
+	GetClientRect(hwnd, &rect);
+
+	if (Gui_Widget_Pixels(wid, &bits, &iw, &ih)) {
+		BITMAPINFO bmi;
+		int mode;
+
+		// image! is BGRA, which is exactly what a 32-bit BI_RGB DIB
+		// is - so the pixels go to the screen untouched. A negative
+		// height means the rows are stored top-down.
+		ZeroMemory(&bmi, sizeof(bmi));
+		bmi.bmiHeader.biSize        = sizeof(BITMAPINFOHEADER);
+		bmi.bmiHeader.biWidth       = iw;
+		bmi.bmiHeader.biHeight      = -ih;
+		bmi.bmiHeader.biPlanes      = 1;
+		bmi.bmiHeader.biBitCount    = 32;
+		bmi.bmiHeader.biCompression = BI_RGB;
+
+		mode = SetStretchBltMode(dc, COLORONCOLOR);
+		StretchDIBits(dc,
+			0, 0, rect.right, rect.bottom, // destination: the whole widget
+			0, 0, iw, ih,                  // source: the whole image
+			bits, &bmi, DIB_RGB_COLORS, SRCCOPY);
+		SetStretchBltMode(dc, mode);
+	} else {
+		FillRect(dc, &rect, (HBRUSH)(COLOR_WINDOW + 1));
+	}
+}
+
+
 static LRESULT CALLBACK Gui_Image_Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
 	GUIWIDGET *wid;
@@ -646,46 +805,37 @@ static LRESULT CALLBACK Gui_Image_Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp
 
 	switch (msg) {
 
+	// An image widget can hold other widgets, so it is a container like a
+	// panel and has to get out of their way the same: a control notifies
+	// ITS parent, and the window's procedure is the one that knows what to
+	// do with a notification.
+	case WM_COMMAND:
+	case WM_HSCROLL:
+	case WM_VSCROLL:
+	case WM_CTLCOLORSTATIC:
+	case WM_CTLCOLORBTN:
+	case WM_CTLCOLOREDIT:
+	case WM_CTLCOLORLISTBOX: {
+		HWND parent = GetParent(hwnd);
+		if (parent) return SendMessageW(parent, msg, wp, lp);
+		break; }
+
 	case WM_ERASEBKGND:
 		return TRUE; // WM_PAINT covers every pixel
 
 	case WM_PAINT: {
 		PAINTSTRUCT ps;
-		RECT   rect;
-		HDC    dc;
-		REBYTE *bits = NULL;
-		REBINT  iw = 0, ih = 0;
-
-		dc = BeginPaint(hwnd, &ps);
-		GetClientRect(hwnd, &rect);
-
-		if (Gui_Widget_Pixels(wid, &bits, &iw, &ih)) {
-			BITMAPINFO bmi;
-			int mode;
-
-			// image! is BGRA, which is exactly what a 32-bit BI_RGB DIB
-			// is - so the pixels go to the screen untouched. A negative
-			// height means the rows are stored top-down.
-			ZeroMemory(&bmi, sizeof(bmi));
-			bmi.bmiHeader.biSize        = sizeof(BITMAPINFOHEADER);
-			bmi.bmiHeader.biWidth       = iw;
-			bmi.bmiHeader.biHeight      = -ih;
-			bmi.bmiHeader.biPlanes      = 1;
-			bmi.bmiHeader.biBitCount    = 32;
-			bmi.bmiHeader.biCompression = BI_RGB;
-
-			mode = SetStretchBltMode(dc, COLORONCOLOR);
-			StretchDIBits(dc,
-				0, 0, rect.right, rect.bottom, // destination: the whole widget
-				0, 0, iw, ih,                  // source: the whole image
-				bits, &bmi, DIB_RGB_COLORS, SRCCOPY);
-			SetStretchBltMode(dc, mode);
-		} else {
-			FillRect(dc, &rect, (HBRUSH)(COLOR_WINDOW + 1));
-		}
-
+		HDC dc = BeginPaint(hwnd, &ps);
+		Paint_Image(hwnd, dc, wid);
 		EndPaint(hwnd, &ps);
 		return 0; }
+
+	// A transparent child of an image widget asks for this, and the answer
+	// is the image itself - which is the whole point of letting an image
+	// hold widgets: a caption ON the rendered pixels.
+	case WM_PRINTCLIENT:
+		Paint_Image(hwnd, (HDC)wp, wid);
+		return 0;
 
 	case WM_MOUSEMOVE:
 		Queue_Widget_Mouse(wid, W_GUI_EVENT_MOVE, lp, 0);
@@ -723,6 +873,117 @@ static LRESULT CALLBACK Gui_Image_Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp
 }
 
 
+// How far in from the left edge a framed panel's caption starts. The same
+// number is used on macOS, so the two look alike even though each measures
+// the text with its own font.
+#define PANEL_CAPTION_X To_Device(9)
+
+/***********************************************************************
+**  Everything a panel draws, into a DC the caller owns.
+**
+**  Split out of WM_PAINT so that WM_PRINTCLIENT can produce exactly the
+**  same pixels: a transparent child renders its parent's background into
+**  its own DC, and "the panel's background" has to mean the caption and
+**  the frame too, not just the fill.
+***********************************************************************/
+static void Paint_Panel(HWND hwnd, HDC dc)
+{
+	RECT   rect, frame, gap;
+	GUIWIDGET *wid = (GUIWIDGET*)GetWindowLongPtrW(hwnd, GWLP_USERDATA);
+	int    caption_len = GetWindowTextLengthW(hwnd);
+	WCHAR *caption = NULL;
+	HFONT  font, old_font = NULL;
+	SIZE   text_size = {0, 0};
+	int    inset = 0;
+	HBRUSH bg = NULL;          // a colour of its own, if it was given one
+	HBRUSH fill;               // what the background and the caption gap use
+
+	GetClientRect(hwnd, &rect);
+
+	if (wid && GUI_BG_IS_CLEAR(wid->background)) {
+		// Transparent: what shows through is whatever holds the panel,
+		// which is how a captioned frame can be put over an image.
+		Paint_Parent_Background(hwnd, dc);
+		fill = NULL;
+	} else {
+		if (wid && GUI_COLOR_HAS(wid->background))
+			bg = CreateSolidBrush(RGB(GUI_COLOR_R(wid->background),
+			                          GUI_COLOR_G(wid->background),
+			                          GUI_COLOR_B(wid->background)));
+		// Otherwise the same background the window paints, so a panel is
+		// a place to put things rather than a visible slab.
+		fill = bg ? bg : (HBRUSH)(COLOR_WINDOW + 1);
+		FillRect(dc, &rect, fill);
+	}
+
+	if (!wid || !(wid->state & GUI_PANEL_EDGE)) {
+		if (bg) DeleteObject(bg);
+		return;
+	}
+
+	// The caption is kept as the panel's window text, and drawn with
+	// the panel's own font - which is what makes `panel/text`,
+	// `panel/font-size` and the rest work through the generic
+	// accessors, with no special case above this file.
+	font = (HFONT)SendMessageW(hwnd, WM_GETFONT, 0, 0);
+	if (!font) font = Get_Default_Font();
+	if (font) old_font = (HFONT)SelectObject(dc, font);
+
+	if (caption_len > 0) {
+		caption = (WCHAR*)MAKE_MEM((caption_len + 1) * sizeof(WCHAR));
+		if (caption) {
+			caption_len = GetWindowTextW(hwnd, caption, caption_len + 1);
+			// Without the extent there is no gap to leave and no line
+			// to break, so an unmeasurable caption is simply not drawn
+			// rather than drawn over the frame.
+			if (!GetTextExtentPoint32W(dc, caption, caption_len, &text_size)
+			    || text_size.cx <= 0) {
+				FREE_MEM(caption);
+				caption = NULL;
+			} else {
+				inset = text_size.cy / 2;
+			}
+		}
+	}
+
+	// The frame starts halfway down the caption, so the text sits ON the
+	// line - a classic group box - and the whole thing stays inside the
+	// panel's box, which is why no child ever has to move for it.
+	frame = rect;
+	frame.top += inset;
+	DrawEdge(dc, &frame, EDGE_ETCHED, BF_RECT);
+
+	if (caption) {
+		// The line is broken by painting the background back over the
+		// span the caption occupies. The panel owns that colour - it
+		// filled the whole client area with it above - so this is exact
+		// rather than a guess at what shows through.
+		gap.left   = PANEL_CAPTION_X - To_Device(2);
+		gap.top    = rect.top;
+		gap.right  = gap.left + text_size.cx + To_Device(4);
+		gap.bottom = rect.top + text_size.cy;
+		if (gap.right > rect.right) gap.right = rect.right;
+		// A transparent panel has no colour to paint the line out with,
+		// so the caption is drawn over an unbroken frame instead. The
+		// alternative would be re-fetching the parent for one strip,
+		// which is a lot of work to hide four pixels of etching.
+		if (fill) FillRect(dc, &gap, fill);
+
+		SetBkMode(dc, TRANSPARENT);
+		SetTextColor(dc, GUI_COLOR_HAS(wid->color)
+			? RGB(GUI_COLOR_R(wid->color),
+			      GUI_COLOR_G(wid->color),
+			      GUI_COLOR_B(wid->color))
+			: GetSysColor(COLOR_WINDOWTEXT));
+		TextOutW(dc, PANEL_CAPTION_X, rect.top, caption, caption_len);
+		FREE_MEM(caption);
+	}
+
+	if (old_font) SelectObject(dc, old_font);
+	if (bg) DeleteObject(bg);
+}
+
+
 //== panel procedure ==========================================================
 //
 // A container, and nothing more. The one thing it must do is get out of the
@@ -733,11 +994,6 @@ static LRESULT CALLBACK Gui_Image_Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp
 // So the notifications are passed straight up. The handlers there identify
 // the control from lParam rather than from the window that received the
 // message, so forwarding is all it takes.
-
-// How far in from the left edge a framed panel's caption starts. The same
-// number is used on macOS, so the two look alike even though each measures
-// the text with its own font.
-#define PANEL_CAPTION_X To_Device(9)
 
 static LRESULT CALLBACK Gui_Panel_Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
@@ -771,82 +1027,18 @@ static LRESULT CALLBACK Gui_Panel_Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp
 
 	case WM_PAINT: {
 		PAINTSTRUCT ps;
-		RECT   rect, frame, gap;
-		HDC    dc = BeginPaint(hwnd, &ps);
-		GUIWIDGET *wid = (GUIWIDGET*)GetWindowLongPtrW(hwnd, GWLP_USERDATA);
-		int    caption_len = GetWindowTextLengthW(hwnd);
-		WCHAR *caption = NULL;
-		HFONT  font, old_font = NULL;
-		SIZE   text_size = {0, 0};
-		int    inset = 0;
-
-		GetClientRect(hwnd, &rect);
-		// The same background the window paints, so a panel is a place to
-		// put things rather than a visible slab.
-		FillRect(dc, &rect, (HBRUSH)(COLOR_WINDOW + 1));
-
-		if (!wid || !(wid->state & GUI_PANEL_EDGE)) {
-			EndPaint(hwnd, &ps);
-			return 0;
-		}
-
-		// The caption is kept as the panel's window text, and drawn with
-		// the panel's own font - which is what makes `panel/text`,
-		// `panel/font-size` and the rest work through the generic
-		// accessors, with no special case above this file.
-		font = (HFONT)SendMessageW(hwnd, WM_GETFONT, 0, 0);
-		if (!font) font = Get_Default_Font();
-		if (font) old_font = (HFONT)SelectObject(dc, font);
-
-		if (caption_len > 0) {
-			caption = (WCHAR*)MAKE_MEM((caption_len + 1) * sizeof(WCHAR));
-			if (caption) {
-				caption_len = GetWindowTextW(hwnd, caption, caption_len + 1);
-				// Without the extent there is no gap to leave and no line
-				// to break, so an unmeasurable caption is simply not drawn
-				// rather than drawn over the frame.
-				if (!GetTextExtentPoint32W(dc, caption, caption_len, &text_size)
-				    || text_size.cx <= 0) {
-					FREE_MEM(caption);
-					caption = NULL;
-				} else {
-					inset = text_size.cy / 2;
-				}
-			}
-		}
-
-		// The frame starts halfway down the caption, so the text sits ON the
-		// line - a classic group box - and the whole thing stays inside the
-		// panel's box, which is why no child ever has to move for it.
-		frame = rect;
-		frame.top += inset;
-		DrawEdge(dc, &frame, EDGE_ETCHED, BF_RECT);
-
-		if (caption) {
-			// The line is broken by painting the background back over the
-			// span the caption occupies. The panel owns that colour - it
-			// filled the whole client area with it above - so this is exact
-			// rather than a guess at what shows through.
-			gap.left   = PANEL_CAPTION_X - To_Device(2);
-			gap.top    = rect.top;
-			gap.right  = gap.left + text_size.cx + To_Device(4);
-			gap.bottom = rect.top + text_size.cy;
-			if (gap.right > rect.right) gap.right = rect.right;
-			FillRect(dc, &gap, (HBRUSH)(COLOR_WINDOW + 1));
-
-			SetBkMode(dc, TRANSPARENT);
-			SetTextColor(dc, GUI_COLOR_HAS(wid->color)
-				? RGB(GUI_COLOR_R(wid->color),
-				      GUI_COLOR_G(wid->color),
-				      GUI_COLOR_B(wid->color))
-				: GetSysColor(COLOR_WINDOWTEXT));
-			TextOutW(dc, PANEL_CAPTION_X, rect.top, caption, caption_len);
-			FREE_MEM(caption);
-		}
-
-		if (old_font) SelectObject(dc, old_font);
+		HDC dc = BeginPaint(hwnd, &ps);
+		Paint_Panel(hwnd, dc);
 		EndPaint(hwnd, &ps);
 		return 0; }
+
+	// What a transparent child asks for: the same drawing, into the DC it
+	// hands over, so that what shows through the child is what would have
+	// been under it. The caption and the frame are included, which is why
+	// this shares Paint_Panel() rather than just filling.
+	case WM_PRINTCLIENT:
+		Paint_Panel(hwnd, (HDC)wp);
+		return 0;
 	}
 
 	return DefWindowProcW(hwnd, msg, wp, lp);
@@ -1489,10 +1681,172 @@ void Gui_Menu_Enable(GUIWIN *win, REBCNT id, REBOOL enabled)
 }
 
 
+//== transparency =============================================================
+//
+// A control with no background of its own has to show what is behind it,
+// and on Win32 nothing puts it there. WS_CLIPCHILDREN - which the window
+// and the panel both need, so that a parent cannot paint over the controls
+// it holds - is exactly what stops the parent painting UNDER them too.
+//
+// So the control does it itself: its WM_ERASEBKGND asks the parent to
+// render its own client area into the control's DC, with the origin
+// shifted so that the part which lands inside the control is the part the
+// control covers. Every class that can hold a widget answers
+// WM_PRINTCLIENT for this - the window with its background, a panel with
+// its frame and caption, an image widget with its pixels.
+//
+// This needs no theme API and no extra library: the possible parents are
+// all our own classes.
+
+/***********************************************************************
+**  Paints what is behind `hwnd` into `dc`.
+***********************************************************************/
+static void Paint_Parent_Background(HWND hwnd, HDC dc)
+{
+	HWND  parent = GetParent(hwnd);
+	POINT origin;
+	int   saved;
+
+	if (!parent || !dc) return;
+
+	// Where this control's top-left sits in the parent's client area.
+	origin.x = 0;
+	origin.y = 0;
+	MapWindowPoints(hwnd, parent, &origin, 1);
+
+	saved = SaveDC(dc);
+	// The parent draws in ITS coordinates; this makes those land in ours.
+	OffsetWindowOrgEx(dc, origin.x, origin.y, NULL);
+	SendMessageW(parent, WM_PRINTCLIENT, (WPARAM)dc, PRF_CLIENT | PRF_ERASEBKGND);
+	RestoreDC(dc, saved);
+}
+
+
+// The original procedures of the system classes a transparent widget can
+// be. One per class rather than one per control: every STATIC shares a
+// procedure, and so does every BUTTON, so there is nothing per-widget to
+// keep and nothing to unwind when a widget goes away.
+static WNDPROC Static_Proc = NULL;
+static WNDPROC Button_Proc = NULL;
+
+/***********************************************************************
+**  Paints a transparent control over pixels which are not a colour.
+**
+**  WM_PAINT rather than WM_ERASEBKGND, and the whole cycle taken over
+**  rather than added to. A themed check or radio cross-fades between
+**  states through BufferedPaintAnimation: it paints into a memory DC of
+**  its own and never asks anyone to erase, so an erase hook is simply
+**  not called during the fade and the control animates out of an empty
+**  buffer.
+**
+**  Doing the compositing here - the parent's pixels, then the control
+**  over them through WM_PRINTCLIENT - means the base procedure never
+**  runs its own WM_PAINT, so there is no animation to go wrong. A
+**  transparent control on a picture does not cross-fade, which is a
+**  small price and the only way to be sure of what is behind it.
+***********************************************************************/
+static LRESULT CALLBACK Transparent_Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
+{
+	GUIWIDGET *wid = (GUIWIDGET*)GetWindowLongPtrW(hwnd, GWLP_USERDATA);
+	WNDPROC    base = (wid && wid->kind == W_GUI_WIDGET_TEXT)
+	                ? Static_Proc : Button_Proc;
+
+	if (!base) return DefWindowProcW(hwnd, msg, wp, lp);
+
+	// Only while it IS transparent, and only while what is behind it is
+	// not a flat colour - otherwise the ordinary path is better in every
+	// way. Turning either off leaves the subclass in place and stops
+	// using it, which is safer than unhooking a procedure that may be on
+	// the stack.
+	if (wid && GUI_BG_IS_CLEAR(wid->background)) {
+		COLORREF unused;
+
+		if (msg == WM_ERASEBKGND && !Flat_Background_Of(wid, &unused)) {
+			Paint_Parent_Background(hwnd, (HDC)wp);
+			return TRUE;
+		}
+
+		if (msg == WM_PAINT && !Flat_Background_Of(wid, &unused)) {
+			PAINTSTRUCT ps;
+			HDC dc = BeginPaint(hwnd, &ps);
+			Paint_Parent_Background(hwnd, dc);
+			// Statics and buttons both render themselves on request,
+			// which is what makes this compositing rather than a
+			// reimplementation of either.
+			CallWindowProcW(base, hwnd, WM_PRINTCLIENT, (WPARAM)dc, PRF_CLIENT);
+			EndPaint(hwnd, &ps);
+			return 0;
+		}
+	}
+
+	return CallWindowProcW(base, hwnd, msg, wp, lp);
+}
+
+
+// Installed the first time a widget is made transparent, never removed.
+// A static and a button are different classes, so the procedure being
+// replaced is remembered per class.
+static void Subclass_For_Transparency(GUIWIDGET *wid)
+{
+	HWND    hwnd;
+	WNDPROC previous;
+
+	if (!wid || !wid->handle) return;
+	hwnd = HWND_OF_WID(wid);
+
+	previous = (WNDPROC)GetWindowLongPtrW(hwnd, GWLP_WNDPROC);
+	if (previous == Transparent_Proc) return; // already done
+
+	if (wid->kind == W_GUI_WIDGET_TEXT) {
+		if (!Static_Proc) Static_Proc = previous;
+	} else {
+		if (!Button_Proc) Button_Proc = previous;
+	}
+	SetWindowLongPtrW(hwnd, GWLP_WNDPROC, (LONG_PTR)Transparent_Proc);
+}
+
+
+void Gui_Widget_Set_Background(GUIWIDGET *wid)
+{
+	if (!wid || !wid->handle) return;
+
+	// A check and a radio are BUTTONs, a label is a STATIC; the entries
+	// and the drop-down have a frame and a background of their own which
+	// showing through would only break, so they keep the colour and
+	// ignore transparency.
+	//
+	// And only when what is behind is NOT a flat colour: a transparent
+	// widget over the window or over a coloured panel is served by the
+	// brush WM_CTLCOLOR* hands back, which keeps the themed animation and
+	// needs no subclass at all.
+	if (GUI_BG_IS_CLEAR(wid->background)
+	    && (wid->kind == W_GUI_WIDGET_TEXT
+	     || wid->kind == W_GUI_WIDGET_CHECK
+	     || wid->kind == W_GUI_WIDGET_RADIO)) {
+		COLORREF flat;
+		if (!Flat_Background_Of(wid, &flat)) Subclass_For_Transparency(wid);
+	}
+
+	// A CONTAINER's background is also the background its transparent
+	// children show, and WS_CLIPCHILDREN means invalidating it does not
+	// reach them - so they are taken in explicitly, or they would keep
+	// painting the colour the panel used to have.
+	if (Kind_Is_Container(wid->kind)) {
+		Repaint_Widget(wid, FALSE);
+		return;
+	}
+
+	// TRUE erases: the old background has to go, and for a transparent
+	// widget erasing is what fetches the parent's pixels.
+	InvalidateRect(HWND_OF_WID(wid), NULL, TRUE);
+}
+
+
 //== widgets ==================================================================
 
-// What a new control attaches to: the panel holding it, or the window.
-// `wid->parent` is set before any creation call.
+// What a new control attaches to: the container holding it - a panel or an
+// image widget - or the window. `wid->parent` is set before any creation
+// call, and the kinds allowed there are decided in the shared layer.
 static HWND Parent_Hwnd(GUIWIDGET *wid, GUIWIN *owner)
 {
 	if (wid->parent && ((GUIWIDGET*)wid->parent)->handle)
@@ -1683,7 +2037,10 @@ REBOOL Gui_Create_Image(GUIWIDGET *wid, GUIWIN *owner,
 		0,
 		Class_Name_Image,
 		L"",
-		WS_CHILD | WS_VISIBLE,
+		// WS_CLIPCHILDREN for the same reason a panel has it: an image
+		// widget can hold other widgets now, and its blit covers every
+		// pixel of its client area - including theirs, if not clipped out.
+		WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN,
 		x, y, w, h,
 		Parent_Hwnd(wid, owner),
 		NULL,
@@ -1697,23 +2054,50 @@ REBOOL Gui_Create_Image(GUIWIDGET *wid, GUIWIN *owner,
 }
 
 
+/***********************************************************************
+**  A container's children have to be named, and this is why.
+**
+**  WS_CLIPCHILDREN keeps a container's own repaint out of the rectangles
+**  its children occupy - which is what stops it painting over them. But
+**  a TRANSPARENT child composites what is behind it as it paints, so
+**  when an image widget's pixels change, a caption on top of it is
+**  showing pixels which no longer exist and is not repainted by the
+**  image's own invalidation. It keeps the picture it was last painted
+**  over.
+**
+**  So a repaint of a container takes RDW_ALLCHILDREN. For a leaf widget
+**  it would be pointless - it has no children - and the plain
+**  invalidation is left alone there.
+***********************************************************************/
+static void Repaint_Widget(GUIWIDGET *wid, REBOOL now)
+{
+	UINT flags = RDW_INVALIDATE;
+
+	if (!wid || !wid->handle) return;
+
+	if (Kind_Is_Container(wid->kind))
+		flags |= RDW_ERASE | RDW_FRAME | RDW_ALLCHILDREN;
+	if (now)
+		flags |= RDW_UPDATENOW;
+
+	RedrawWindow(HWND_OF_WID(wid), NULL, NULL, flags);
+}
+
+
 void Gui_Widget_Redraw(GUIWIDGET *wid)
 {
-	if (!wid || !wid->handle) return;
-	InvalidateRect(HWND_OF_WID(wid), NULL, FALSE);
 	// Painted now rather than whenever the queue next runs dry, so that
 	// `redraw` means the pixels are on screen when it returns.
-	UpdateWindow(HWND_OF_WID(wid));
+	Repaint_Widget(wid, TRUE);
 }
 
 
 void Gui_Widget_Invalidate(GUIWIDGET *wid)
 {
-	if (!wid || !wid->handle) return;
-	// No UpdateWindow: the WM_PAINT this leaves behind is collected by the
-	// next pump, along with every other widget invalidated since. See the
-	// note in gui.h.
-	InvalidateRect(HWND_OF_WID(wid), NULL, FALSE);
+	// Not now: the WM_PAINT this leaves behind is collected by the next
+	// pump, along with every other widget invalidated since. See the note
+	// in gui.h.
+	Repaint_Widget(wid, FALSE);
 }
 
 

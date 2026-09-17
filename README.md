@@ -1136,6 +1136,8 @@ Returns how many OS messages those pumps dispatched
 /bold?            logic!              logic!                        "Whether the text is bold"
 /italic?          logic!              logic!                        "Whether the text is italic"
 /color            tuple!              [tuple! none!]                "Text colour; none lets the platform decide"
+/background       tuple!              [tuple! none!]                "Colour painted behind the text; none lets the platform decide"
+/transparent?     logic!              logic!                        "Whether nothing is painted behind it at all, so whatever the widget sits on shows through"
 /group            integer!            none                          "Which radio group it belongs to; 0 for everything else"
 /enabled?         logic!              logic!                        "Whether the control responds to the user"
 /parent           handle!             none                          "Whatever holds it - a window, or a panel; none once gone"

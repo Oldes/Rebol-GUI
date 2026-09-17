@@ -1919,6 +1919,18 @@ static NSColor* Widget_Color(GUIWIDGET *wid)
 	                           alpha:1.0];
 }
 
+// wid->background as a colour: nil when there is none to paint, which is
+// both "the platform's own" and "transparent" - the two differ in what
+// drawsBackground is set to, not in the colour.
+static NSColor* Widget_Background(GUIWIDGET *wid)
+{
+	if (!wid || !GUI_COLOR_HAS(wid->background)) return nil;
+	return [NSColor colorWithSRGBRed:GUI_COLOR_R(wid->background) / 255.0
+	                           green:GUI_COLOR_G(wid->background) / 255.0
+	                            blue:GUI_COLOR_B(wid->background) / 255.0
+	                           alpha:1.0];
+}
+
 static void Apply_Button_Color(GUIWIDGET *wid)
 {
 	NSButton *button;
@@ -2001,6 +2013,79 @@ REBOOL Gui_Widget_Set_Color(GUIWIDGET *wid)
 		[NSVIEW_OF(wid) setNeedsDisplay:YES];
 		Display_Pending = TRUE;
 		return TRUE;
+	}
+}
+
+
+/***********************************************************************
+**  wid->background, applied.
+**
+**  Far less work than the Win32 side, and for a structural reason: a
+**  view here is composited into its superview, so a control which draws
+**  no background of its own already has its parent's pixels underneath.
+**  Nothing has to fetch them, and a label over an image widget needs no
+**  more than switching its own fill off.
+**
+**  A check and a radio draw no background to begin with, so only an
+**  explicit colour needs doing there - through the layer, since an
+**  NSButton has no background colour of its own.
+***********************************************************************/
+void Gui_Widget_Set_Background(GUIWIDGET *wid)
+{
+	@autoreleasepool {
+		NSColor *color;
+		REBOOL   clear;
+
+		if (!wid || !wid->handle) return;
+		color = Widget_Background(wid);
+		clear = GUI_BG_IS_CLEAR(wid->background);
+
+		switch (wid->kind) {
+		case W_GUI_WIDGET_TEXT: {
+			NSTextField *label = (NSTextField*)wid->handle;
+			// A label starts unbezeled and already draws its background,
+			// so all three states are this one pair of properties.
+			[label setDrawsBackground:(clear ? NO : YES)];
+			[label setBackgroundColor:
+				(color ? color : [NSColor controlColor])];
+			break; }
+
+		case W_GUI_WIDGET_AREA:
+		case W_GUI_WIDGET_FIELD: {
+			// An entry has a bezel and a background that belong together;
+			// a colour is honoured, transparency is not, because what is
+			// left is a bezel around nothing.
+			NSTextField *field = (NSTextField*)wid->handle;
+			if (wid->kind == W_GUI_WIDGET_AREA) {
+				NSTextView *text = Text_View_Of(wid);
+				[text setDrawsBackground:(color ? YES : NO)];
+				if (color) [text setBackgroundColor:color];
+			} else if (color) {
+				[field setBackgroundColor:color];
+			} else {
+				[field setBackgroundColor:[NSColor textBackgroundColor]];
+			}
+			break; }
+
+		default: {
+			// A check, a radio and a panel draw no background of their
+			// own, so transparency is what they already are and only a
+			// colour needs doing. Through the LAYER, deliberately: a
+			// layer's background is composited UNDER the subviews, where
+			// filling in -drawRect: has hidden widgets in this file
+			// before.
+			NSView *view = NSVIEW_OF(wid);
+			if (color) {
+				[view setWantsLayer:YES];
+				[[view layer] setBackgroundColor:[color CGColor]];
+			} else if ([view layer]) {
+				[[view layer] setBackgroundColor:NULL];
+			}
+			break; }
+		}
+
+		[NSVIEW_OF(wid) setNeedsDisplay:YES];
+		Display_Pending = TRUE;
 	}
 }
 

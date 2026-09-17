@@ -93,6 +93,22 @@ paint pic 0
 
 canvas: add-image win pic 20x70
 
+;; An image widget is a CONTAINER, like a panel: widgets given to it are
+;; positioned inside it, clipped to it, and go away with it. Which is the
+;; only way to put a caption ON the pixels - two overlapping siblings have
+;; no defined order on Win32 and would fight over the same area.
+;;
+;; `transparent?` is what lets the image show through instead of a slab of
+;; window colour, and the text colour is set to suit the picture.
+caption: add-text canvas "on the image" 8x8 200x0
+caption/transparent?: true
+caption/color: 255.255.255
+caption/bold?:  true
+
+print ["caption's parent is the image:" caption/parent = canvas]
+print ["and its window is still the window:" caption/window = win]
+print ["transparent?" caption/transparent? " background:" mold caption/background]
+
 print ["image:    " canvas]
 print ["kind:     " canvas/kind]
 print ["size:     " canvas/size]
@@ -209,6 +225,13 @@ toggle/state: true
 ;; the caller's job. Compare the two radios below, which are in the window.
 box: add-panel/title win 20x285 260x60 "Temperature"
 
+;; A panel is in the same family, so it takes a colour of its own - and the
+;; radios inside it then need to be told to show it through, because a
+;; control fills with the WINDOW's colour by default, not its parent's.
+;; WATCH: the two radios below must sit on the panel's colour, with no pale
+;; rectangle around either of them.
+box/background: 235.240.250
+
 ;; Two independent groups. Radios turn each other off only within a group,
 ;; and the grouping is the extension's own - it does not depend on creation
 ;; order, on WS_GROUP flags, or on what AppKit considers a sibling. Note
@@ -221,6 +244,14 @@ fast: add-radio/group win "Fast" 150x350 110x22 2
 
 warm/state: true
 slow/state: true
+
+;; Show the panel's colour through, rather than each radio filling its own
+;; box with the window's. `false` puts it back, and `background` set to a
+;; tuple would fill with that instead.
+warm/transparent?: true
+cool/transparent?: true
+print ["radios are transparent:" warm/transparent? cool/transparent?]
+print ["the panel's colour:" mold box/background]
 
 print ["check:" toggle/kind "state:" toggle/state]
 print ["radio:" warm/kind "group:" warm/group "state:" warm/state]

@@ -131,6 +131,16 @@ typedef struct Gui_Widget_Context {
 	                 // panel: GUI_PANEL_EDGE when it draws a frame - read by
 	                 // the backend at paint time, so it can be turned on and
 	                 // off without touching the native control
+	REBCNT  background; // what is painted BEHIND the text, in three states:
+	                 //   0                  the platform's own background,
+	                 //                      which is the parent's colour
+	                 //   GUI_COLOR_SET|rgb  filled with that colour
+	                 //   GUI_BG_CLEAR       nothing is filled at all, and
+	                 //                      whatever is behind shows through
+	                 // Kept here for the same reason `color` is: on Win32
+	                 // the PARENT is asked for a child's background brush,
+	                 // message by message, so the control itself has
+	                 // nowhere to hold one
 	REBCNT  color;   // text colour: 0 when the platform decides, otherwise
 	                 // GUI_COLOR_SET | 0xRRGGBB. Kept here rather than in the
 	                 // control because Win32 does not store one: the PARENT
@@ -159,6 +169,12 @@ typedef struct Gui_Widget_Context {
 #define GUI_COLOR_OF(r,g,b)  (GUI_COLOR_SET | ((REBCNT)(r) << 16) \
                                             | ((REBCNT)(g) <<  8) \
                                             |  (REBCNT)(b))
+
+// wid->background only: nothing is filled. Any value with the top byte
+// clear is impossible for a colour, so 1 cannot be mistaken for one - and
+// 0 is still "the platform's own".
+#define GUI_BG_CLEAR         1
+#define GUI_BG_IS_CLEAR(b)   ((b) == GUI_BG_CLEAR)
 }
 
 ;; ---------------------------------------------------------------------------
@@ -248,6 +264,8 @@ handles: [
 		bold?     logic!   logic!    "Whether the text is bold"
 		italic?   logic!   logic!    "Whether the text is italic"
 		color     tuple!   [tuple! none!] "Text colour; none lets the platform decide"
+		background tuple!  [tuple! none!] "Colour painted behind the text; none lets the platform decide"
+		transparent? logic! logic!        "Whether nothing is painted behind it at all, so whatever the widget sits on shows through"
 		group    integer!  none      "Which radio group it belongs to; 0 for everything else"
 		enabled? logic!    logic!    "Whether the control responds to the user"
 		parent   handle!   none      "Whatever holds it - a window, or a panel; none once gone"
