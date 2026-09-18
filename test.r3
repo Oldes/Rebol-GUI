@@ -327,13 +327,24 @@ print as-yellow "^/== Slider and progress"
 ;;=============================================================================
 
 ;; Both carry a `value` from 0% to 100%. A slider taller than it is wide
-;; would be vertical; these are horizontal.
-level: add-slider/value   win 20x370 240x28 25%
+;; is vertical; these two are horizontal.
+level: add-slider/value   win 20x375 240x20 25%
 meter: add-progress/value win 20x410 240x10 25%
 
 print ["slider:" level/kind "value:" level/value]
 print ["progress:" meter/kind "value:" meter/value]
 print ["a progress bar has no enabled state:" mold meter/enabled?]
+
+;; Taller than wide - no extra argument, just the proportions. `0%` is the
+;; bottom on both platforms; Windows flips the trackbar's inverted axis so
+;; the caller never sees it.
+riser: add-slider/value win 265x70 20x160 25%
+print ["vertical slider:" riser/kind "value:" riser/value]
+riser/value: 100%
+print ["at the top:" riser/value]
+riser/value: 0%
+print ["at the bottom:" riser/value]
+riser/value: 25%
 
 ;;=============================================================================
 print as-yellow "^/== Drop-down"
@@ -400,12 +411,12 @@ print ["label at" label/offset label/size " field at" name/offset name/size]
 label/font-size: 20        ;; the same thing the `big` menu item does
 label/size: 220x0          ;; ... and re-fit, which now reaches the field
 print ["label grown to:" label/size]
-wait 1
+wait 0.2
 
 label/font-size: none      ;; `normal` again
 label/size: 220x0
 print ["and back to:   " label/size]
-wait 1
+wait 0.2
 
 print ["the field is still there:" mold name/text]
 print ["and reports its own box: " name/offset name/size]
@@ -590,7 +601,7 @@ last-move: 0x0
 clicks: 0
 
 report: func [type source position value][
-	if all [type = 'move  10 > distance last-move position] [exit]
+	;if all [type = 'move  10 > distance last-move position] [exit]
 	if type = 'move [last-move: position]
 
 	;; Everything a control reports about itself goes into the area, which
@@ -602,27 +613,32 @@ report: func [type source position value][
 		not all [type = 'change  source/kind = 'slider]
 	][	note ajoin [type " on " source/kind] ]
 
-	;; Picking from the drop-down shows up in the label.
-	if all [type = 'change  source = picker] [
-		label/text: ajoin ["Picked: " source/text " (" source/index ")"]
-	]
-
-	;; Dragging the slider drives the progress bar next to it.
-	if all [type = 'change  source = level] [
-		meter/value: source/value
-	]
-
-	;; The field greets whoever is typing in it.
-	if all [type = 'change  source = name] [
-		label/text: either empty? source/text [
-			"Type your name:"
-		][	ajoin ["Hello, " source/text "!"] ]
+	if type == 'change [
+		case [
+			source == picker [
+				;; Picking from the drop-down shows up in the label.
+				label/text: ajoin ["Picked: " source/text " (" source/index ")"]
+			]
+			source == level [
+				;; Dragging the slider drives the progress bar next to it.
+				meter/value: source/value
+			]
+			source == name [
+				;; The field greets whoever is typing in it.
+				label/text: either empty? source/text [
+					"Type your name:"
+				][	ajoin ["Hello, " source/text "!"] ]
+			]
+			source == riser [
+				log/scroll: 100% - riser/value
+			]
+		]
 	]
 
 	;; A `menu` event carries the item's WORD in the value slot - the one
 	;; slot with no fixed type - so a handler is a plain switch. `source` is
 	;; the window the menu belongs to.
-	if type = 'menu [
+	if type == 'menu [
 		note ajoin ["menu: " value]
 		switch value [
 			reset     [clicks: 0  counter/text: "Click me"]
@@ -641,26 +657,15 @@ report: func [type source position value][
 		win/menu-enabled?: reduce ['reset clicks > 0  'note true]
 	]
 
-	;; The borderless window's own button gives it a frame back - and with
-	;; a title bar it has a close box again.
-	if all [type = 'click  source = back-again] [
-		bare/border?: true
-		bare/title: "There you go"
-	]
-
-	if all [type = 'close source = fixed] [
-		print "Closing fixed window."
-		close-window fixed
-	]
-	if all [type = 'close source = bare] [
-		print "Closing bare window."
-		close-window bare
+	if all [type == 'close source/type = 'GUI-WINDOW] [
+		print ["Closing window:" source]
+		close-window source
 	]
 
 	;; For a click the source is the widget, not the window.
-	if type = 'click [
+	if type == 'click [
 		case [
-			source = closer [
+			source == closer [
 				close-window win
 				exit
 			]
@@ -673,7 +678,7 @@ report: func [type source position value][
 			source/kind = 'radio [
 				note ajoin ["group " source/group " -> " source/text]
 			]
-			source = counter [
+			source == counter [
 				clicks: clicks + 1
 				source/text: ajoin ["Clicked " clicks]
 
@@ -681,6 +686,12 @@ report: func [type source position value][
 				;; then asking for it to be shown. Nothing is copied.
 				paint pic clicks * 40
 				redraw canvas
+			]
+			;; The borderless window's own button gives it a frame back - and with
+			;; a title bar it has a close box again.
+			source == back-again [
+				bare/border?: true
+				bare/title: "There you go"
 			]
 		]
 	]
