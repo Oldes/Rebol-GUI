@@ -67,9 +67,10 @@ extern REBCNT Gui_Dev_Msgs;
 // How this extension describes a font when it is not inside a control.
 //
 // The name is a plain UTF-8 C string owned by the struct, NOT a Rebol
-// series: a handle context has exactly one GC-marked slot and the image
-// widget already uses it, so anything else kept here has to be invisible
-// to the collector. Whoever owns a GUIFONT frees its name.
+// series: a handle context has exactly one GC-marked slot, it is already
+// shared between a payload and the children, and a font name is not a Rebol
+// value anyway - so it is invisible to the collector and whoever owns a
+// GUIFONT frees its name.
 //
 // A widget does not carry one of these. Its font lives in the native
 // control, which is asked at every read - so a font set by any other means
@@ -98,9 +99,9 @@ typedef struct Gui_Window_Context {
 	// `accel` the Win32 accelerator table, which has no counterpart on
 	// macOS - a key equivalent there belongs to the item itself.
 	//
-	// The BLOCK the caller assigned is kept in hob->series, the one slot
-	// the GC marks, which is free on a window - only an image widget uses
-	// its own. That is what `win/menu` reads back.
+	// The BLOCK the caller assigned is kept in the payload half of
+	// hob->series - see the note on the shared slot in gui-commands.c -
+	// and that is what `win/menu` reads back.
 	void   *menu;
 	void   *accel;
 	REBCNT *menu_ids;   // item id N (1-based) is the word menu_ids[N-1]
@@ -108,19 +109,24 @@ typedef struct Gui_Window_Context {
 	REBCNT  menu_count;
 } GUIWIN;
 
-// An image widget holds no pixels of its own: the image! series it was given
-// is kept in `hob->series`, which the GC marks, and the backend reads the
-// dimensions and the data from it at every paint. So drawing into that same
+// An image widget holds no pixels of its own: the image! it was given lives in
+// the payload half of `hob->series`, which the GC marks, and the backend reads
+// the dimensions and the data from it at every paint. So drawing into that same
 // image from Rebol - or from another extension - shows up on the next redraw,
 // with nothing copied in between.
+//
+// The other half of that slot is the container's children - see the note on
+// the shared slot in gui-commands.c. Which is why nothing here touches
+// hob->series directly.
 typedef struct Gui_Widget_Context {
 	void   *handle;  // native control (HWND / NSView*)
-	REBHOB *hob;     // back reference, as above; hob->series is the image!
+	REBHOB *hob;     // back reference, as above; hob->series carries the
+	                 // image! and the children
 	REBCNT  kind;    // W_GUI_WIDGET_* - what the control is
 	GUIWIN *owner;   // WINDOW it ends up in, however deeply nested; NULL once
 	                 // that window is gone
-	void   *parent;  // containing panel (GUIWIDGET*), NULL when the window
-	                 // holds it directly
+	void   *parent;  // containing panel or image widget (GUIWIDGET*), NULL
+	                 // when the window holds it directly
 	void   *next;    // next widget of the same window (GUIWIDGET*) - the list
 	                 // is FLAT and window-wide, whatever the nesting, so one
 	                 // walk still reaches every widget at teardown
@@ -241,6 +247,7 @@ handles: [
 		font-size integer! [integer! none!] "Point size widgets are created with; none for the system size"
 		bold?     logic!   logic!    "Whether widgets are created bold"
 		italic?   logic!   logic!    "Whether widgets are created italic"
+		children  block!   none      "Widgets the window holds directly, in the order they were added"
 		menu      block!   [block! none!] "The menu bar, as the dialect described in the README; none removes it"
 		menu-enabled? block! block!  "Which items are greyed out, as word/logic pairs; setting merges, it does not replace"
 	]
@@ -266,6 +273,7 @@ handles: [
 		color     tuple!   [tuple! none!] "Text colour; none lets the platform decide"
 		background tuple!  [tuple! none!] "Colour painted behind the text; none lets the platform decide"
 		transparent? logic! logic!        "Whether nothing is painted behind it at all, so whatever the widget sits on shows through"
+		children  block!   none      "Widgets a container holds, in the order they were added; none for a kind which cannot hold any"
 		group    integer!  none      "Which radio group it belongs to; 0 for everything else"
 		enabled? logic!    logic!    "Whether the control responds to the user"
 		parent   handle!   none      "Whatever holds it - a window, or a panel; none once gone"

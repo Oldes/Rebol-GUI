@@ -88,13 +88,6 @@ static REBOOL Setting_Text = FALSE;
 #define HWND_OF_WID(wid)  ((HWND)((wid)->handle))
 #define GUIWIN_OF(hwnd)   ((GUIWIN*)GetWindowLongPtrW((hwnd), GWLP_USERDATA))
 
-// Which kinds can hold other widgets - decided in the shared layer, and
-// asked here because a container needs WS_CLIPCHILDREN to keep it from
-// painting over what it holds, and every repaint of one then has to name
-// its children explicitly to reach them.
-#define Kind_Is_Container(k) \
-	((k) == W_GUI_WIDGET_PANEL || (k) == W_GUI_WIDGET_IMAGE)
-
 
 //== string conversion ========================================================
 

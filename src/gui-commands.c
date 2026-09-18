@@ -267,6 +267,171 @@ void Gui_Widget_Activated(GUIWIDGET *widget, REBINT x, REBINT y, REBINT flags)
 }
 
 
+// Fills an RXIARG with a handle context; defined further down, where the
+// rest of the argument helpers are.
+static void Set_Handle_Arg(RXIARG *arg, REBHOB *hob);
+
+/***********************************************************************
+**  The one GC-marked slot, shared.
+**
+**  A handle context has exactly ONE series the collector marks, and
+**  three kinds need two things kept alive in it: whatever the kind
+**  itself holds, and the children once it has any. A window holds the
+**  menu block it was given; an image widget holds its image!.
+**
+**  So the slot is a BLOCK of exactly two values, with fixed meanings:
+**
+**      [0] the payload  - an image! for an image widget, the menu block
+**                         for a window, none for anything else
+**      [1] the children - a block of handles, or none
+**
+**  Marking the outer block marks both, and nothing outside these four
+**  functions knows the layout. A widget which is neither a container
+**  nor an image never allocates one.
+***********************************************************************/
+#define SLOT_PAYLOAD  0
+#define SLOT_CHILDREN 1
+
+static REBSER *Hob_Slots(REBHOB *hob)
+{
+	REBSER *blk;
+	RXIARG  none;
+
+	if (!hob) return NULL;
+	if (hob->series) return hob->series;
+
+	blk = (REBSER*)RL_MAKE_BLOCK(2);
+	if (!blk) return NULL;
+
+	// Stored BEFORE anything else can allocate: until it is in the slot
+	// the GC marks, nothing references this block and a collection in
+	// the middle of filling it would take it away.
+	hob->series = blk;
+
+	// Both slots exist from the start, so the layout never depends on
+	// which of the two was assigned first.
+	CLEARS(&none);
+	RL_SET_VALUE(blk, SLOT_PAYLOAD,  none, RXT_NONE);
+	RL_SET_VALUE(blk, SLOT_CHILDREN, none, RXT_NONE);
+
+	return blk;
+}
+
+
+// The payload as a plain series - an image's pixels, a menu's block - or
+// NULL when there is none.
+static REBSER *Hob_Payload(REBHOB *hob)
+{
+	RXIARG val;
+	REBCNT type;
+
+	if (!hob || !hob->series) return NULL;
+	type = RL_GET_VALUE(hob->series, SLOT_PAYLOAD, &val);
+	if (type != RXT_IMAGE && type != RXT_BLOCK) return NULL;
+
+	// An image! and a block! carry their series in the same place. The
+	// index is deliberately not read: for an image it overlaps the
+	// dimensions, which is the trap this extension has been caught by
+	// before.
+	return (REBSER*)val.series;
+}
+
+
+// Replaces the payload. A type of RXT_NONE clears it.
+static REBOOL Hob_Set_Payload(REBHOB *hob, RXIARG *val, REBCNT type)
+{
+	REBSER *blk = Hob_Slots(hob);
+	RXIARG  none;
+
+	if (!blk) return FALSE;
+	if (!val) {
+		CLEARS(&none);
+		val  = &none;
+		type = RXT_NONE;
+	}
+	RL_SET_VALUE(blk, SLOT_PAYLOAD, *val, (int)type);
+	return TRUE;
+}
+
+
+// The children block. `make` decides whether an absent one is created,
+// so a read of `children` on a childless container allocates nothing.
+static REBSER *Hob_Children(REBHOB *hob, REBOOL make)
+{
+	RXIARG  val;
+	REBSER *blk, *kids;
+
+	if (!hob) return NULL;
+
+	if (hob->series
+	    && RL_GET_VALUE(hob->series, SLOT_CHILDREN, &val) == RXT_BLOCK)
+		return (REBSER*)val.series;
+
+	if (!make) return NULL;
+
+	blk = Hob_Slots(hob);
+	if (!blk) return NULL;
+
+	kids = (REBSER*)RL_MAKE_BLOCK(4);
+	if (!kids) return NULL;
+
+	CLEARS(&val);
+	val.series = kids;
+	val.index  = 0;
+	// Protected across the store: the block is referenced by nothing
+	// until it is in the slot.
+	RL_PROTECT_GC(kids, 1);
+	RL_SET_VALUE(blk, SLOT_CHILDREN, val, RXT_BLOCK);
+	RL_PROTECT_GC(kids, 0);
+
+	return kids;
+}
+
+
+// Appends a child's handle to its container's list.
+static void Add_Child(REBHOB *parent, REBHOB *child)
+{
+	REBSER *kids;
+	RXIARG  val;
+
+	if (!parent || !child) return;
+	kids = Hob_Children(parent, TRUE);
+	if (!kids) return;
+
+	Set_Handle_Arg(&val, child);
+	RL_SET_VALUE(kids, (u32)RL_SERIES(kids, RXI_SER_TAIL), val, RXT_HANDLE);
+}
+
+
+// Takes it out again, keeping the order of the rest.
+static void Drop_Child(REBHOB *parent, REBHOB *child)
+{
+	REBSER *kids;
+	RXIARG  val;
+	REBCNT  n, tail, kept = 0;
+
+	if (!parent || !child) return;
+	kids = Hob_Children(parent, FALSE);
+	if (!kids) return;
+
+	tail = (REBCNT)RL_SERIES(kids, RXI_SER_TAIL);
+	for (n = 0; n < tail; n++) {
+		if (RL_GET_VALUE(kids, n, &val) != RXT_HANDLE) continue;
+		if (val.handle.hob == child) continue; // the one going away
+		if (kept != n) RL_SET_VALUE(kids, kept, val, RXT_HANDLE);
+		kept++;
+	}
+
+	// Nothing in the RL_ API shortens a block, and leaving the tail full
+	// of stale handles is not an option - so the length is set directly
+	// and the block re-terminated, which is what SET_VALUE would have
+	// done on the way past.
+	SERIES_TAIL(kids) = kept;
+	SET_END(BLK_TAIL(kids));
+}
+
+
+
 /***********************************************************************
 **  Called when a widget's native control is gone.
 **
@@ -276,6 +441,14 @@ void Gui_Widget_Activated(GUIWIDGET *widget, REBINT x, REBINT y, REBINT flags)
 void Gui_Widget_Closed(GUIWIDGET *widget)
 {
 	if (!widget) return;
+
+	// Out of whatever held it - a container's own children block, or the
+	// window's. Done before `parent` and `owner` are cleared below,
+	// because they are what says where it was.
+	Drop_Child(widget->parent
+		? ((GUIWIDGET*)widget->parent)->hob
+		: (widget->owner ? widget->owner->hob : NULL),
+		widget->hob);
 
 	if (widget->owner) {
 		GUIWIDGET **link = (GUIWIDGET**)&widget->owner->widgets;
@@ -323,7 +496,7 @@ static void Close_Contents_Of(GUIWIDGET *panel)
 		{
 			if ((GUIWIDGET*)wid->parent != panel) continue;
 
-			if (wid->kind == W_GUI_WIDGET_PANEL) Close_Contents_Of(wid);
+			if (Kind_Is_Container(wid->kind)) Close_Contents_Of(wid);
 			Gui_Destroy_Widget(wid); // the native control
 			Gui_Widget_Closed(wid);  // the Rebol side of it
 			again = TRUE;
@@ -649,7 +822,9 @@ static REBOOL Set_Menu(GUIWIN *win, REBSER *blk, REBCNT index)
 {
 	Gui_Menu_Free(win);
 	Menu_Free_Ids(win);
-	if (win->hob) win->hob->series = NULL;
+	// The PAYLOAD only: the same slot block holds the window's children,
+	// which a menu going away has nothing to do with.
+	Hob_Set_Payload(win->hob, NULL, RXT_NONE);
 
 	if (!blk) return TRUE;
 
@@ -661,10 +836,14 @@ static REBOOL Set_Menu(GUIWIN *win, REBSER *blk, REBCNT index)
 		return FALSE;
 	}
 
-	// Kept so that `win/menu` can answer with the very block it was given.
-	// hob->series is the one slot the GC marks, and a window - unlike an
-	// image widget - has no other use for it.
-	if (win->hob) win->hob->series = blk;
+	// Kept so that `win/menu` can answer with the very block it was given,
+	// in the payload half of the one slot the GC marks.
+	{	RXIARG val;
+		CLEARS(&val);
+		val.series = blk;
+		val.index  = index;
+		Hob_Set_Payload(win->hob, &val, RXT_BLOCK);
+	}
 	return TRUE;
 }
 
@@ -833,6 +1012,12 @@ static void Attach_Widget(GUIWIDGET *wid, GUIWIN *win, REBINT w, REBINT h)
 
 	if (wid->hob) wid->hob->flags |= HANDLE_CONTEXT_LOCKED;
 
+	// And onto whatever holds it, which is what `children` reads back.
+	// The intrusive list above is the extension's own and window-wide;
+	// this is the per-container one Rebol sees.
+	Add_Child(wid->parent ? ((GUIWIDGET*)wid->parent)->hob : win->hob,
+	          wid->hob);
+
 	// The window's default is read HERE, once, at creation - which is the
 	// whole of the inheritance. Restyling a window afterwards changes what
 	// the next widget starts with and leaves everything already on screen
@@ -962,8 +1147,9 @@ REBOOL Gui_Widget_Pixels(GUIWIDGET *wid, REBYTE **data, REBINT *w, REBINT *h)
 {
 	REBSER *img;
 
-	if (!wid || !wid->hob || !wid->hob->series) return FALSE;
-	img = wid->hob->series;
+	if (!wid || !wid->hob) return FALSE;
+	img = Hob_Payload(wid->hob);
+	if (!img) return FALSE;
 
 	*w    = (REBINT)IMG_WIDE(img);
 	*h    = (REBINT)IMG_HIGH(img);
@@ -1363,8 +1549,14 @@ COMMAND cmd_gui_add_image(RXIFRM *frm, void *ctx)
 	wid->parent = panel; // read by the backend to pick the native parent
 
 	// The GC marks a handle context's series - which is exactly what keeps
-	// the image alive for as long as a widget is showing it.
-	hob->series = img;
+	// the image alive for as long as a widget is showing it. The argument
+	// is stored as it arrived, dimensions and all, rather than rebuilt
+	// from the series: the index field an image! shares with them is the
+	// trap this extension has been caught by before.
+	if (!Hob_Set_Payload(hob, &RXA_ARG(frm, 2), RXT_IMAGE)) {
+		RL_FREE_HANDLE_CONTEXT(hob);
+		RETURN_ERROR(ERR_NO_HANDLE);
+	}
 
 	if (!Gui_Create_Image(wid, win, x, y, w, h)) {
 		wid->owner  = NULL;
@@ -1452,7 +1644,7 @@ COMMAND cmd_gui_remove_widget(RXIFRM *frm, void *ctx)
 	if (wid->handle) {
 		// A panel takes its contents with it, so their handles are told
 		// before the native control - and everything under it - is gone.
-		if (wid->kind == W_GUI_WIDGET_PANEL) Close_Contents_Of(wid);
+		if (Kind_Is_Container(wid->kind)) Close_Contents_Of(wid);
 		Gui_Destroy_Widget(wid); // the native control
 		Gui_Widget_Closed(wid);  // the Rebol side of it
 	}
@@ -1804,12 +1996,27 @@ int GuiWindow_get_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 		break;
 
 	// The very block which was assigned, kept alive in hob->series.
-	case W_GUI_ARG_MENU:
-		if (!hob->series) { *type = RXT_NONE; break; }
-		arg->series = hob->series;
+	// Every widget the WINDOW holds directly - the ones inside a panel or
+	// an image widget belong to that container's own list.
+	case W_GUI_ARG_CHILDREN: {
+		REBSER *kids = Hob_Children(hob, FALSE);
+		// An empty block rather than none, so that a caller can always
+		// `foreach` the answer without asking whether there is one. Not
+		// stored: a container nobody put anything in keeps no slot.
+		if (!kids) kids = (REBSER*)RL_MAKE_BLOCK(0);
+		if (!kids) { *type = RXT_NONE; break; }
+		arg->series = kids;
 		arg->index  = 0;
 		*type = RXT_BLOCK;
-		break;
+		break; }
+
+	case W_GUI_ARG_MENU: {
+		REBSER *menu = Hob_Payload(hob);
+		if (!menu) { *type = RXT_NONE; break; }
+		arg->series = menu;
+		arg->index  = 0;
+		*type = RXT_BLOCK;
+		break; }
 
 	/*******************************************************************
 	**  Every item's word and whether it is selectable, as pairs. It
@@ -2013,7 +2220,7 @@ int GuiWidget_free(void *hndl)
 
 	if (wid->handle) {
 		// `release` on a panel means the same as remove-widget on it.
-		if (wid->kind == W_GUI_WIDGET_PANEL) Close_Contents_Of(wid);
+		if (Kind_Is_Container(wid->kind)) Close_Contents_Of(wid);
 		Gui_Destroy_Widget(wid);
 		Gui_Widget_Closed(wid);
 	}
@@ -2069,11 +2276,11 @@ int GuiWidget_get_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 	*******************************************************************/
 	case W_GUI_ARG_IMAGE: {
 		REBSER *img;
-		if (wid->kind != W_GUI_WIDGET_IMAGE || !hob->series) {
+		if (wid->kind != W_GUI_WIDGET_IMAGE
+		    || !(img = Hob_Payload(hob))) {
 			*type = RXT_NONE;
 			break;
 		}
-		img = hob->series;
 		CLEARS(arg);
 		arg->image  = img;
 		arg->width  = (int)IMG_WIDE(img);
@@ -2243,6 +2450,19 @@ int GuiWidget_get_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 		break;
 
 	// Whatever holds it: a panel if it is in one, otherwise the window.
+	// Only a container has any; everything else answers none, which is
+	// how a caller can tell the two apart without a list of kinds.
+	case W_GUI_ARG_CHILDREN: {
+		REBSER *kids;
+		if (!Kind_Is_Container(wid->kind)) { *type = RXT_NONE; break; }
+		kids = Hob_Children(hob, FALSE);
+		if (!kids) kids = (REBSER*)RL_MAKE_BLOCK(0);
+		if (!kids) { *type = RXT_NONE; break; }
+		arg->series = kids;
+		arg->index  = 0;
+		*type = RXT_BLOCK;
+		break; }
+
 	case W_GUI_ARG_PARENT:
 		if (wid->parent && ((GUIWIDGET*)wid->parent)->hob) {
 			Set_Handle_Arg(arg, ((GUIWIDGET*)wid->parent)->hob);
@@ -2306,7 +2526,7 @@ int GuiWidget_set_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 		if (wid->kind != W_GUI_WIDGET_IMAGE) return PE_BAD_SET;
 		if (*type != RXT_IMAGE) return PE_BAD_SET_TYPE;
 		if (!arg->image) return PE_BAD_SET;
-		hob->series = (REBSER*)arg->image;
+		if (!Hob_Set_Payload(hob, arg, RXT_IMAGE)) return PE_BAD_SET;
 		// Invalidated, not painted - `redraw` is the one thing that still
 		// promises pixels on screen before it returns, and everything else
 		// waits for the pump.

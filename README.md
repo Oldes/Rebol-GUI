@@ -359,6 +359,9 @@ The measuring happens after the widget's font is settled — including a font
 inherited from `win/font-size` — and before it is first drawn, so nothing is
 ever seen at the wrong size.
 
+It happens **once**. To ask again later, after changing a font or a label,
+assign a zero axis to `size` — see [Typography](#typography) below.
+
 **`win/scale`** reports device pixels per unit: `1.0` at 100%, `1.75` at 175%,
 `2.0` on a Retina Mac. Sizes are logical, so you rarely need it — with one
 exception. An image widget stretches its `image!` into the box it was given, so
@@ -426,8 +429,71 @@ The colour is the exception, and is kept per widget. Win32 stores no text
 colour on a control — the *parent* is asked, message by message, as each child
 is about to paint — so there is nowhere in the control to read one back from.
 
-**A control does not resize itself for a bigger font.** The box laid out is the
-box kept, exactly as with a panel's frame, so leave room.
+#### Backgrounds, and having none
+
+`background` is the colour painted behind the text; `none` puts it back to the
+platform's own. `transparent?` is the separate question of whether anything is
+painted there at all:
+
+```rebol
+lbl/background: 235.240.250   ;; fill with this
+lbl/background: none          ;; the platform's own again
+lbl/transparent?: true        ;; nothing at all - what it sits on shows through
+```
+
+They share one slot, because they are answers to the same question: giving a
+colour turns transparency off, and `transparent?: false` goes back to the
+platform's own rather than to a colour set earlier.
+
+A control fills with the **window's** colour by default, not its parent's — so
+a radio inside a coloured panel needs `transparent?: true` to sit on the
+panel's colour rather than in a pale rectangle of its own.
+
+Transparency applies to `text`, `check`, `radio` and `panel`. An entry, an area
+and a drop-down keep it: their background belongs with their bezel, and showing
+through leaves a frame around nothing. They take a `background` colour.
+
+Why it needs saying at all: on macOS a view is composited into its superview,
+so a control that draws no background already has its parent's pixels
+underneath and there is nothing to arrange. On Win32 there is, and the answer
+depends on what the widget sits on.
+
+**Over a colour** — the window, or a panel with a `background` of its own — the
+control is simply handed *that* colour to fill with. Indistinguishable from
+showing through, and the control keeps painting itself normally, which matters:
+a themed check or radio cross-fades between states through
+`BufferedPaintAnimation`, painting into a memory DC of its own without ever
+asking anyone to erase. Told to fill with nothing, it animates out of an empty
+buffer and disappears for the length of the fade.
+
+**Over rendered pixels** — inside an image widget — there is no colour to hand
+over, so the control is subclassed and its whole `WM_PAINT` taken over: the
+parent's pixels via `WM_PRINTCLIENT`, then the control over them the same way.
+Every class that can hold a widget answers `WM_PRINTCLIENT` for this. The
+consequence is that such a control does not cross-fade — the base procedure
+never runs a paint cycle of its own, which is exactly why nothing can go wrong
+in it. No theme API and no extra library either way.
+
+**A control does not re-measure itself.** The box laid out is the box kept —
+changing a font or a label does not move anything — so a bigger font in a box
+sized for a smaller one clips.
+
+**Asking for a re-fit is a zero axis in `size`**, the same convention `add-*`
+uses, so the two read alike:
+
+```rebol
+lbl: add-text win "Type your name:" 10x10 220x0
+lbl/size                 ;; 220x19 - width given, height measured
+lbl/font-size: 15
+lbl/size                 ;; 220x19 still - nothing moved on its own
+lbl/size: 220x0          ;; keep the width, measure the height again
+lbl/size                 ;; 220x26
+lbl/size: 0x0            ;; measure both
+```
+
+Which axes to re-measure, and whether there is room to, is a question about the
+rest of the layout — so it belongs in the script rather than in the accessor.
+An image or a panel has no size of its own to report and refuses to be asked.
 
 #### A window's default
 
@@ -470,8 +536,9 @@ is why setting a button's text or font rebuilds that string too.
 
 ### Panels
 
-A panel holds other widgets. Every `add-*` takes a window **or a panel** as its
-first argument, and what a panel holds is positioned inside *it*:
+A panel holds other widgets. Every `add-*` takes a window, **a panel, or an
+image widget** as its first argument, and what a container holds is positioned
+inside *it*:
 
 ```rebol
 box:  add-panel win 20x285 260x60
@@ -762,6 +829,50 @@ writing through a freed pointer. `remove-widget` does the same for one widget
 on its own.
 
 ### Image widgets
+
+An image widget is also a **container**, like a panel: widgets given to it are
+positioned inside it, clipped to it, and go away with it. That is how a caption
+goes *on* the picture —
+
+```rebol
+canvas: add-image win pic 20x70
+cap: add-text canvas "frame 120" 8x8 200x0
+cap/transparent?: true
+cap/color: 255.255.255
+```
+
+— and it has to be containment rather than two overlapping siblings, because
+two sibling controls have no defined painting order on Win32 and would fight
+over the same pixels. `cap/parent` is the image; `cap/window` is still the
+window.
+
+### Children
+
+Every container answers `children` with the widgets it holds, in the order they
+were added. Only the ones it holds *directly* — a widget inside a panel is in
+that panel's list, not in the window's:
+
+```rebol
+win/children              ;; everything the window holds itself
+box/children              ;; what that panel holds
+canvas/children           ;; what sits on the picture
+btn/children              ;; none - a button cannot hold anything
+```
+
+A kind that cannot hold widgets answers `none` rather than an empty block,
+which is how to tell a container from a leaf without keeping a list of kinds.
+A container with nothing in it answers an empty block.
+
+The list lives in the container's own handle, in the one series a handle
+context has the collector mark. Two things need to be kept alive there — what
+the kind itself holds and the children — so that slot is a block of two:
+the payload (an `image!` for an image widget, the menu block for a window,
+`none` otherwise) and the children. Marking the outer block marks both, and
+only four functions in `gui-commands.c` know the layout.
+
+It is the extension's own block, handed back without copying, so `find` and
+`foreach` over it cost nothing — but modifying it is not meant to move widgets
+around, and nothing will happen if you try.
 
 `add-image` shows a Rebol `image!` in a window, and is the seam a renderer
 plugs into:
@@ -1112,6 +1223,7 @@ Returns how many OS messages those pumps dispatched
 /font-size        integer!            [integer! none!]              "Point size widgets are created with; none for the system size"
 /bold?            logic!              logic!                        "Whether widgets are created bold"
 /italic?          logic!              logic!                        "Whether widgets are created italic"
+/children         block!              none                          "Widgets the window holds directly, in the order they were added"
 /menu             block!              [block! none!]                "The menu bar, as the dialect described in the README; none removes it"
 /menu-enabled?    block!              block!                        "Which items are greyed out, as word/logic pairs; setting merges, it does not replace"
 ```
@@ -1138,6 +1250,7 @@ Returns how many OS messages those pumps dispatched
 /color            tuple!              [tuple! none!]                "Text colour; none lets the platform decide"
 /background       tuple!              [tuple! none!]                "Colour painted behind the text; none lets the platform decide"
 /transparent?     logic!              logic!                        "Whether nothing is painted behind it at all, so whatever the widget sits on shows through"
+/children         block!              none                          "Widgets a container holds, in the order they were added; none for a kind which cannot hold any"
 /group            integer!            none                          "Which radio group it belongs to; 0 for everything else"
 /enabled?         logic!              logic!                        "Whether the control responds to the user"
 /parent           handle!             none                          "Whatever holds it - a window, or a panel; none once gone"

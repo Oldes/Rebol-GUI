@@ -109,6 +109,13 @@ print ["caption's parent is the image:" caption/parent = canvas]
 print ["and its window is still the window:" caption/window = win]
 print ["transparent?" caption/transparent? " background:" mold caption/background]
 
+;; Every container answers `children`, kept in the handle's own GC-marked
+;; slot alongside whatever else that kind holds - the image! here, the menu
+;; block on a window.
+print ["the image holds:" length? canvas/children "widget(s)"]
+print ["and it is the caption:" caption = first canvas/children]
+print ["a kind which cannot hold any says none:" mold counter/children]
+
 print ["image:    " canvas]
 print ["kind:     " canvas/kind]
 print ["size:     " canvas/size]
@@ -252,6 +259,13 @@ warm/transparent?: true
 cool/transparent?: true
 print ["radios are transparent:" warm/transparent? cool/transparent?]
 print ["the panel's colour:" mold box/background]
+
+;; In the order they were added, and only the ones this panel holds - slow
+;; and fast are in the window, so they are in ITS list instead.
+print ["the panel holds:" length? box/children]
+print ["in creation order:" (first box/children) = warm]
+print ["the window holds rather more:" length? win/children]
+print ["a panel's radios are not in it:" not find win/children warm]
 
 print ["check:" toggle/kind "state:" toggle/state]
 print ["radio:" warm/kind "group:" warm/group "state:" warm/state]

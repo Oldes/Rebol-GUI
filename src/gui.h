@@ -69,6 +69,22 @@ void   Gui_Queue_Event(REBHOB *source, REBCNT type, REBINT x, REBINT y, REBINT v
 ***********************************************************************/
 REBOOL Gui_Windows_Open(void);
 REBOOL Gui_Ring_Doorbell(void);
+
+
+/***********************************************************************
+**  Which kinds can hold other widgets.
+**
+**  A panel, and an image widget - so that a label or a check can sit ON
+**  rendered pixels, which two overlapping siblings cannot do reliably.
+**
+**  Shared because both sides need it, for different reasons: the command
+**  layer decides what `add-*` accepts as a first argument and empties a
+**  container before destroying it, while a backend needs WS_CLIPCHILDREN
+**  to stop a container painting over what it holds - and must then name
+**  the children in every repaint to reach them again.
+***********************************************************************/
+#define Kind_Is_Container(k) \
+	((k) == W_GUI_WIDGET_PANEL || (k) == W_GUI_WIDGET_IMAGE)
 REBCNT Gui_Event_Count(void);
 
 // Called by the backend once a native window has really gone away, however
