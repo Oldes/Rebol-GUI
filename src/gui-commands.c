@@ -884,6 +884,11 @@ static REBOOL Kind_Has_Enabled(REBCNT kind)
 #define Kind_Has_Read_Only(kind) \
 	((kind) == W_GUI_WIDGET_FIELD || (kind) == W_GUI_WIDGET_AREA)
 
+// Which kinds scroll, and can be asked where they are. Only an area for
+// now: a drop-down's list scrolls but is not addressable, and nothing
+// else here has a scrollbar at all.
+#define Kind_Scrolls(kind) ((kind) == W_GUI_WIDGET_AREA)
+
 static const char* Kind_Name(REBCNT kind)
 {
 	switch (kind) {
@@ -2471,6 +2476,17 @@ int GuiWidget_get_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 		arg->dec64 = (double)Gui_Widget_Get_Value(wid);
 		break;
 
+	// A fraction of the way down, as a percent! - the same way a slider
+	// reports its position, because it is the same kind of answer.
+	case W_GUI_ARG_SCROLL: {
+		REBDEC at;
+		if (!Kind_Scrolls(wid->kind)) { *type = RXT_NONE; break; }
+		at = Gui_Widget_Get_Scroll(wid);
+		if (at < 0.0) { *type = RXT_NONE; break; }
+		*type = RXT_PERCENT;
+		arg->dec64 = (double)at;
+		break; }
+
 	case W_GUI_ARG_SIZE:
 		if (!Gui_Widget_Get_Box(wid, &x, &y, &w, &h)) { *type = RXT_NONE; break; }
 		arg->pair.x = (float)w;
@@ -2754,6 +2770,37 @@ int GuiWidget_set_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 		if (value < 0.0) value = 0.0;
 		if (value > 1.0) value = 1.0;
 		Gui_Widget_Set_Value(wid, value);
+		break; }
+
+	/*******************************************************************
+	**  A percent, or one of the words - which is the whole reason the
+	**  two forms are both here. `100%` is what a computed position
+	**  looks like; `'bottom` is what the call site usually means, and
+	**  saying so beats a magic number that has to be recognised.
+	*******************************************************************/
+	case W_GUI_ARG_SCROLL: {
+		REBDEC where;
+
+		if (!Kind_Scrolls(wid->kind)) return PE_BAD_SET;
+
+		if (*type == RXT_WORD) {
+			switch (RL_FIND_WORD(Gui_scroll_words, (REBCNT)arg->int32a)) {
+			case W_GUI_SCROLL_TOP:    where = 0.0; break;
+			// `end` is `bottom` under the name that reads better after
+			// appending to something.
+			case W_GUI_SCROLL_BOTTOM:
+			case W_GUI_SCROLL_END:    where = 1.0; break;
+			default: return PE_BAD_SET;
+			}
+		} else if (*type == RXT_PERCENT || *type == RXT_DECIMAL) {
+			where = (REBDEC)arg->dec64;
+			if (where < 0.0) where = 0.0;
+			if (where > 1.0) where = 1.0;
+		} else {
+			return PE_BAD_SET_TYPE;
+		}
+
+		Gui_Widget_Set_Scroll(wid, where);
 		break; }
 
 	case W_GUI_ARG_ENABLEDQ:

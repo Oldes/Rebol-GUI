@@ -166,6 +166,23 @@ log/enabled?: false
 log/enabled?: true
 print ["read-only survives an enable cycle:" log/read-only?]
 
+;; `scroll` is a percent, and takes one of `top`, `bottom` and `end` as well -
+;; the words for the two positions anyone actually asks for. An area which
+;; fits its own text has nowhere to go and answers 0%.
+print ["log scroll:" log/scroll]
+print ["a field does not scroll:" mold name/scroll]
+
+;; Enough lines to need the scrollbar, then the three ways of moving it.
+loop 40 [log/text: append log/text join NL "filler"]
+log/scroll: 'end
+print ["after scrolling to the end:" log/scroll]
+log/scroll: 'top
+print ["and back to the top:      " log/scroll]
+log/scroll: 50%
+print ["and halfway:              " log/scroll]
+log/text: "-- event log --"
+log/scroll: 'top
+
 ;;=============================================================================
 print as-yellow "^/== Typography"
 ;;=============================================================================
@@ -342,6 +359,9 @@ note: func ["Appends a line to the area" line [string!]][
 	logged: log/text
 	append logged join NL line
 	log/text: logged
+	;; Setting the text puts a Win32 edit control back at the top, so the
+	;; newest line is only visible if the area is told to follow it.
+	log/scroll: 'end
 ]
 
 

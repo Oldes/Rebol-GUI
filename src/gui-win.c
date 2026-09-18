@@ -2819,6 +2819,64 @@ REBOOL Gui_Widget_Set_Enabled(GUIWIDGET *wid, REBOOL enabled)
 }
 
 
+/***********************************************************************
+**  Scrolling, through the scrollbar rather than the text.
+**
+**  GetScrollInfo is what makes this short: an EDIT control's vertical
+**  range is already in lines, with nPage the number visible, so the
+**  fraction is the standard nPos / (nMax - nMin - nPage + 1) and no
+**  font has to be measured to find out how many lines fit.
+***********************************************************************/
+static REBOOL Scroll_Span_Of(HWND hwnd, SCROLLINFO *si, REBINT *span)
+{
+	ZeroMemory(si, sizeof(*si));
+	si->cbSize = sizeof(*si);
+	si->fMask  = SIF_ALL;
+	if (!GetScrollInfo(hwnd, SB_VERT, si)) return FALSE;
+
+	*span = si->nMax - si->nMin - (REBINT)si->nPage + 1;
+	return TRUE;
+}
+
+
+REBDEC Gui_Widget_Get_Scroll(GUIWIDGET *wid)
+{
+	SCROLLINFO si;
+	REBINT     span = 0;
+
+	if (!wid || !wid->handle) return -1.0;
+	if (!Scroll_Span_Of(HWND_OF_WID(wid), &si, &span)) return -1.0;
+
+	// Everything fits, so it is at the top and cannot be anywhere else.
+	if (span <= 0) return 0.0;
+	return (REBDEC)(si.nPos - si.nMin) / (REBDEC)span;
+}
+
+
+REBOOL Gui_Widget_Set_Scroll(GUIWIDGET *wid, REBDEC where)
+{
+	SCROLLINFO si;
+	REBINT     span = 0, target, delta;
+	HWND       hwnd;
+
+	if (!wid || !wid->handle) return FALSE;
+	hwnd = HWND_OF_WID(wid);
+	if (!Scroll_Span_Of(hwnd, &si, &span)) return FALSE;
+	if (span <= 0) return TRUE; // nothing to scroll, and that is not a failure
+
+	target = si.nMin + (REBINT)((REBDEC)span * where + 0.5);
+	if (target < si.nMin)        target = si.nMin;
+	if (target > si.nMin + span) target = si.nMin + span;
+
+	// EM_LINESCROLL takes a DELTA, not a position, and clamps it - which
+	// is also why the end is reliable: an over-large delta lands there
+	// rather than failing.
+	delta = target - si.nPos;
+	if (delta) SendMessageW(hwnd, EM_LINESCROLL, 0, (LPARAM)delta);
+	return TRUE;
+}
+
+
 // ES_READONLY and WS_DISABLED are separate bits here, so the two compose
 // without either being reconstructed from the other - the reason this is
 // three lines on Windows and a combination on macOS.

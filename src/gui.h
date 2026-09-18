@@ -455,6 +455,22 @@ REBOOL  Gui_Widget_Set_Enabled(GUIWIDGET *wid, REBOOL enabled);
 ***********************************************************************/
 REBOOL  Gui_Widget_Set_Read_Only(GUIWIDGET *wid, REBOOL on);
 
+/***********************************************************************
+**  How far a scrolling widget is scrolled, as a FRACTION from 0.0 (the
+**  top) to 1.0 (as far down as it goes). A negative answer means the
+**  widget does not scroll, or has nothing to scroll.
+**
+**  A fraction rather than a line or a pixel, because the two platforms
+**  count in different units - an EDIT control's scrollbar range is in
+**  LINES, a clip view's is in points - and a caller asking for "the
+**  bottom" should not have to know which.
+**
+**  Set_Scroll clamps, so 1.0 always means the end even when the range
+**  is not what the caller thought it was.
+***********************************************************************/
+REBDEC  Gui_Widget_Get_Scroll(GUIWIDGET *wid);
+REBOOL  Gui_Widget_Set_Scroll(GUIWIDGET *wid, REBDEC where);
+
 
 // Gui_Init() is declared in gen-gui.h - the generated `_init` handler calls
 // it, and every extension is required to define one.

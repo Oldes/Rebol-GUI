@@ -495,6 +495,44 @@ says "enabled" and "editable" with the same property — so the two have to be
 combined from something, and a disable/enable cycle has to leave a read-only
 area read-only.
 
+#### Scrolling an area
+
+`scroll` is how far down an area is, as a `percent!`, and it takes either a
+percent or one of three words:
+
+```rebol
+log/scroll: 'end          ;; or 'bottom - the newest line
+log/scroll: 'top
+log/scroll: 50%
+log/scroll                ;; where it is now
+```
+
+`none` for a kind that does not scroll, so only an area answers it. An area
+whose text fits has nowhere to go and reports `0%`.
+
+Both forms are there because both are used: `'end` is what a call site usually
+means and says so, while a percent is what a computed position looks like.
+`'end` and `'bottom` are the same place under the two names that read best in
+different sentences.
+
+**A log has to be told.** Setting `text` puts a Win32 edit control back at the
+top, so an area that should follow its newest line needs one more line:
+
+```rebol
+note: func [line [string!]][
+    log/text: append append log/text NL line
+    log/scroll: 'end
+]
+```
+
+The fraction is the unit because the platforms are not comparable: a Win32
+`EDIT` control's scrollbar range is in **lines** — `GetScrollInfo` gives the
+position, the range and the page directly, so no font has to be measured — while
+a Cocoa clip view's is in **points** against the document's height. `'end` also
+takes a different route on macOS, through `scrollRangeToVisible:` rather than
+the clip view, because after the string has just been replaced the document's
+height may not be laid out yet and that call forces it first.
+
 #### Backgrounds, and having none
 
 `background` is the colour painted behind the text; `none` puts it back to the
@@ -1321,6 +1359,7 @@ Returns how many OS messages those pumps dispatched
 /transparent?     logic!              logic!                        "Whether nothing is painted behind it at all, so whatever the widget sits on shows through"
 /children         block!              none                          "Widgets a container holds, in the order they were added; none for a kind which cannot hold any"
 /read-only?       logic!              logic!                        "Whether a field or an area refuses to be edited while staying selectable; none for other kinds"
+/scroll           percent!            [percent! decimal! word!]     "How far an area is scrolled; set a percent, or one of top, bottom and end; none for kinds which do not scroll"
 /group            integer!            none                          "Which radio group it belongs to; 0 for everything else"
 /enabled?         logic!              logic!                        "Whether the control responds to the user"
 /parent           handle!             none                          "Whatever holds it - a window, or a panel; none once gone"

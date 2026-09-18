@@ -2513,6 +2513,77 @@ REBOOL Gui_Widget_Set_Enabled(GUIWIDGET *wid, REBOOL enabled)
 }
 
 
+/***********************************************************************
+**  Scrolling. The area's handle IS the scroll view, so the clip view's
+**  bounds against the document's frame is the whole of it.
+**
+**  A text view is flipped, so y grows downward and 0 is the top - the
+**  same direction the fraction runs in, and the same direction the
+**  Win32 line numbers run in.
+***********************************************************************/
+static REBOOL Scroll_Metrics_Of(GUIWIDGET *wid, NSScrollView **sv,
+                                CGFloat *span, CGFloat *at)
+{
+	NSClipView *clip;
+	NSView     *doc;
+
+	if (!wid || !wid->handle || wid->kind != W_GUI_WIDGET_AREA) return FALSE;
+
+	*sv  = (NSScrollView*)wid->handle;
+	clip = [*sv contentView];
+	doc  = [*sv documentView];
+	if (!clip || !doc) return FALSE;
+
+	*span = [doc frame].size.height - [clip bounds].size.height;
+	*at   = [clip bounds].origin.y;
+	return TRUE;
+}
+
+
+REBDEC Gui_Widget_Get_Scroll(GUIWIDGET *wid)
+{
+	@autoreleasepool {
+		NSScrollView *sv = nil;
+		CGFloat span = 0, at = 0;
+
+		if (!Scroll_Metrics_Of(wid, &sv, &span, &at)) return -1.0;
+		if (span <= 0) return 0.0; // it all fits
+		return (REBDEC)(at / span);
+	}
+}
+
+
+REBOOL Gui_Widget_Set_Scroll(GUIWIDGET *wid, REBDEC where)
+{
+	@autoreleasepool {
+		NSScrollView *sv = nil;
+		CGFloat span = 0, at = 0;
+
+		if (!Scroll_Metrics_Of(wid, &sv, &span, &at)) return FALSE;
+
+		// The end goes through the TEXT, not the clip view: after the
+		// string has just been replaced the document's height may not be
+		// laid out yet, and scrollRangeToVisible: forces that first. A
+		// computed fraction has no such guarantee to offer, so it uses
+		// whatever the layout currently says.
+		if (where >= 1.0) {
+			NSTextView *text = Text_View_Of(wid);
+			[text scrollRangeToVisible:
+				NSMakeRange([[text string] length], 0)];
+			return TRUE;
+		}
+
+		if (span <= 0) return TRUE; // nothing to scroll
+		if (where < 0.0) where = 0.0;
+
+		[[sv contentView] scrollToPoint:
+			NSMakePoint(0, (CGFloat)(span * where))];
+		[sv reflectScrolledClipView:[sv contentView]];
+		return TRUE;
+	}
+}
+
+
 REBOOL Gui_Widget_Set_Read_Only(GUIWIDGET *wid, REBOOL on)
 {
 	@autoreleasepool {

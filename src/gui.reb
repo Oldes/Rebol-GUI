@@ -227,6 +227,11 @@ words: [
 	menu: [
 		shift control alt  ;; extra modifiers in a shortcut block
 	]
+	;; What `area/scroll:` accepts instead of a percent. `end` is `bottom`
+	;; under another name, because both read well in different sentences.
+	scroll: [
+		top bottom end
+	]
 	widget: [
 		button
 		image
@@ -291,6 +296,7 @@ handles: [
 		transparent? logic! logic!        "Whether nothing is painted behind it at all, so whatever the widget sits on shows through"
 		children  block!   none      "Widgets a container holds, in the order they were added; none for a kind which cannot hold any"
 		read-only? logic!  logic!    "Whether a field or an area refuses to be edited while staying selectable; none for other kinds"
+		scroll    percent!  [percent! decimal! word!] "How far an area is scrolled; set a percent, or one of top, bottom and end; none for kinds which do not scroll"
 		group    integer!  none      "Which radio group it belongs to; 0 for everything else"
 		enabled? logic!    logic!    "Whether the control responds to the user"
 		parent   handle!   none      "Whatever holds it - a window, or a panel; none once gone"
