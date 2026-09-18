@@ -2817,3 +2817,14 @@ REBOOL Gui_Widget_Set_Enabled(GUIWIDGET *wid, REBOOL enabled)
 	EnableWindow(HWND_OF_WID(wid), enabled ? TRUE : FALSE);
 	return TRUE;
 }
+
+
+// ES_READONLY and WS_DISABLED are separate bits here, so the two compose
+// without either being reconstructed from the other - the reason this is
+// three lines on Windows and a combination on macOS.
+REBOOL Gui_Widget_Set_Read_Only(GUIWIDGET *wid, REBOOL on)
+{
+	if (!wid || !wid->handle) return FALSE;
+	SendMessageW(HWND_OF_WID(wid), EM_SETREADONLY, (WPARAM)(on ? TRUE : FALSE), 0);
+	return TRUE;
+}

@@ -150,6 +150,22 @@ print ["label text:" mold label/text]
 name/text: "world"
 print ["field text after setting it:" mold name/text]
 
+;; The log is written to by the handler and by nobody else, so it is made
+;; read-only: unlike `enabled?: false`, the text keeps its normal colours,
+;; can still be selected and copied, and the area still scrolls.
+;;
+;; TRY IT: click in the log and type - nothing should happen - then select
+;; some of it, which should still work.
+log/read-only?: true
+print ["log read-only?:" log/read-only? " still enabled?:" log/enabled?]
+print ["a label has no such flag:" mold label/read-only?]
+
+;; The two are separate questions, and on macOS they are one property - so
+;; a disable/enable cycle must leave the read-only flag standing.
+log/enabled?: false
+log/enabled?: true
+print ["read-only survives an enable cycle:" log/read-only?]
+
 ;;=============================================================================
 print as-yellow "^/== Typography"
 ;;=============================================================================

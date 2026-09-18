@@ -441,6 +441,20 @@ REBOOL  Gui_Widget_Set_Box(GUIWIDGET *wid, REBINT x, REBINT y, REBINT w, REBINT 
 REBOOL  Gui_Widget_Get_Enabled(GUIWIDGET *wid);
 REBOOL  Gui_Widget_Set_Enabled(GUIWIDGET *wid, REBOOL enabled);
 
+/***********************************************************************
+**  An entry or an area which refuses to be edited, WITHOUT being
+**  disabled: the text keeps its normal colours, can be selected and
+**  copied, and an area still scrolls. Which is what a log wants, and
+**  what `enabled?: false` is wrong for.
+**
+**  The flag itself lives in wid->state, not in the control. Win32 does
+**  hold one - ES_READONLY - and would answer honestly, but macOS says
+**  "enabled" and "editable" with the same property, so the two have to
+**  be combined from somewhere: disabling an area and enabling it again
+**  has to leave it read-only if that is what it was.
+***********************************************************************/
+REBOOL  Gui_Widget_Set_Read_Only(GUIWIDGET *wid, REBOOL on);
+
 
 // Gui_Init() is declared in gen-gui.h - the generated `_init` handler calls
 // it, and every extension is required to define one.

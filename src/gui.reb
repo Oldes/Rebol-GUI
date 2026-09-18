@@ -143,6 +143,10 @@ typedef struct Gui_Widget_Context {
 	                 // panel: GUI_PANEL_EDGE when it draws a frame - read by
 	                 // the backend at paint time, so it can be turned on and
 	                 // off without touching the native control
+	                 // field / area: GUI_TEXT_READ_ONLY. Kept rather than
+	                 // read back because macOS answers "enabled" and
+	                 // "editable" with the same property, so the two have
+	                 // to be combined from something
 	REBCNT  background; // what is painted BEHIND the text, in three states:
 	                 //   0                  the platform's own background,
 	                 //                      which is the parent's colour
@@ -171,6 +175,9 @@ typedef struct Gui_Widget_Context {
 
 // wid->state of a panel
 #define GUI_PANEL_EDGE 1
+
+// wid->state of a field or an area
+#define GUI_TEXT_READ_ONLY 1
 
 // wid->color. The top byte is the "has one" flag, which is why a colour of
 // 0.0.0 is still distinguishable from no colour at all.
@@ -283,6 +290,7 @@ handles: [
 		background tuple!  [tuple! none!] "Colour painted behind the text; none lets the platform decide"
 		transparent? logic! logic!        "Whether nothing is painted behind it at all, so whatever the widget sits on shows through"
 		children  block!   none      "Widgets a container holds, in the order they were added; none for a kind which cannot hold any"
+		read-only? logic!  logic!    "Whether a field or an area refuses to be edited while staying selectable; none for other kinds"
 		group    integer!  none      "Which radio group it belongs to; 0 for everything else"
 		enabled? logic!    logic!    "Whether the control responds to the user"
 		parent   handle!   none      "Whatever holds it - a window, or a panel; none once gone"

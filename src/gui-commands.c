@@ -878,6 +878,12 @@ static REBOOL Kind_Has_Enabled(REBCNT kind)
 	     && kind != W_GUI_WIDGET_PANEL) ? TRUE : FALSE;
 }
 
+// Which kinds can be read-only: the two the user types into. A label
+// cannot be edited to begin with, and a drop-down's text is already
+// read-only in a sense of its own - you pick an item rather than write one.
+#define Kind_Has_Read_Only(kind) \
+	((kind) == W_GUI_WIDGET_FIELD || (kind) == W_GUI_WIDGET_AREA)
+
 static const char* Kind_Name(REBCNT kind)
 {
 	switch (kind) {
@@ -2484,6 +2490,14 @@ int GuiWidget_get_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 		arg->int64 = (i64)(REBUPT)wid->handle;
 		break;
 
+	// Read from the widget rather than the control: see the note in gui.h
+	// on why the flag is kept here.
+	case W_GUI_ARG_READ_ONLYQ:
+		if (!Kind_Has_Read_Only(wid->kind)) { *type = RXT_NONE; break; }
+		*type = RXT_LOGIC;
+		arg->int32a = (wid->state & GUI_TEXT_READ_ONLY) ? 1 : 0;
+		break;
+
 	case W_GUI_ARG_ENABLEDQ:
 		if (!Kind_Has_Enabled(wid->kind)) { *type = RXT_NONE; break; }
 		*type = RXT_LOGIC;
@@ -2746,6 +2760,16 @@ int GuiWidget_set_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 		if (!Kind_Has_Enabled(wid->kind)) return PE_BAD_SET;
 		if (*type != RXT_LOGIC) return PE_BAD_SET_TYPE;
 		Gui_Widget_Set_Enabled(wid, arg->int32a ? TRUE : FALSE);
+		break;
+
+	case W_GUI_ARG_READ_ONLYQ:
+		if (!Kind_Has_Read_Only(wid->kind)) return PE_BAD_SET;
+		if (*type != RXT_LOGIC) return PE_BAD_SET_TYPE;
+		// Recorded before the backend is told, because that is where it
+		// reads the answer from when it combines this with `enabled?`.
+		if (arg->int32a) wid->state |=  GUI_TEXT_READ_ONLY;
+		else             wid->state &= ~(REBCNT)GUI_TEXT_READ_ONLY;
+		Gui_Widget_Set_Read_Only(wid, arg->int32a ? TRUE : FALSE);
 		break;
 
 	default:

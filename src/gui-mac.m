@@ -2464,11 +2464,33 @@ REBOOL Gui_Widget_Get_Enabled(GUIWIDGET *wid)
 {
 	@autoreleasepool {
 		if (!wid || !wid->handle) return FALSE;
-		// A scroll view has no enabled state; for an area the question is
-		// whether the text inside it can be edited.
+		// A scroll view has no enabled state, so an area answers with
+		// whether its text can be SELECTED - editability is the separate
+		// read-only question, and asking that here would report a
+		// read-only log as disabled.
 		if (wid->kind == W_GUI_WIDGET_AREA)
-			return [Text_View_Of(wid) isEditable] ? TRUE : FALSE;
+			return [Text_View_Of(wid) isSelectable] ? TRUE : FALSE;
 		return [(NSControl*)wid->handle isEnabled] ? TRUE : FALSE;
+	}
+}
+
+
+// Enabled and read-only are one property on a text view and two
+// questions, so both callers write the combination rather than half of
+// it. Disabling an area and enabling it again leaves it read-only if
+// that is what it was.
+static void Apply_Text_Editability(GUIWIDGET *wid, REBOOL enabled)
+{
+	REBOOL writable = (enabled && !(wid->state & GUI_TEXT_READ_ONLY))
+	                ? TRUE : FALSE;
+
+	if (wid->kind == W_GUI_WIDGET_AREA) {
+		NSTextView *text = Text_View_Of(wid);
+		[text setEditable:(writable ? YES : NO)];
+		[text setSelectable:(enabled ? YES : NO)];
+	} else {
+		[(NSTextField*)wid->handle setEditable:(writable ? YES : NO)];
+		[(NSTextField*)wid->handle setSelectable:YES];
 	}
 }
 
@@ -2478,11 +2500,26 @@ REBOOL Gui_Widget_Set_Enabled(GUIWIDGET *wid, REBOOL enabled)
 	@autoreleasepool {
 		if (!wid || !wid->handle) return FALSE;
 		if (wid->kind == W_GUI_WIDGET_AREA) {
-			[Text_View_Of(wid) setEditable:(enabled ? YES : NO)];
-			[Text_View_Of(wid) setSelectable:YES];
+			Apply_Text_Editability(wid, enabled);
 		} else {
 			[(NSControl*)wid->handle setEnabled:(enabled ? YES : NO)];
+			// A field has both: NSControl's enabled state, and the
+			// editability that read-only also writes.
+			if (wid->kind == W_GUI_WIDGET_FIELD)
+				Apply_Text_Editability(wid, enabled);
 		}
+		return TRUE;
+	}
+}
+
+
+REBOOL Gui_Widget_Set_Read_Only(GUIWIDGET *wid, REBOOL on)
+{
+	@autoreleasepool {
+		if (!wid || !wid->handle) return FALSE;
+		// `on` is already in wid->state; what matters here is that the
+		// control is not disabled at the same time.
+		Apply_Text_Editability(wid, Gui_Widget_Get_Enabled(wid));
 		return TRUE;
 	}
 }

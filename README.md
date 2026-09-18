@@ -473,6 +473,28 @@ The colour is the exception, and is kept per widget. Win32 stores no text
 colour on a control — the *parent* is asked, message by message, as each child
 is about to paint — so there is nowhere in the control to read one back from.
 
+#### Read-only entries
+
+A field or an area can refuse to be edited without being *disabled*:
+
+```rebol
+log/read-only?: true
+```
+
+The difference matters. `enabled?: false` greys the text, stops it being
+selected and stops an area scrolling; `read-only?` leaves all three working and
+only turns off typing. Which is what a log wants — the program writes to it,
+`log/text:` still works either way, and the user can select and copy from it.
+
+`none` for a kind that has no such thing, so only a field and an area answer it.
+
+The flag is kept in the widget rather than read back from the control, which is
+against the habit everywhere else here. Win32 does hold one (`ES_READONLY`,
+independent of `WS_DISABLED`) and would answer honestly, but a macOS text view
+says "enabled" and "editable" with the same property — so the two have to be
+combined from something, and a disable/enable cycle has to leave a read-only
+area read-only.
+
 #### Backgrounds, and having none
 
 `background` is the colour painted behind the text; `none` puts it back to the
@@ -1298,6 +1320,7 @@ Returns how many OS messages those pumps dispatched
 /background       tuple!              [tuple! none!]                "Colour painted behind the text; none lets the platform decide"
 /transparent?     logic!              logic!                        "Whether nothing is painted behind it at all, so whatever the widget sits on shows through"
 /children         block!              none                          "Widgets a container holds, in the order they were added; none for a kind which cannot hold any"
+/read-only?       logic!              logic!                        "Whether a field or an area refuses to be edited while staying selectable; none for other kinds"
 /group            integer!            none                          "Which radio group it belongs to; 0 for everything else"
 /enabled?         logic!              logic!                        "Whether the control responds to the user"
 /parent           handle!             none                          "Whatever holds it - a window, or a panel; none once gone"
