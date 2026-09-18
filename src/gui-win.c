@@ -321,6 +321,63 @@ static HFONT Font_For(const WCHAR *name, int size, REBCNT style)
 }
 
 
+/***********************************************************************
+**  A see-through window, and what fills the client area.
+**
+**  WS_EX_LAYERED with a COLOUR KEY: the client area is filled with a
+**  colour the compositor then drops, so child controls keep painting
+**  normally and are the only thing left on screen. Per-pixel alpha
+**  would mean UpdateLayeredWindow, which does not composite child
+**  windows at all - it would rule out every native control this
+**  extension exists to place.
+**
+**  The cost of a key is that a widget painting exactly this colour
+**  disappears too, so it is a colour nothing sensible picks: full
+**  magenta, the traditional choice for the same reason.
+***********************************************************************/
+#define GUI_KEY_COLOR RGB(255, 0, 255)
+
+// What the client area of `win` is filled with. NULL when the window
+// has none of its own and the system colour brush should be used, which
+// FillRect takes in its encoded form and WM_CTLCOLOR* does not - hence
+// two callers and two ways of asking.
+static COLORREF Window_Fill_Color(GUIWIN *win, REBOOL *have)
+{
+	*have = TRUE;
+	if (!win)                                 { *have = FALSE; return 0; }
+	if (GUI_BG_IS_CLEAR(win->background))     return GUI_KEY_COLOR;
+	if (GUI_COLOR_HAS(win->background))
+		return RGB(GUI_COLOR_R(win->background),
+		           GUI_COLOR_G(win->background),
+		           GUI_COLOR_B(win->background));
+	*have = FALSE;
+	return 0;
+}
+
+
+/***********************************************************************
+**  Fills `rect` of `dc` with what the WINDOW's client area is - its own
+**  colour, the key colour when it is see-through, or the system window
+**  colour. A panel with no colour of its own uses this too, which is
+**  what keeps a panel invisible on a dark window rather than a pale
+**  slab on it.
+***********************************************************************/
+static void Fill_Window_Background(HDC dc, const RECT *rect, GUIWIN *win)
+{
+	REBOOL   have = FALSE;
+	COLORREF rgb  = Window_Fill_Color(win, &have);
+
+	if (have) {
+		HBRUSH brush = CreateSolidBrush(rgb);
+		if (brush) {
+			FillRect(dc, rect, brush);
+			DeleteObject(brush);
+			return;
+		}
+	}
+	FillRect(dc, rect, (HBRUSH)(COLOR_WINDOW + 1));
+}
+
 // The brush handed back for a widget with a background colour of its own.
 // One slot, because WM_CTLCOLOR* is answered for one control at a time on
 // this thread and the brush is used before the next answer is given.
@@ -375,9 +432,19 @@ static REBOOL Flat_Background_Of(GUIWIDGET *wid, COLORREF *rgb)
 		break; // a container with the platform's own background
 	}
 
-	// The window, or a container which left its background alone: both
-	// paint COLOR_WINDOW.
-	*rgb = GetSysColor(COLOR_WINDOW);
+	// The window, or a container which left its background alone. A
+	// SEE-THROUGH window is not a colour either - the key it fills with
+	// is a colour the compositor removes, and a widget painting it would
+	// have holes punched in it - so that falls to the render path.
+	{	GUIWIN *owner = wid ? wid->owner : NULL;
+		REBOOL  have  = FALSE;
+		COLORREF own;
+
+		if (owner && GUI_BG_IS_CLEAR(owner->background)) return FALSE;
+
+		own = Window_Fill_Color(owner, &have);
+		*rgb = have ? own : GetSysColor(COLOR_WINDOW);
+	}
 	return TRUE;
 }
 
@@ -469,6 +536,17 @@ static LRESULT Ctl_Color(HDC dc, HWND child, GUIWIN *win)
 	//
 	// GetSysColorBrush hands back a cached brush owned by the system: it
 	// needs no cleanup and must not be deleted.
+	{	REBOOL   have = FALSE;
+		COLORREF own  = Window_Fill_Color(win, &have);
+		if (have) {
+			if (Ctl_Brush) DeleteObject(Ctl_Brush);
+			Ctl_Brush = CreateSolidBrush(own);
+			if (Ctl_Brush) {
+				SetBkColor(dc, own);
+				return (LRESULT)Ctl_Brush;
+			}
+		}
+	}
 	SetBkColor(dc, GetSysColor(COLOR_WINDOW));
 	return (LRESULT)GetSysColorBrush(COLOR_WINDOW);
 }
@@ -702,7 +780,7 @@ static LRESULT CALLBACK Gui_Window_Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
 	case WM_PAINT: {
 		PAINTSTRUCT ps;
 		HDC dc = BeginPaint(hwnd, &ps);
-		FillRect(dc, &ps.rcPaint, (HBRUSH)(COLOR_WINDOW + 1));
+		Fill_Window_Background(dc, &ps.rcPaint, win);
 		EndPaint(hwnd, &ps);
 		return 0; }
 
@@ -712,7 +790,7 @@ static LRESULT CALLBACK Gui_Window_Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
 	case WM_PRINTCLIENT: {
 		RECT rect;
 		GetClientRect(hwnd, &rect);
-		FillRect((HDC)wp, &rect, (HBRUSH)(COLOR_WINDOW + 1));
+		Fill_Window_Background((HDC)wp, &rect, win);
 		return 0; }
 
 	case WM_NCDESTROY:
@@ -743,6 +821,7 @@ static LRESULT CALLBACK Gui_Window_Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
 // A class of its own rather than an owner-drawn STATIC: the control paints
 // itself straight from the image! series and reports its own mouse events,
 // which is what makes it usable as a canvas.
+
 
 /***********************************************************************
 **  The image widget's pixels, into a DC the caller owns - WM_PAINT's and
@@ -778,7 +857,7 @@ static void Paint_Image(HWND hwnd, HDC dc, GUIWIDGET *wid)
 			bits, &bmi, DIB_RGB_COLORS, SRCCOPY);
 		SetStretchBltMode(dc, mode);
 	} else {
-		FillRect(dc, &rect, (HBRUSH)(COLOR_WINDOW + 1));
+		Fill_Window_Background(dc, &rect, wid ? wid->owner : NULL);
 	}
 }
 
@@ -899,12 +978,18 @@ static void Paint_Panel(HWND hwnd, HDC dc)
 		Paint_Parent_Background(hwnd, dc);
 		fill = NULL;
 	} else {
-		if (wid && GUI_COLOR_HAS(wid->background))
+		if (wid && GUI_COLOR_HAS(wid->background)) {
 			bg = CreateSolidBrush(RGB(GUI_COLOR_R(wid->background),
 			                          GUI_COLOR_G(wid->background),
 			                          GUI_COLOR_B(wid->background)));
-		// Otherwise the same background the window paints, so a panel is
-		// a place to put things rather than a visible slab.
+		} else {
+			// Otherwise whatever the WINDOW paints, so a panel is a place
+			// to put things rather than a visible slab on it - including
+			// on a window with a colour of its own.
+			REBOOL   have = FALSE;
+			COLORREF rgb  = Window_Fill_Color(wid ? wid->owner : NULL, &have);
+			if (have) bg = CreateSolidBrush(rgb);
+		}
 		fill = bg ? bg : (HBRUSH)(COLOR_WINDOW + 1);
 		FillRect(dc, &rect, fill);
 	}
@@ -1191,9 +1276,14 @@ REBOOL Gui_Open_Window(GUIWIN *win, REBINT x, REBINT y, REBINT w, REBINT h,
 	HWND  hwnd;
 	RECT  rect;
 	WCHAR *wide;
-	DWORD style = WINDOW_STYLE;
+	DWORD style   = WINDOW_STYLE;
+	DWORD exstyle = WINDOW_EXSTYLE;
 
 	if (!Register_Class()) return FALSE;
+
+	// See-through: the client area is filled with a colour the compositor
+	// drops, leaving the controls on it. See GUI_KEY_COLOR.
+	if (flags & GUI_WIN_TRANSPARENT) exstyle |= WS_EX_LAYERED;
 
 	// A borderless window is WS_POPUP: no caption and no frame, so the
 	// resize bits would have nothing to attach to either.
@@ -1212,14 +1302,14 @@ REBOOL Gui_Open_Window(GUIWIN *win, REBINT x, REBINT y, REBINT w, REBINT h,
 
 	// The requested size is the CLIENT size - grow it by the frame.
 	rect.left = 0; rect.top = 0; rect.right = w; rect.bottom = h;
-	AdjustWindowRectEx(&rect, style, FALSE, WINDOW_EXSTYLE);
+	AdjustWindowRectEx(&rect, style, FALSE, exstyle);
 
 	// A missing - or empty - title gets a neutral default rather than an
 	// empty title bar.
 	wide = To_Wide(title, title_len);
 
 	hwnd = CreateWindowExW(
-		WINDOW_EXSTYLE,
+		exstyle,
 		Class_Name,
 		wide ? wide : L"Rebol",
 		style,
@@ -1236,7 +1326,54 @@ REBOOL Gui_Open_Window(GUIWIN *win, REBINT x, REBINT y, REBINT w, REBINT h,
 
 	win->handle = (void*)hwnd;
 	win->flags  = 0;
+
+	// The three states live in one field, so /transparent is recorded as
+	// the same value `win/transparent?: true` would write - and applying
+	// it is the same call, rather than a second path to keep in step.
+	if (flags & GUI_WIN_TRANSPARENT) {
+		win->background = GUI_BG_CLEAR;
+		Gui_Window_Set_Background(win);
+	}
 	return TRUE;
+}
+
+
+/***********************************************************************
+**  win->background, applied.
+***********************************************************************/
+void Gui_Window_Set_Background(GUIWIN *win)
+{
+	HWND  hwnd;
+	DWORD exstyle;
+	REBOOL clear;
+
+	if (!win || !win->handle) return;
+	hwnd    = HWND_OF(win);
+	clear   = GUI_BG_IS_CLEAR(win->background);
+	exstyle = (DWORD)GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+
+	if (clear) {
+		if (!(exstyle & WS_EX_LAYERED))
+			SetWindowLongPtrW(hwnd, GWL_EXSTYLE,
+			                  (LONG_PTR)(exstyle | WS_EX_LAYERED));
+		// Only the key is dropped; alpha is left at fully opaque, so the
+		// controls are not dimmed along with it.
+		SetLayeredWindowAttributes(hwnd, GUI_KEY_COLOR, 255, LWA_COLORKEY);
+	} else if (exstyle & WS_EX_LAYERED) {
+		// Taking the style away is what makes the window solid again -
+		// clearing the key alone would leave a layered window, which is
+		// composited differently and needlessly.
+		SetWindowLongPtrW(hwnd, GWL_EXSTYLE,
+		                  (LONG_PTR)(exstyle & ~WS_EX_LAYERED));
+		SetWindowPos(hwnd, NULL, 0, 0, 0, 0,
+			SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE
+			| SWP_FRAMECHANGED);
+	}
+
+	// Every control on it may be showing this colour, and WS_CLIPCHILDREN
+	// keeps a plain invalidation from reaching them.
+	RedrawWindow(hwnd, NULL, NULL,
+	             RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_ALLCHILDREN);
 }
 
 

@@ -189,6 +189,50 @@ Two notes on behaviour:
 A closed window's handle stays valid and reports `open?` as `false`; it never
 becomes a dangling pointer.
 
+### The window's background
+
+`background` is the client area's colour, `none` for the system window colour,
+and every widget on the window resolves to it — so a transparent label on a
+dark window needs only a light text colour of its own:
+
+```rebol
+win/background: 24.26.34
+lbl: add-text win "on the dark window" 10x10 0x0
+lbl/transparent?: true
+lbl/color: 225.228.235
+```
+
+`transparent?` is the third state: the client area is **see-through to
+whatever is behind the window**, and only the widgets and drawn pixels are
+left. `open-window/transparent` opens one that way, and it reads and writes
+afterwards like `border?` does.
+
+```rebol
+ghost: open-window/borderless/transparent 240x80
+add-button ghost "floating" 20x20 0x0
+```
+
+Usually paired with `/borderless`: a frame around a hole is more confusing
+than no frame, and a window whose background is gone has nothing to be
+dragged by.
+
+**How, and what it costs.** macOS has the easy half — an `NSWindow` which is
+not opaque with a clear background colour, and the compositor deals in alpha
+already. Win32 uses `WS_EX_LAYERED` with a **colour key**: the client area is
+filled with a colour the compositor then drops, so child controls go on
+painting normally and are the only thing left visible. The alternative,
+per-pixel alpha through `UpdateLayeredWindow`, does not composite child
+windows at all — it would rule out every native control this extension exists
+to place.
+
+The key is full magenta. A widget painting exactly `255.0.255` will have holes
+punched in it on Windows, which is why the key is a colour nothing sensible
+picks. Clicks on the dropped pixels fall through to whatever is behind, which
+is usually what you want from a window that is not there.
+
+A transparent widget on a see-through window takes the slower path — there is
+no flat colour to hand it, so it renders its parent, which paints the key.
+
 ### The window's frame
 
 ```rebol
@@ -1067,6 +1111,7 @@ Creates a window and returns its handle
 * `/hidden` Creates the window without showing it
 * `/fixed` The user cannot resize it
 * `/borderless` No title bar and no frame - see the note in the README
+* `/transparent` The client area is see-through to whatever is behind the window
 
 #### `close-window` `:window`
 Destroys the window
@@ -1219,6 +1264,8 @@ Returns how many OS messages those pumps dispatched
 /scale            decimal!            none                          "Device pixels per unit of size - 1.0 at 100%, 1.75 at 175%, 2.0 on a Retina Mac"
 /resizable?       logic!              logic!                        "Whether the user can resize it"
 /border?          logic!              logic!                        "Whether it has a title bar and a frame; a borderless window cannot be moved or closed by the user"
+/background       tuple!              [tuple! none!]                "Colour of the client area; none for the system window colour"
+/transparent?     logic!              logic!                        "Whether the client area is see-through to whatever is behind the window"
 /font             string!             [string! none!]               "Font family widgets are created with; none for the system font"
 /font-size        integer!            [integer! none!]              "Point size widgets are created with; none for the system size"
 /bold?            logic!              logic!                        "Whether widgets are created bold"

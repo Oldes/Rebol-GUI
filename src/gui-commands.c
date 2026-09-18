@@ -1188,8 +1188,9 @@ COMMAND cmd_gui_open_window(RXIFRM *frm, void *ctx)
 		x = (REBINT)RXA_PAIR(frm, 5).x;
 		y = (REBINT)RXA_PAIR(frm, 5).y;
 	}
-	if (RXA_REF(frm, 7)) flags |= GUI_WIN_FIXED;      // /fixed
-	if (RXA_REF(frm, 8)) flags |= GUI_WIN_BORDERLESS; // /borderless
+	if (RXA_REF(frm, 7)) flags |= GUI_WIN_FIXED;       // /fixed
+	if (RXA_REF(frm, 8)) flags |= GUI_WIN_BORDERLESS;  // /borderless
+	if (RXA_REF(frm, 9)) flags |= GUI_WIN_TRANSPARENT; // /transparent
 
 	hob = RL_MAKE_HANDLE_CONTEXT(Handle_GuiWindow);
 	if (hob == NULL) RETURN_ERROR(ERR_NO_HANDLE);
@@ -1964,6 +1965,23 @@ int GuiWindow_get_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 		arg->int32a = Gui_Get_Border(win) ? 1 : 0;
 		break;
 
+	// The client area's own colour, or none when the system's is used.
+	// A see-through window has no colour to report either.
+	case W_GUI_ARG_BACKGROUND:
+		if (!GUI_COLOR_HAS(win->background)) { *type = RXT_NONE; break; }
+		CLEARS(arg);
+		arg->tuple_len      = 3;
+		arg->tuple_bytes[0] = (REBYTE)GUI_COLOR_R(win->background);
+		arg->tuple_bytes[1] = (REBYTE)GUI_COLOR_G(win->background);
+		arg->tuple_bytes[2] = (REBYTE)GUI_COLOR_B(win->background);
+		*type = RXT_TUPLE;
+		break;
+
+	case W_GUI_ARG_TRANSPARENTQ:
+		*type = RXT_LOGIC;
+		arg->int32a = GUI_BG_IS_CLEAR(win->background) ? 1 : 0;
+		break;
+
 	/*******************************************************************
 	**  What the NEXT widget will be created with - not a description of
 	**  anything currently on screen. Unlike a widget's font, which is
@@ -2132,6 +2150,29 @@ int GuiWindow_set_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 	case W_GUI_ARG_BORDERQ:
 		if (*type != RXT_LOGIC) return PE_BAD_SET_TYPE;
 		Gui_Set_Border(win, arg->int32a ? TRUE : FALSE);
+		break;
+
+	// One field, three states, exactly as on a widget: giving a colour
+	// turns see-through off, and `transparent?: false` goes back to the
+	// system colour rather than to a colour set earlier.
+	case W_GUI_ARG_BACKGROUND:
+		if (*type == RXT_NONE) {
+			win->background = 0;
+		} else if (*type == RXT_TUPLE) {
+			if (arg->tuple_len < 3) return PE_BAD_SET;
+			win->background = GUI_COLOR_OF(arg->tuple_bytes[0],
+			                               arg->tuple_bytes[1],
+			                               arg->tuple_bytes[2]);
+		} else {
+			return PE_BAD_SET_TYPE;
+		}
+		Gui_Window_Set_Background(win);
+		break;
+
+	case W_GUI_ARG_TRANSPARENTQ:
+		if (*type != RXT_LOGIC) return PE_BAD_SET_TYPE;
+		win->background = arg->int32a ? GUI_BG_CLEAR : 0;
+		Gui_Window_Set_Background(win);
 		break;
 
 	case W_GUI_ARG_MENU:

@@ -903,6 +903,14 @@ REBOOL Gui_Open_Window(GUIWIN *win, REBINT x, REBINT y, REBINT w, REBINT h,
 
 		win->handle = (void*)window;
 		win->flags  = 0;
+
+		// One field, and the same call the accessor uses - see the note
+		// in gui.h. Applied after the handle is stored, because that is
+		// what it reads the window out of.
+		if (flags & GUI_WIN_TRANSPARENT) {
+			win->background = GUI_BG_CLEAR;
+			Gui_Window_Set_Background(win);
+		}
 		return TRUE;
 	}
 }
@@ -2086,6 +2094,51 @@ void Gui_Widget_Set_Background(GUIWIDGET *wid)
 
 		[NSVIEW_OF(wid) setNeedsDisplay:YES];
 		Display_Pending = TRUE;
+	}
+}
+
+
+/***********************************************************************
+**  win->background, applied.
+**
+**  Two properties, and AppKit does the rest: the content view draws no
+**  background of its own, so the window's colour IS the client area and
+**  a window which is not opaque with a clear colour is see-through.
+**
+**  No colour key and no layer surgery - the compositor already deals in
+**  alpha, which is the one place this backend has less to do than the
+**  Win32 one rather than more.
+***********************************************************************/
+void Gui_Window_Set_Background(GUIWIN *win)
+{
+	@autoreleasepool {
+		NSWindow *window;
+		NSColor  *color;
+
+		if (!win || !win->handle) return;
+		window = NSWINDOW_OF(win);
+
+		if (GUI_BG_IS_CLEAR(win->background)) {
+			[window setOpaque:NO];
+			[window setBackgroundColor:[NSColor clearColor]];
+			// A borderless see-through window has no shadow worth
+			// casting: it would outline a rectangle which is not there.
+			[window setHasShadow:NO];
+			return;
+		}
+
+		[window setOpaque:YES];
+		[window setHasShadow:YES];
+
+		if (GUI_COLOR_HAS(win->background)) {
+			color = [NSColor colorWithSRGBRed:GUI_COLOR_R(win->background) / 255.0
+			                           green:GUI_COLOR_G(win->background) / 255.0
+			                            blue:GUI_COLOR_B(win->background) / 255.0
+			                           alpha:1.0];
+		} else {
+			color = [NSColor windowBackgroundColor];
+		}
+		[window setBackgroundColor:color];
 	}
 }
 

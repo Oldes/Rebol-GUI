@@ -1,7 +1,7 @@
 REBOL [
 	Title:   "Rebol GUI extension"
 	Name:    gui
-	Version: 0.1.0
+	Version: 0.2.0
 	Needs:   3.22.7
 	Author:  @Oldes
 	License: Apache-2.0
@@ -95,6 +95,12 @@ typedef struct Gui_Window_Context {
 	                 // read at creation and never again, so restyling a
 	                 // window does not reach back into what it already holds
 
+	REBCNT  background; // the client area, in the same three states a
+	                 // widget's has: 0 for the system window colour,
+	                 // GUI_COLOR_SET|rgb for a colour of its own, and
+	                 // GUI_BG_CLEAR for see-through. A widget showing its
+	                 // parent's background resolves to this
+
 	// The menu bar. `menu` is the native object (HMENU / NSMenu*) and
 	// `accel` the Win32 accelerator table, which has no counterpart on
 	// macOS - a key equivalent there belongs to the item itself.
@@ -161,6 +167,7 @@ typedef struct Gui_Widget_Context {
 // `border?`, so these say only what it STARTS as.
 #define GUI_WIN_FIXED       1
 #define GUI_WIN_BORDERLESS  2
+#define GUI_WIN_TRANSPARENT 4
 
 // wid->state of a panel
 #define GUI_PANEL_EDGE 1
@@ -242,6 +249,8 @@ handles: [
 		scale    decimal!  none      "Device pixels per unit of size - 1.0 at 100%, 1.75 at 175%, 2.0 on a Retina Mac"
 		resizable? logic!  logic!    "Whether the user can resize it"
 		border?    logic!  logic!    "Whether it has a title bar and a frame; a borderless window cannot be moved or closed by the user"
+		background tuple!  [tuple! none!] "Colour of the client area; none for the system window colour"
+		transparent? logic! logic!   "Whether the client area is see-through to whatever is behind the window"
 		;; Defaults for widgets created AFTERWARDS - see the note in the README.
 		font      string!  [string! none!] "Font family widgets are created with; none for the system font"
 		font-size integer! [integer! none!] "Point size widgets are created with; none for the system size"
@@ -293,6 +302,7 @@ commands: [
 		/hidden "Creates the window without showing it"
 		/fixed  "The user cannot resize it"
 		/borderless "No title bar and no frame - see the note in the README"
+		/transparent "The client area is see-through to whatever is behind the window"
 	]
 	close-window: ["Destroys the window" window [handle!]]
 	show-window:  ["Makes the window visible" window [handle!]]

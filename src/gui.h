@@ -69,6 +69,7 @@ void   Gui_Queue_Event(REBHOB *source, REBCNT type, REBINT x, REBINT y, REBINT v
 ***********************************************************************/
 REBOOL Gui_Windows_Open(void);
 REBOOL Gui_Ring_Doorbell(void);
+REBCNT Gui_Event_Count(void);
 
 
 /***********************************************************************
@@ -85,7 +86,6 @@ REBOOL Gui_Ring_Doorbell(void);
 ***********************************************************************/
 #define Kind_Is_Container(k) \
 	((k) == W_GUI_WIDGET_PANEL || (k) == W_GUI_WIDGET_IMAGE)
-REBCNT Gui_Event_Count(void);
 
 // Called by the backend once a native window has really gone away, however
 // that happened: drops the queued events which point at the handle context
@@ -374,6 +374,24 @@ void    Gui_Widget_Invalidate(GUIWIDGET *wid);
 **  widget - answers WM_PRINTCLIENT. On macOS the view hierarchy does it.
 ***********************************************************************/
 void    Gui_Widget_Set_Background(GUIWIDGET *wid);
+
+/***********************************************************************
+**  Applies win->background, having been changed from Rebol.
+**
+**  The three states are a widget's three states, and the third is the
+**  interesting one again: a SEE-THROUGH window shows the desktop.
+**
+**  Win32 does that with WS_EX_LAYERED and a colour key - the client
+**  area is filled with a colour which the compositor then drops, so
+**  child controls go on painting normally and are the only thing left
+**  visible. Per-pixel alpha would mean UpdateLayeredWindow, which does
+**  not composite child windows at all and would rule out every native
+**  control this extension exists to place.
+**
+**  On macOS it is an NSWindow which is not opaque with a clear
+**  background colour, and AppKit does the rest.
+***********************************************************************/
+void    Gui_Window_Set_Background(GUIWIN *win);
 
 // Destroys the native control. Safe on a widget whose window is already
 // gone - it then does nothing, because the OS took the control with it.

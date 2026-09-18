@@ -455,6 +455,33 @@ fixed: open-window/title/at/fixed 240x120 "Fixed size" 700x120
 print ["fixed window - resizable?" fixed/resizable? " border?" fixed/border?]
 print ["client size:" fixed/size]
 
+;; A window can carry a colour of its own, which every widget on it then
+;; resolves to - a transparent label on a dark window needs no colour of its
+;; own, only a light text colour.
+tinted: open-window/title/at 260x120 "Dark window" 700x430
+tinted/background: 24.26.34
+note-dark: add-text tinted "on a dark window" 12x12 230x0
+note-dark/transparent?: true
+note-dark/color: 225.228.235
+print ["window background:" mold tinted/background]
+print ["and a widget on it is transparent:" note-dark/transparent?]
+
+;; And one which is SEE-THROUGH: the client area is dropped by the compositor
+;; and only the widgets are left on screen.
+;;
+;; WATCH: the button below should appear to float over whatever is behind the
+;; window. Borderless as well, because a window with nothing to grab is less
+;; confusing than a frame around a hole.
+ghost: open-window/at/borderless/transparent 240x80 700x580
+float: add-button ghost "floating" 20x20 200x36
+print ["ghost transparent?:" ghost/transparent? " background:" mold ghost/background]
+
+;; Turning it off makes it a solid window again, and back on again after.
+ghost/transparent?: false
+print ["... solid now:" not ghost/transparent?]
+wait 0.5
+ghost/transparent?: true
+
 bare: open-window/at/borderless 240x120 700x280
 print ["bare window  - resizable?" bare/resizable? " border?" bare/border?]
 print ["client size:" bare/size "(unchanged by having no frame)"]
@@ -662,7 +689,9 @@ print ["a radio inside the panel:" warm "parent:" warm/parent]
 
 ;; The extra windows go too - a `close` on the main one ends the loop, and
 ;; these two have nothing watching them.
-foreach extra reduce [fixed bare] [if extra/open? [close-window extra]]
+foreach extra reduce [fixed bare tinted ghost] [
+	if extra/open? [close-window extra]
+]
 
 ;; The image itself is untouched by any of this - the widget only ever held
 ;; a reference to it.
