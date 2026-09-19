@@ -1,7 +1,7 @@
 ////////////////////////////////////////////////////////////////////////
 // File: rebol-extension.h
 // Home: https://github.com/Oldes/Rebol3/
-// Date: 17-Sep-2026/8:23:35
+// Date: 19-Sep-2026/8:46:35
 // Note: This file is amalgamated from these sources:
 //
 //       reb-c.h
@@ -902,8 +902,8 @@ enum encoding_opts {
 ************************************************************************
 **
 **  Title: Extension Types (Isolators)
-**  Build: 3.22.6
-**  Date:  17-Sep-2026
+**  Build: 3.22.8
+**  Date:  19-Sep-2026
 **  File:  ext-types.h
 **
 **  AUTO-GENERATED FILE - Do not modify. (From: make-boot.reb)
@@ -953,6 +953,7 @@ enum REBOL_Ext_Types
 	RXT_MODULE,                   // 37
 	RXT_PORT,                     // 38
 	RXT_STRUCT = 54,              // 39
+	RXT_EVENT,                    // 40
     RXT_MAX
 };
 
@@ -1335,6 +1336,7 @@ typedef struct rebol_xy_int {
 // Forward references:
 #ifndef VALUE_H
 typedef struct Reb_Series   REBSER;
+typedef struct Reb_Handle_Context REBHOB;
 #endif
 #ifndef DEVICE_H
 typedef struct rebol_device REBDEV;
@@ -1345,13 +1347,15 @@ typedef struct rebol_devreq REBREQ;
 typedef struct rebol_event {
 	u8  type;		// event id (mouse-move, mouse-button, etc)
 	u8  flags;		// special flags
-	u8  win;		// window id
+	u8  win;		// reserved (was the View window table index; the
+					// handle now carries that identity)
 	u8  model;		// port, object, gui, callback
 	u32 data;		// an x/y position or keycode (raw/decoded)
 	union {
-		REBREQ *req;	// request (for device events)
-		REBSER *port;   // port
-		void *ser;		// object
+		REBREQ *req;  // request (for device events)
+		REBSER *port; // port
+		REBHOB *hob;  // handle context (widget, window, ...)
+		void   *ser;  // object
 	};
 } REBEVT;
 #pragma pack()
@@ -1364,7 +1368,7 @@ enum {
 	EVF_DOUBLE,		// double click detected
 	EVF_CONTROL,
 	EVF_SHIFT,
-	EVF_HAS_DATA,   // drop_file event series contains data instead of gob
+	EVF_HAS_SYM,    // `data` is a canon symbol id; `code` reads as a word
 	EVF_HAS_CODE,   // XY value is interpreted as integer instead of pair
 	EVF_ALT,
 };
@@ -1376,7 +1380,7 @@ enum {
 	EVM_DEVICE,		// I/O request holds the port pointer
 	EVM_PORT,		// event holds port pointer
 	EVM_OBJECT,		// event holds object frame pointer
-	EVM_GUI,		// GUI event uses system/ports/event
+	EVM_HANDLE,		// event holds a context handle (REBHOB)
 	EVM_CALLBACK,	// Callback event uses system/ports/callback port
 	EVM_MIDI,		// event holds midi port pointer
 	EVM_CONSOLE,    // native console events
@@ -1397,6 +1401,7 @@ enum {
 #define	VAL_EVENT_TIME(v)	((v)->data.event.time)
 #define	VAL_EVENT_REQ(v)	((v)->data.event.req)
 #define	VAL_EVENT_SER(v)	((v)->data.event.ser)
+#define	VAL_EVENT_HOB(v)	((v)->data.event.hob)
 
 #define IS_EVENT_MODEL(v,f)	(VAL_EVENT_MODEL(v) == (f))
 
@@ -1509,6 +1514,9 @@ enum {
 #define	AT_TAIL	((REBCNT)(~0))	// Extend series at tail
 
 // Is it a byte-sized series? (this works because no other odd size allowed)
+#ifdef BYTE_SIZE // macOS SDK used the same name
+#undef BYTE_SIZE
+#endif
 #define BYTE_SIZE(s) (SERIES_SIZES(s) & 1)
 #define VAL_BYTE_SIZE(v) (BYTE_SIZE(VAL_SERIES(v)))
 #define VAL_STR_IS_ASCII(v) (VAL_BYTE_SIZE(v) && Is_ASCII(VAL_BIN_DATA(v), VAL_LEN(v)))
@@ -2866,6 +2874,140 @@ typedef struct Reb_All {
 #endif // value.h
 
 
+//#include "reb-evtypes.h"
+/***********************************************************************
+**
+**  REBOL [R3] Language Interpreter and Run-time Environment
+**  Copyright 2012 REBOL Technologies
+**  Copyright 2012-2025 Rebol Open Source Contributors
+**  REBOL is a trademark of REBOL Technologies
+**  Licensed under the Apache License, Version 2.0
+**  This is a code-generated file.
+**
+************************************************************************
+**
+**  Title: Event Types
+**  Build: 3.22.8
+**  Date:  19-Sep-2026
+**  File:  reb-evtypes.h
+**
+**  AUTO-GENERATED FILE - Do not modify. (From: make-boot.reb)
+**
+***********************************************************************/
+
+
+#ifndef REB_EVTYPES_H
+#define REB_EVTYPES_H
+
+enum event_types {
+	EVT_IGNORE,                   // 0
+	EVT_INTERRUPT,                // 1
+	EVT_CUSTOM,                   // 2
+	EVT_ERROR,                    // 3
+	EVT_INIT,                     // 4
+	EVT_DEVICE,                   // 5
+	EVT_CALLBACK,                 // 6
+	EVT_SHUTDOWN,                 // 7
+	EVT_SUSPEND,                  // 8
+	EVT_RESUME,                   // 9
+	EVT_THEME_CHANGE,             // 10
+	EVT_OPEN = 32,                // 32
+	EVT_CLOSE,                    // 33
+	EVT_CONNECT,                  // 34
+	EVT_ACCEPT,                   // 35
+	EVT_READ,                     // 36
+	EVT_WRITE,                    // 37
+	EVT_WROTE,                    // 38
+	EVT_LOOKUP,                   // 39
+	EVT_READY,                    // 40
+	EVT_DONE,                     // 41
+	EVT_TIME,                     // 42
+	EVT_PENDING,                  // 43
+	EVT_SHOW = 64,                // 64
+	EVT_HIDE,                     // 65
+	EVT_OFFSET,                   // 66
+	EVT_RESIZE,                   // 67
+	EVT_ACTIVE,                   // 68
+	EVT_INACTIVE,                 // 69
+	EVT_MINIMIZE,                 // 70
+	EVT_MAXIMIZE,                 // 71
+	EVT_RESTORE,                  // 72
+	EVT_FOCUS,                    // 73
+	EVT_UNFOCUS,                  // 74
+	EVT_CLOSE_REQUEST,            // 75
+	EVT_DPI_CHANGE,               // 76
+	EVT_MOVE = 96,                // 96
+	EVT_DOWN,                     // 97
+	EVT_UP,                       // 98
+	EVT_ALT_DOWN,                 // 99
+	EVT_ALT_UP,                   // 100
+	EVT_AUX_DOWN,                 // 101
+	EVT_AUX_UP,                   // 102
+	EVT_CLICK,                    // 103
+	EVT_ENTER,                    // 104
+	EVT_LEAVE,                    // 105
+	EVT_SCROLL_LINE,              // 106
+	EVT_SCROLL_PAGE,              // 107
+	EVT_TOUCH_DOWN,               // 108
+	EVT_TOUCH_UP,                 // 109
+	EVT_TOUCH_MOVE,               // 110
+	EVT_TOUCH_CANCEL,             // 111
+	EVT_KEY = 128,                // 128
+	EVT_KEY_UP,                   // 129
+	EVT_NAMED_KEY,                // 130
+	EVT_NAMED_KEY_UP,             // 131
+	EVT_CHAR,                     // 132
+	EVT_CHANGE = 160,             // 160
+	EVT_SCROLL,                   // 161
+	EVT_MENU_SELECT,              // 162
+	EVT_MENU_OPEN,                // 163
+	EVT_MENU_CLOSE,               // 164
+	EVT_DROP_FILE,                // 165
+	EVT_DROP_TEXT,                // 166
+	EVT_MAX = 192
+};
+
+enum event_keys {
+	EVK_NONE,
+	EVK_PAGE_UP,
+	EVK_PAGE_DOWN,
+	EVK_END,
+	EVK_HOME,
+	EVK_LEFT,
+	EVK_UP,
+	EVK_RIGHT,
+	EVK_DOWN,
+	EVK_INSERT,
+	EVK_DELETE,
+	EVK_F1,
+	EVK_F2,
+	EVK_F3,
+	EVK_F4,
+	EVK_F5,
+	EVK_F6,
+	EVK_F7,
+	EVK_F8,
+	EVK_F9,
+	EVK_F10,
+	EVK_F11,
+	EVK_F12,
+	EVK_PASTE_START,
+	EVK_PASTE_END,
+	EVK_ESCAPE,
+	EVK_SHIFT,
+	EVK_CONTROL,
+	EVK_ALT,
+	EVK_PAUSE,
+	EVK_CAPITAL,
+	EVK_BACKTAB,
+	EVK_BACKSPACE,
+	EVK_BEGIN,
+	EVK_MAX
+};
+
+
+#endif // REB_EVTYPES_H
+
 //#include "reb-ext-handler.h"
 /***********************************************************************
 **
@@ -3001,7 +3143,9 @@ typedef union rxi_arg_val {
 		REBCNT index;
 		REBCNT info;
 	} vector;
-
+	// An event is 16 bytes (12 on 32-bit) - it fits whole into the slot,
+	// which is why it needs no series and no spec id like struct/vector.
+	REBEVT event;
 } RXIARG;
 
 // For direct access to arg array:
@@ -3099,6 +3243,26 @@ typedef struct rxi_struct_info {
 #define RXA_VECTOR_SERIES(f,n)  (RXA_ARG(f,n).vector.series)
 #define RXA_VECTOR_INDEX(f,n)   (RXA_ARG(f,n).vector.index)
 #define RXA_VECTOR_INFO(f,n)    (RXA_ARG(f,n).vector.info)
+
+// Events cross by value, so these just read and write the fields in place.
+// The union member holding a pointer (req/port/ser) is deliberately NOT
+// exposed here - see the EVM_HANDLE patch.
+#define RXA_EVENT(f,n)          (RXA_ARG(f,n).event)
+#define RXA_EVENT_TYPE(f,n)     (RXA_ARG(f,n).event.type)
+#define RXA_EVENT_FLAGS(f,n)    (RXA_ARG(f,n).event.flags)
+#define RXA_EVENT_WIN(f,n)      (RXA_ARG(f,n).event.win)
+#define RXA_EVENT_MODEL(f,n)    (RXA_ARG(f,n).event.model)
+#define RXA_EVENT_DATA(f,n)     (RXA_ARG(f,n).event.data)
+#define RXA_EVENT_X(f,n)        ((REBINT)(short)(RXA_EVENT_DATA(f,n) & 0xffff))
+#define RXA_EVENT_Y(f,n)        ((REBINT)(short)((RXA_EVENT_DATA(f,n) >> 16) & 0xffff))
+#define RXA_SET_EVENT_XY(f,n,x,y) (RXA_EVENT_DATA(f,n) = (((y) << 16) | ((x) & 0xffff)))
+
+// An extension-sourced event refers to one of the extension's own context
+// handles - a widget, a window, a drop-file payload. The handle keeps the
+// state; the event only says which one this happened to.
+#define RXA_EVENT_HANDLE(f,n)   (RXA_ARG(f,n).event.hob)
+#define RXA_SET_EVENT_HANDLE(f,n,h) \
+	(RXA_EVENT_MODEL(f,n) = EVM_HANDLE, RXA_EVENT_HANDLE(f,n) = (h))
 
 // Command function return values:
 enum rxi_return {
@@ -3698,119 +3862,6 @@ enum {
 
 
 
-// File: reb-evtypes.h
-/***********************************************************************
-**
-**  REBOL [R3] Language Interpreter and Run-time Environment
-**  Copyright 2012 REBOL Technologies
-**  Copyright 2012-2025 Rebol Open Source Contributors
-**  REBOL is a trademark of REBOL Technologies
-**  Licensed under the Apache License, Version 2.0
-**  This is a code-generated file.
-**
-************************************************************************
-**
-**  Title: Event Types
-**  Build: 3.22.6
-**  Date:  17-Sep-2026
-**  File:  reb-evtypes.h
-**
-**  AUTO-GENERATED FILE - Do not modify. (From: make-boot.reb)
-**
-***********************************************************************/
-
-
-enum event_types {
-	EVT_IGNORE,
-	EVT_INTERRUPT,
-	EVT_DEVICE,
-	EVT_CALLBACK,
-	EVT_CUSTOM,
-	EVT_ERROR,
-	EVT_INIT,
-	EVT_OPEN,
-	EVT_CLOSE,
-	EVT_CONNECT,
-	EVT_ACCEPT,
-	EVT_READ,
-	EVT_WRITE,
-	EVT_WROTE,
-	EVT_LOOKUP,
-	EVT_READY,
-	EVT_DONE,
-	EVT_TIME,
-	EVT_SHOW,
-	EVT_HIDE,
-	EVT_OFFSET,
-	EVT_RESIZE,
-	EVT_ACTIVE,
-	EVT_INACTIVE,
-	EVT_MINIMIZE,
-	EVT_MAXIMIZE,
-	EVT_RESTORE,
-	EVT_MOVE,
-	EVT_DOWN,
-	EVT_UP,
-	EVT_ALT_DOWN,
-	EVT_ALT_UP,
-	EVT_AUX_DOWN,
-	EVT_AUX_UP,
-	EVT_KEY,
-	EVT_KEY_UP,
-	EVT_SCROLL_LINE,
-	EVT_SCROLL_PAGE,
-	EVT_DROP_FILE,
-	EVT_CLICK,
-	EVT_CHANGE,
-	EVT_FOCUS,
-	EVT_UNFOCUS,
-	EVT_SCROLL,
-	EVT_CONTROL,
-	EVT_CONTROL_UP,
-	EVT_CHAR,
-	EVT_MAX
-};
-
-enum event_keys {
-	EVK_NONE,
-	EVK_PAGE_UP,
-	EVK_PAGE_DOWN,
-	EVK_END,
-	EVK_HOME,
-	EVK_LEFT,
-	EVK_UP,
-	EVK_RIGHT,
-	EVK_DOWN,
-	EVK_INSERT,
-	EVK_DELETE,
-	EVK_F1,
-	EVK_F2,
-	EVK_F3,
-	EVK_F4,
-	EVK_F5,
-	EVK_F6,
-	EVK_F7,
-	EVK_F8,
-	EVK_F9,
-	EVK_F10,
-	EVK_F11,
-	EVK_F12,
-	EVK_PASTE_START,
-	EVK_PASTE_END,
-	EVK_ESCAPE,
-	EVK_SHIFT,
-	EVK_CONTROL,
-	EVK_ALT,
-	EVK_PAUSE,
-	EVK_CAPITAL,
-	EVK_BACKTAB,
-	EVK_BACKSPACE,
-	EVK_BEGIN,
-	EVK_MAX
-};
-
-
-
 // File: reb-lib.h
 /***********************************************************************
 **
@@ -3824,8 +3875,8 @@ enum event_keys {
 ************************************************************************
 **
 **  Title: REBOL Host and Extension API
-**  Build: 3.22.6
-**  Date:  17-Sep-2026
+**  Build: 3.22.8
+**  Date:  19-Sep-2026
 **  File:  reb-lib.reb
 **
 **  AUTO-GENERATED FILE - Do not modify. (From: make-reb-lib.reb)
@@ -3837,7 +3888,7 @@ enum event_keys {
 // for compatiblity with the reb-lib DLL (using RL_Version.)
 #define RL_VER 3
 #define RL_REV 22
-#define RL_UPD 6
+#define RL_UPD 8
 
 // Bumped ONLY when an existing RL_API function's signature/semantics
 // change in a way that breaks old extension binaries calling it - i.e.

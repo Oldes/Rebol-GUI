@@ -86,18 +86,19 @@ accepted) and `gui-device-polls` how many times it has been polled — the only
 way, from Rebol, to see that the arrangement is working.
 
 **Where do events go?** Into the extension's own queue, drained by
-`poll-events` — *not* into `system/ports/event`. Posting the GUI events
-themselves would mean a `REBGOB` crossing the extension boundary and a scheme
-in the host to make sense of one; keeping our own queue means the events are
-plain Rebol values and the host needs to know nothing about windows. The loop
-is one mezzanine function (`do-events`), which can be replaced the day the
-interpreter grows something better.
+`poll-events` — *not* into `system/ports/event`. They come out as ordinary
+`event!` values which name their window or widget through the `EVM_HANDLE`
+model, so a context handle crosses the boundary where a `REBGOB` used to have
+to, and the host needs to know nothing about windows. Keeping our own queue
+rather than posting to the system port is what lets the loop be one mezzanine
+function (`do-events`), which can be replaced the day the interpreter grows
+something better.
 
 So a loop is `poll-events` to drain, then `wait` to sleep:
 
 ```rebol
 forever [
-    foreach [type source position value] poll-events [...]
+    foreach evt poll-events [...]
     unless win/open? [break]
     wait 0.05          ;; the device pumps the OS queue from in here
 ]
@@ -158,26 +159,34 @@ win: open-window/title 640x480 "Hello"
 ok:  add-button win "OK" 20x20 100x32
 
 forever [
-    foreach [type source position value] poll-events [
-        print [type position value]
-        if all [type = 'click  source = ok] [print "clicked!"]
-        if type = 'close [close-window win  halt]
+    foreach evt poll-events [
+        print [evt/type evt/offset]
+        if all [evt/type = 'click  evt/source = ok] [print "clicked!"]
+        if evt/type = 'close [close-window win  halt]
     ]
     wait 0.05
 ]
 ```
 
-Every event is four values, so a `foreach` takes them apart directly:
+Each event is one `event!`, read by field:
 
-| value      | type       | meaning                                              |
-|------------|------------|------------------------------------------------------|
-| `type`     | `word!`    | `move` `down` `up` `alt-down` `alt-up` `aux-down` `aux-up` `wheel` `close` `resize` `click` `change` `focus` `unfocus` |
-| `source`   | `handle!`  | what produced it: the window, or the widget for `click` |
-| `position` | `pair!`    | client coordinates; the new client size for `resize`, the widget's offset for `click` |
-| `value`    | `integer!` | modifier bits, or signed wheel lines                  |
+| field    | type            | meaning                                              |
+|----------|-----------------|------------------------------------------------------|
+| `type`   | `word!`         | `move` `down` `up` `alt-down` `alt-up` `aux-down` `aux-up` `scroll-line` `close` `resize` `click` `change` `focus` `unfocus` `menu-select` |
+| `source` | `handle!`       | what produced it: the window, or the widget itself for `click`, `change`, `focus` and `unfocus` — `evt/source/window` gets back to the window |
+| `offset` | `pair!`         | client coordinates; the new client size for `resize` |
+| `flags`  | `block!`        | `shift` `control` `alt` `double`, where they apply   |
+| `code`   | `integer!`/`word!` | signed wheel lines, or a menu item's word         |
 
-The modifier bits are named by the exported `event-flags` object
-(`shift` 1, `control` 2, `alt` 4, `double` 8).
+The types ARE the core's `EVT_*` codes, straight from `system/catalog/event-types` —
+this extension defines no event vocabulary of its own, which is why a wheel is
+`scroll-line` and a menu pick is `menu-select`, the names every other event
+source in Rebol already uses.
+
+`offset` and `code` are the two readings of the event's one payload word, so an
+event has one or the other and never both. That is why a wheel event reports no
+position: the widget it happened over is in `source`, which is the part anyone
+actually switches on.
 
 Two notes on behaviour:
 
@@ -769,9 +778,9 @@ The grammar is three rules:
 break a handler, and the same word used on two items fires from either:
 
 ```rebol
-foreach [type source pos val] poll-events [
-    if type = 'menu [
-        switch val [
+foreach evt poll-events [
+    if evt/type = 'menu-select [
+        switch evt/code [
             new  [...]
             quit [close-window win]
         ]
@@ -779,10 +788,10 @@ foreach [type source pos val] poll-events [
 ]
 ```
 
-A `menu` event puts the item's word in the fourth slot — the one a wheel event
-uses for its line count and a mouse event for its modifier bits. It is the only
-slot with no fixed type, which is what lets a menu handler be a `switch` rather
-than a table of numbers. `source` is the window.
+A `menu-select` event puts the item's word in `code` — the same slot a wheel
+event uses for its line count. The core stores it as a canon symbol id and
+reads it back as a word, which is what lets a menu handler be a `switch` rather
+than a table of numbers. `evt/source` is the window.
 
 Greying an item out is by word, and **merges** — only what you name changes:
 
@@ -1157,303 +1166,3 @@ would be wrong here:
   prevent.
 - And it would not have fixed any of the four causes above. A redundant
   `BM_SETCHECK` restarts an animation on any thread.
-
-## Extension commands:
-
-
-#### `open-window` `:size`
-Creates a window and returns its handle
-* `size` `[pair!]` Size of the client area
-* `/title`
-* `text` `[string!]` Text shown in the title bar
-* `/at`
-* `offset` `[pair!]` Position of the top-left corner on the screen
-* `/hidden` Creates the window without showing it
-* `/fixed` The user cannot resize it
-* `/borderless` No title bar and no frame - see the note in the README
-* `/transparent` The client area is see-through to whatever is behind the window
-
-#### `close-window` `:window`
-Destroys the window
-* `window` `[handle!]`
-
-#### `show-window` `:window`
-Makes the window visible
-* `window` `[handle!]`
-
-#### `hide-window` `:window`
-Hides the window without destroying it
-* `window` `[handle!]`
-
-#### `poll-events`
-Dispatches pending OS messages and returns the collected events
-
-#### `add-button` `:parent` `:text` `:offset` `:size`
-Creates a native push button inside a window and returns its handle
-* `parent` `[handle!]` Window or panel to put it in
-* `text` `[string!]` Label
-* `offset` `[pair!]` Position inside the client area
-* `size` `[pair!]` Size of the button
-
-#### `remove-widget` `:widget`
-Destroys a widget
-* `widget` `[handle!]`
-
-#### `add-image` `:parent` `:image` `:offset`
-Creates an image widget inside a window and returns its handle
-* `parent` `[handle!]` Window or panel to put it in
-* `image` `[image!]` Shown as is; the widget keeps a reference, not a copy
-* `offset` `[pair!]` Position inside the client area
-* `/size`
-* `sz` `[pair!]` Scales the image to this size (default: the image's own)
-
-#### `redraw` `:target`
-Repaints a window or a widget - use after drawing into a displayed image
-* `target` `[handle!]`
-
-#### `add-text` `:parent` `:text` `:offset` `:size`
-Creates a static label inside a window and returns its handle
-* `parent` `[handle!]` Window or panel to put it in
-* `text` `[string!]`
-* `offset` `[pair!]` Position inside the client area
-* `size` `[pair!]`
-
-#### `add-field` `:parent` `:text` `:offset` `:size`
-Creates a one-line text entry inside a window and returns its handle
-* `parent` `[handle!]` Window or panel to put it in
-* `text` `[string!]` Initial contents
-* `offset` `[pair!]` Position inside the client area
-* `size` `[pair!]`
-
-#### `add-area` `:parent` `:text` `:offset` `:size`
-Creates a multi-line text entry inside a window and returns its handle
-* `parent` `[handle!]` Window or panel to put it in
-* `text` `[string!]` Initial contents
-* `offset` `[pair!]` Position inside the client area
-* `size` `[pair!]`
-
-#### `add-check` `:parent` `:text` `:offset` `:size`
-Creates a checkbox inside a window and returns its handle
-* `parent` `[handle!]` Window or panel to put it in
-* `text` `[string!]` Label
-* `offset` `[pair!]` Position inside the client area
-* `size` `[pair!]`
-
-#### `add-radio` `:parent` `:text` `:offset` `:size`
-Creates a radio button inside a window and returns its handle
-* `parent` `[handle!]` Window or panel to put it in
-* `text` `[string!]` Label
-* `offset` `[pair!]` Position inside the client area
-* `size` `[pair!]`
-* `/group`
-* `id` `[integer!]` Radios sharing an id turn each other off (default: 0)
-
-#### `add-slider` `:parent` `:offset` `:size`
-Creates a slider inside a window and returns its handle
-* `parent` `[handle!]` Window or panel to put it in
-* `offset` `[pair!]` Position inside the client area
-* `size` `[pair!]` Taller than wide makes it vertical
-* `/value`
-* `val` `[percent! decimal!]` Initial position (default: 0%)
-
-#### `add-progress` `:parent` `:offset` `:size`
-Creates a progress bar inside a window and returns its handle
-* `parent` `[handle!]` Window or panel to put it in
-* `offset` `[pair!]` Position inside the client area
-* `size` `[pair!]`
-* `/value`
-* `val` `[percent! decimal!]` Initial position (default: 0%)
-
-#### `add-drop-down` `:parent` `:items` `:offset` `:size`
-Creates a drop-down list inside a window and returns its handle
-* `parent` `[handle!]` Window or panel to put it in
-* `items` `[block!]` Strings to offer
-* `offset` `[pair!]` Position inside the client area
-* `size` `[pair!]` Of the closed control; room for the list is added
-* `/index`
-* `n` `[integer!]` Item picked to start with, 1-based (default: none)
-
-#### `add-panel` `:parent` `:offset` `:size`
-Creates a panel - a widget which holds other widgets - and returns its handle
-* `parent` `[handle!]` Window or panel to put it in
-* `offset` `[pair!]` Position inside the client area
-* `size` `[pair!]`
-* `/edge` Draws a frame around it
-* `/title`
-* `text` `[string!]` Caption set into the frame; implies /edge
-
-#### `gui-device`
-Returns the id of the device this extension registered
-
-#### `gui-device-polls`
-Returns how many times the host has polled it
-
-#### `gui-device-events`
-Returns how many wake events the device has pushed
-
-#### `gui-port-open` `:port`
-Attaches a port to the GUI device
-* `port` `[port!]`
-
-#### `gui-port-close` `:port`
-Detaches it again
-* `port` `[port!]`
-
-#### `gui-port-read` `:port`
-Returns how many events are waiting
-* `port` `[port!]`
-
-#### `gui-device-pumps`
-Returns how many polls reached the OS pump
-
-#### `gui-device-messages`
-Returns how many OS messages those pumps dispatched
-
-
-## Used handles and its getters / setters
-
-#### __WINDOW__ - GUI window handle
-
-```rebol
-;Refinement       Gets                Sets                          Description
-/title            string!             string!                       "Text shown in the title bar"
-/size             pair!               pair!                         "Size of the client area in pixels"
-/offset           pair!               pair!                         "Position of the top-left corner on the screen"
-/id               integer!            none                          "Native window handle as an integer"
-/open?            logic!              none                          "False once the window has been closed"
-/scale            decimal!            none                          "Device pixels per unit of size - 1.0 at 100%, 1.75 at 175%, 2.0 on a Retina Mac"
-/resizable?       logic!              logic!                        "Whether the user can resize it"
-/border?          logic!              logic!                        "Whether it has a title bar and a frame; a borderless window cannot be moved or closed by the user"
-/background       tuple!              [tuple! none!]                "Colour of the client area; none for the system window colour"
-/transparent?     logic!              logic!                        "Whether the client area is see-through to whatever is behind the window"
-/font             string!             [string! none!]               "Font family widgets are created with; none for the system font"
-/font-size        integer!            [integer! none!]              "Point size widgets are created with; none for the system size"
-/bold?            logic!              logic!                        "Whether widgets are created bold"
-/italic?          logic!              logic!                        "Whether widgets are created italic"
-/children         block!              none                          "Widgets the window holds directly, in the order they were added"
-/menu             block!              [block! none!]                "The menu bar, as the dialect described in the README; none removes it"
-/menu-enabled?    block!              block!                        "Which items are greyed out, as word/logic pairs; setting merges, it does not replace"
-```
-
-#### __WIDGET__ - GUI widget handle - a native control inside a window
-
-```rebol
-;Refinement       Gets                Sets                          Description
-/text             string!             string!                       "Label or contents; the caption of a framed panel; the selected item of a drop-down, which is read-only; none for an image"
-/items            block!              block!                        "Strings a drop-down offers; none for other kinds"
-/index            integer!            integer!                      "Which item is picked, 1-based; 0 for none"
-/image            image!              image!                        "Image shown by an image widget, none for other kinds"
-/size             pair!               pair!                         "Size of the control; a zero axis asks it what that axis needs, the same as at creation"
-/offset           pair!               pair!                         "Position inside whatever holds it - a window or a panel"
-/id               integer!            none                          "Native control handle as an integer"
-/kind             word!               none                          "What the control is: button, image, text, field, area, check, radio, slider, progress or drop-down"
-/value            percent!            [percent! decimal!]           "Position of a slider or a progress bar; none for other kinds"
-/state            logic!              logic!                        "Whether a check or a radio is on; none for other kinds"
-/edge             logic!              logic!                        "Whether a panel draws a frame around itself; none for other kinds"
-/font             string!             [string! none!]               "Font family; none puts it back to the system font"
-/font-size        integer!            [integer! none!]              "Point size; none puts it back to the system size"
-/bold?            logic!              logic!                        "Whether the text is bold"
-/italic?          logic!              logic!                        "Whether the text is italic"
-/color            tuple!              [tuple! none!]                "Text colour; none lets the platform decide"
-/background       tuple!              [tuple! none!]                "Colour painted behind the text; none lets the platform decide"
-/transparent?     logic!              logic!                        "Whether nothing is painted behind it at all, so whatever the widget sits on shows through"
-/children         block!              none                          "Widgets a container holds, in the order they were added; none for a kind which cannot hold any"
-/read-only?       logic!              logic!                        "Whether a field or an area refuses to be edited while staying selectable; none for other kinds"
-/scroll           percent!            [percent! decimal! word!]     "How far an area is scrolled; set a percent, or one of top, bottom and end; none for kinds which do not scroll"
-/group            integer!            none                          "Which radio group it belongs to; 0 for everything else"
-/enabled?         logic!              logic!                        "Whether the control responds to the user"
-/parent           handle!             none                          "Whatever holds it - a window, or a panel; none once gone"
-/window           handle!             none                          "The window it ends up in, however deeply nested"
-```
-
-
-## Other extension values:
-```rebol
-;; Bits carried by the fourth value of a mouse event. A `wheel` event
-;; uses that slot for the signed number of lines instead, and `close`
-;; and `resize` leave it at zero.
-event-flags: object [
-	shift:   1
-	control: 2
-	alt:     4
-	double:  8
-]
-
-;; -----------------------------------------------------------------------
-;; The event port - a doorbell, not a channel.
-;;
-;; The device pushes one Rebol event whenever the OS pump has put
-;; something in the extension's queue, and an event has to be delivered
-;; somewhere: EVM_PORT events resolve back to this port, its `awake` is
-;; what puts it on WAIT's waked list, and the GC marks it for as long as
-;; an event of its own is queued.
-;;
-;; The GUI events themselves never travel through it. They stay in the
-;; extension's queue and come out of `poll-events`. All this port says is
-;; "there is something to drain" - and `read` on it answers how much.
-;;
-;; It is open for the life of the module, which is what keeps the device's
-;; one port slot pointing at something valid. A program writing its own
-;; loop can wait on it alongside anything else:
-;;
-;;     wait [my-socket gui/event-port 1]
-sys/make-scheme [
-	title: "Rebol/GUI event doorbell"
-	name:  'gui
-	actor: object [
-		open:  func [port] [gui-port-open  port]
-		close: func [port] [gui-port-close port]
-		read:  func [port] [gui-port-read  port]
-	]
-]
-
-event-port: try [open [scheme: 'gui]]
-
-;; Returning TRUE is what wakes WAIT. Without an awake handler the system
-;; port takes the event off its queue, finds nothing to call, and drops
-;; it - the doorbell would ring into an empty hall and every wait would
-;; sleep out its full timeout.
-if port? event-port [event-port/awake: func [event] [true]]
-
-;; `poll-events` always returns a block, so the four values of every
-;; event can be taken apart directly:
-;;
-;;     foreach [type source position value] poll-events [...]
-;;
-;; `source` is the window for window events, and the widget itself for a
-;; `click` - use `source/parent` to get back to the window.
-do-events: function [
-	"Pumps window events until the given window is closed"
-	window  [handle!]
-	handler [any-function!] "Called as: handler type source position value"
-	/rate delay [number!] {Longest it may sleep with nothing to do (default: 0.05)}
-][
-	;; `wait` does the sleeping, and that is the whole point: the
-	;; extension registers a device with RDO_AUTO_POLL, so the host pumps
-	;; the OS message queue from inside OS_Wait - and everything else
-	;; Rebol has waiting is serviced by the same sleep.
-	;;
-	;; Waiting on the event port as well as the delay is what makes this
-	;; responsive rather than merely correct: the device pushes an event
-	;; when the queue grows, so `wait` returns as soon as a click arrives
-	;; and the delay is only a ceiling. Without the port it still works,
-	;; just at the rate of the ceiling.
-	delay: any [delay 0.05]
-	wake:  either port? event-port [reduce [event-port delay]][delay]
-
-	forever [
-		foreach [type source pos val] poll-events [
-			handler type source pos val
-			;; `close` only reports the request - closing is ours to do
-			if all [type = 'close  source = window] [
-				close-window window
-			]
-			;; the handler is allowed to close it as well, and the rest
-			;; of this batch would then refer to widgets which are gone
-			unless window/open? [break]
-		]
-		unless window/open? [exit]
-		wait wake
-	]
-]
-```

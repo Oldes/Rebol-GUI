@@ -1,6 +1,6 @@
 Rebol [
 	Title:   "Rebol/GUI extension test"
-	Needs:   3.22.7
+	Needs:   3.22.8
 	Purpose: {
 		Opens a window and prints the mouse events it produces. Meant to be
 		run by a human - close the window to end it.
@@ -487,7 +487,7 @@ print ["and it is waiting:   " (read gui/event-port) > 0]
 events: gui-device-events
 wait 0.3
 print ["no second push for the same batch:" gui-device-events = events]
-print ["drained:" mold extract poll-events 4]
+print ["drained:" length? poll-events "event(s)"]
 print ["and the doorbell is armed again:" zero? read gui/event-port]
 
 
@@ -600,7 +600,15 @@ Events over the image report the image widget as their source.
 last-move: 0x0
 clicks: 0
 
-report: func [type source position value][
+;; ONE argument now: `poll-events` returns a block of event! values, so the
+;; handler reads what it needs by name instead of counting positions. `window`
+;; is the window for window events and the WIDGET itself for a click, a change
+;; or a focus change.
+report: func [event /local type source position][
+	type:     event/type
+	source:   event/source
+	position: event/offset
+
 	;if all [type = 'move  10 > distance last-move position] [exit]
 	if type = 'move [last-move: position]
 
@@ -638,9 +646,11 @@ report: func [type source position value][
 	;; A `menu` event carries the item's WORD in the value slot - the one
 	;; slot with no fixed type - so a handler is a plain switch. `source` is
 	;; the window the menu belongs to.
-	if type == 'menu [
-		note ajoin ["menu: " value]
-		switch value [
+	;; A menu pick carries the item's WORD in `code` - the core reads a symbol
+	;; id back as a word, which is what keeps this a plain switch.
+	if type == 'menu-select [
+		note ajoin ["menu: " event/code]
+		switch event/code [
 			reset     [clicks: 0  counter/text: "Click me"]
 			note      [note "a note"]
 			quit      [close-window win  exit]
@@ -700,26 +710,20 @@ report: func [type source position value][
 		as-green pad form type 10
 		pad mold position 12
 		case [
-			type = 'wheel [ajoin ["lines: " value]]
+			;; A wheel event is `scroll-line`, and its line count is in `code` -
+			;; where a position would otherwise be, which is why it has none.
+			type = 'scroll-line [ajoin ["lines: " event/code]]
 			type = 'click [source]
 			;; the image widget reports its own mouse events
 			source = canvas [ajoin ["on the image " source]]
-			;; a `menu` event carries the item's word in this slot
-			type = 'menu [ajoin ["item: " value]]
-			true [
-				if integer? value [
-					mold collect [
-						foreach [name bit] event-flags [
-							if (value & bit) <> 0 [keep to word! name]
-						]
-					]
-				]
-			]
+			type = 'menu-select [ajoin ["item: " event/code]]
+			;; shift / control / alt / double, already as words
+			true [mold event/flags]
 		]
 	]
 ]
 
-;; Pumps the OS queue, hands every event to `report`, and returns once the
+;; Pumps the OS queue, hands every event! to `report`, and returns once the
 ;; window has been closed. This is the whole event model - there is no
 ;; system/ports/event involvement at all.
 do-events win :report
