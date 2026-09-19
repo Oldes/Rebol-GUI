@@ -1707,6 +1707,49 @@ static IDropTargetVtbl Drop_Vtbl = {
 **  creates is released here and the target is freed when the OS lets go
 **  of it - which RevokeDragDrop is what triggers.
 ***********************************************************************/
+/***********************************************************************
+**  The keyboard focus.
+**
+**  SetFocus activates the window the control belongs to as a side
+**  effect, which is what a caller wants and cannot usefully be asked
+**  for separately.
+**
+**  A control which cannot take the focus - a label, a progress bar,
+**  anything disabled - is refused rather than quietly doing nothing:
+**  SetFocus would return the previous focus in both cases, so the
+**  answer is taken by asking afterwards.
+***********************************************************************/
+REBOOL Gui_Window_Set_Focus(GUIWIN *win)
+{
+	if (!win || !win->handle) return FALSE;
+	SetFocus(HWND_OF(win));
+	return (GetFocus() == HWND_OF(win)) ? TRUE : FALSE;
+}
+
+
+REBOOL Gui_Widget_Set_Focus(GUIWIDGET *wid)
+{
+	HWND hwnd;
+
+	if (!wid || !wid->handle) return FALSE;
+	hwnd = HWND_OF_WID(wid);
+
+	// A disabled control takes the focus on some Windows versions and not
+	// on others; refusing it here makes the answer the same everywhere.
+	if (!IsWindowEnabled(hwnd)) return FALSE;
+
+	SetFocus(hwnd);
+	return (GetFocus() == hwnd) ? TRUE : FALSE;
+}
+
+
+REBOOL Gui_Widget_Has_Focus(GUIWIDGET *wid)
+{
+	if (!wid || !wid->handle) return FALSE;
+	return (GetFocus() == HWND_OF_WID(wid)) ? TRUE : FALSE;
+}
+
+
 void Gui_Window_Set_Drop(GUIWIN *win, REBOOL accept)
 {
 	if (!win) return;
@@ -2580,6 +2623,10 @@ REBOOL Gui_Create_Text_Control(GUIWIDGET *wid, GUIWIN *owner,
 	switch (wid->kind) {
 	case W_GUI_WIDGET_TEXT:
 		class_name = L"STATIC";
+		// Not a tab stop: a label is not a control the keyboard can reach,
+		// and leaving the flag on would make it one the day Tab navigation
+		// is implemented.
+		style &= ~WS_TABSTOP;
 		style |= SS_LEFT;
 		break;
 

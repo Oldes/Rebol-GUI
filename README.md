@@ -849,6 +849,40 @@ dispatched, and `Gui_Pump` is the only message loop this extension owns, so it
 does that — looking the window up by class name rather than trusting
 `GWLP_USERDATA` on a window it did not create.
 
+### The keyboard focus
+
+```rebol
+set-focus name          ;; true, and the window comes forward with it
+name/focused?           ;; true
+set-focus label         ;; false - a label is not something a user can reach
+```
+
+`set-focus` takes a widget, or a window to focus the window itself. It answers
+**false when the target cannot take the focus** — rather than pretending it
+worked, because "did that do anything?" is the only question worth asking of a
+focus call.
+
+What can take it: `button` `field` `area` `check` `radio` `slider` `drop-down`.
+What cannot: `text` `image` `panel` `progress` — and those are refused *by kind*,
+before the platform is asked, because the platforms disagree. Win32's `SetFocus`
+works on any enabled window, so it will happily focus a progress bar, which then
+shows nothing and does nothing with a keystroke; AppKit refuses, since neither a
+progress indicator nor a label accepts first responder. One answer is more use
+than two, and AppKit's is the useful one.
+
+A control which is `enabled?: false` is refused as well, on both.
+
+`focused?` is asked of the platform every time rather than remembered: focus
+moves for reasons this extension never hears about — a click, the window being
+activated, another application taking over — so a flag kept here would drift.
+
+Focusing a widget brings its window forward. That is what both platforms do
+and there is no useful way to ask for less.
+
+**Tab navigation is separate and not implemented yet.** The controls carry
+`WS_TABSTOP`, but on Windows the dialog manager is what acts on it, and nothing
+here calls into it.
+
 ### Dropped files
 
 Off until asked for — a window which silently swallows a drop is worse than one
@@ -1389,6 +1423,10 @@ Returns how many polls reached the OS pump
 #### `gui-device-messages`
 Returns how many OS messages those pumps dispatched
 
+#### `set-focus` `:target`
+Gives a widget the keyboard focus; returns false if it cannot take it
+* `target` `[handle!]` A widget, or a window to focus the window itself
+
 
 ## Used handles and its getters / setters
 
@@ -1451,6 +1489,7 @@ Returns how many OS messages those pumps dispatched
 /transparent?     logic!              logic!                        "Whether nothing is painted behind it at all, so whatever the widget sits on shows through"
 /children         block!              none                          "Widgets a container holds, in the order they were added; none for a kind which cannot hold any"
 /read-only?       logic!              logic!                        "Whether a field or an area refuses to be edited while staying selectable; none for other kinds"
+/focused?         logic!              none                          "Whether it currently has the keyboard focus"
 /scroll           percent!            [percent! decimal! word!]     "How far an area is scrolled; set a percent, or one of top, bottom and end; none for kinds which do not scroll"
 /group            integer!            none                          "Which radio group it belongs to; 0 for everything else"
 /enabled?         logic!              logic!                        "Whether the control responds to the user"

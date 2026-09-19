@@ -669,6 +669,28 @@ static REBOOL Kind_Has_State(REBCNT kind)
 	     || kind == W_GUI_WIDGET_RADIO) ? TRUE : FALSE;
 }
 
+/***********************************************************************
+**  Which kinds the keyboard can reach.
+**
+**  Asked BEFORE the platform, because the platforms disagree: Win32's
+**  SetFocus works on any enabled window, so it will happily focus a
+**  progress bar or a label - the control takes the focus, shows nothing
+**  and does nothing with a keystroke - while AppKit refuses both, since
+**  neither accepts first responder.
+**
+**  A caller wants one answer, and the useful one is AppKit's: these are
+**  not controls a user can reach, so `set-focus` refuses them and
+**  `focused?` is false for them.
+***********************************************************************/
+static REBOOL Kind_Takes_Focus(REBCNT kind)
+{
+	return (kind == W_GUI_WIDGET_TEXT      // a label
+	     || kind == W_GUI_WIDGET_IMAGE     // pixels, and a container
+	     || kind == W_GUI_WIDGET_PANEL     // a container
+	     || kind == W_GUI_WIDGET_PROGRESS) // shows a value, takes no input
+		? FALSE : TRUE;
+}
+
 // ... and which sit somewhere between 0% and 100%.
 static REBOOL Kind_Has_Value(REBCNT kind)
 {
@@ -1590,6 +1612,30 @@ static REBYTE Event_Modifier_Bits(REBINT value)
 **  a wheel event reports no position. The widget it happened to is in
 **  `source`, which is the part anyone actually switches on.
 ***********************************************************************/
+/***********************************************************************
+**  set-focus
+**      target [handle!]
+**
+**  A widget, or a window to focus the window itself. Answers FALSE when
+**  the target cannot take the focus - a label, a progress bar, a
+**  disabled or closed control - rather than pretending it worked.
+***********************************************************************/
+COMMAND cmd_gui_set_focus(RXIFRM *frm, void *ctx)
+{
+	if (FRM_IS_HANDLE(1, Handle_GuiWindow)) {
+		GUIWIN *win = Frm_Window(frm, 1);
+		if (!win || !win->handle) RETURN_ERROR(ERR_INVALID_HANDLE);
+		return Gui_Window_Set_Focus(win) ? RXR_TRUE : RXR_FALSE;
+	}
+	{
+		GUIWIDGET *wid = Frm_Widget(frm, 1);
+		if (!wid || !wid->handle) RETURN_ERROR(ERR_INVALID_HANDLE);
+		if (!Kind_Takes_Focus(wid->kind)) return RXR_FALSE;
+		return Gui_Widget_Set_Focus(wid) ? RXR_TRUE : RXR_FALSE;
+	}
+}
+
+
 COMMAND cmd_gui_poll_events(RXIFRM *frm, void *ctx)
 {
 	REBSER *blk;
@@ -2772,6 +2818,16 @@ int GuiWidget_get_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 	case W_GUI_ARG_ID:
 		*type = RXT_INTEGER;
 		arg->int64 = (i64)(REBUPT)wid->handle;
+		break;
+
+	// Asked of the platform, not kept here: focus moves for reasons this
+	// extension never hears about - a click, the window being activated,
+	// another application taking over - so a remembered flag would drift.
+	case W_GUI_ARG_FOCUSEDQ:
+		*type = RXT_LOGIC;
+		arg->int32a = (wid->handle
+		            && Kind_Takes_Focus(wid->kind)
+		            && Gui_Widget_Has_Focus(wid)) ? 1 : 0;
 		break;
 
 	// Read from the widget rather than the control: see the note in gui.h

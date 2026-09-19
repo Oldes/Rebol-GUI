@@ -391,6 +391,33 @@ show-window win
 print "the window is up - it should have arrived with everything on it"
 
 ;;=============================================================================
+print as-yellow "^/== The keyboard focus"
+;;=============================================================================
+
+;; `focused?` is asked of the platform rather than remembered, because focus
+;; moves for reasons this extension never hears about - a click, the window
+;; being activated, another application taking over.
+print ["the field takes it:  " set-focus name]
+print ["and reports it:      " name/focused?]
+print ["the button does not: " not counter/focused?]
+
+print ["a button takes it too:" set-focus counter]
+print ["... and the field has lost it:" not name/focused?]
+
+;; A progress bar is not something a user can reach.
+;; Refused by KIND, before the platform is asked, because the platforms
+;; disagree: Win32's SetFocus works on any enabled window and would take a
+;; progress bar or a label, showing nothing and doing nothing with a
+;; keystroke, while AppKit refuses both. One answer is more use than two.
+print ["a progress bar refuses:" not set-focus meter]
+print ["and never reports it:  " not meter/focused?]
+print ["nor does a label:      " not set-focus label]
+print ["nor a panel:           " not set-focus box]
+
+;; Left on the field, which is where a typist wants it.
+set-focus name
+
+;;=============================================================================
 print as-yellow "^/== Moving a widget over a sibling"
 ;;=============================================================================
 

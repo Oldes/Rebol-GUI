@@ -173,6 +173,21 @@ void    Gui_Show_Window(GUIWIN *win, REBOOL show);
 // keeps GUIW_ACCEPTS_DROP in step.
 void    Gui_Window_Set_Drop(GUIWIN *win, REBOOL accept);
 
+/***********************************************************************
+**  The keyboard focus.
+**
+**  `Set_Focus` answers FALSE when the control cannot take it - a
+**  label, a progress bar, a disabled control - rather than pretending
+**  it worked, because "did that do anything?" is the only question
+**  worth asking of a focus call.
+**
+**  Focusing a widget also activates the window it is in; that is what
+**  both platforms do and there is no useful way to ask for less.
+***********************************************************************/
+REBOOL  Gui_Window_Set_Focus(GUIWIN *win);
+REBOOL  Gui_Widget_Set_Focus(GUIWIDGET *wid);
+REBOOL  Gui_Widget_Has_Focus(GUIWIDGET *wid);
+
 // Dispatches everything waiting in the OS queue, which is what turns
 // messages into Gui_Queue_Event() calls.
 //

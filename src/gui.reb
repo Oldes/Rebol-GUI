@@ -10,7 +10,7 @@ REBOL [
 		open-window close-window show-window hide-window
 		add-button add-image add-text add-field add-area
 		add-check add-radio add-slider add-progress add-drop-down add-panel
-		remove-widget redraw
+		remove-widget redraw set-focus
 		gui-device gui-device-polls gui-device-events
 		gui-device-pumps gui-device-messages
 		poll-events do-events
@@ -344,6 +344,7 @@ handles: [
 		transparent? logic! logic!        "Whether nothing is painted behind it at all, so whatever the widget sits on shows through"
 		children  block!   none      "Widgets a container holds, in the order they were added; none for a kind which cannot hold any"
 		read-only? logic!  logic!    "Whether a field or an area refuses to be edited while staying selectable; none for other kinds"
+		focused?  logic!   none      "Whether it currently has the keyboard focus"
 		scroll    percent!  [percent! decimal! word!] "How far an area is scrolled; set a percent, or one of top, bottom and end; none for kinds which do not scroll"
 		group    integer!  none      "Which radio group it belongs to; 0 for everything else"
 		enabled? logic!    logic!    "Whether the control responds to the user"
@@ -473,6 +474,12 @@ commands: [
 	;; queue before we looked".
 	gui-device-pumps:    ["Returns how many polls reached the OS pump"]
 	gui-device-messages: ["Returns how many OS messages those pumps dispatched"]
+
+	;; APPENDED, like everything else here - the position is the index.
+	set-focus: [
+		{Gives a widget the keyboard focus; returns false if it cannot take it}
+		target [handle!] "A widget, or a window to focus the window itself"
+	]
 
 ]
 

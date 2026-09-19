@@ -2230,6 +2230,77 @@ void Gui_Widget_Set_Background(GUIWIDGET *wid)
 **  reports `drop-text` as well as `drop-file` - on Win32 that would
 **  need a registered IDropTarget and is not implemented.
 ***********************************************************************/
+/***********************************************************************
+**  The keyboard focus, which AppKit calls the first responder.
+**
+**  Two things make this less direct than SetFocus. A text field being
+**  edited is not itself the first responder - the window's shared field
+**  EDITOR is, with the field as its delegate - so asking has to look
+**  through it. And an area's handle is the scroll view, not the text
+**  view inside it, which is the thing that can actually be responded to.
+**
+**  makeFirstResponder: answers NO for a view which refuses the role -
+**  a label, a progress indicator - which is exactly the answer wanted,
+**  so it is passed straight through.
+***********************************************************************/
+static NSView *Focus_Target(GUIWIDGET *wid)
+{
+	if (!wid || !wid->handle) return nil;
+	if (wid->kind == W_GUI_WIDGET_AREA) return (NSView*)Text_View_Of(wid);
+	return (NSView*)wid->handle;
+}
+
+
+REBOOL Gui_Window_Set_Focus(GUIWIN *win)
+{
+	@autoreleasepool {
+		if (!win || !win->handle) return FALSE;
+		[NSWINDOW_OF(win) makeKeyAndOrderFront:nil];
+		return TRUE;
+	}
+}
+
+
+REBOOL Gui_Widget_Set_Focus(GUIWIDGET *wid)
+{
+	@autoreleasepool {
+		NSView   *view = Focus_Target(wid);
+		NSWindow *window;
+
+		if (!view || !wid->owner || !wid->owner->handle) return FALSE;
+		window = NSWINDOW_OF(wid->owner);
+
+		// Focusing a control in a window nobody is looking at is not what
+		// the caller means; both platforms bring the window forward.
+		[window makeKeyAndOrderFront:nil];
+		return [window makeFirstResponder:view] ? TRUE : FALSE;
+	}
+}
+
+
+REBOOL Gui_Widget_Has_Focus(GUIWIDGET *wid)
+{
+	@autoreleasepool {
+		NSView     *view = Focus_Target(wid);
+		NSWindow   *window;
+		NSResponder *first;
+
+		if (!view || !wid->owner || !wid->owner->handle) return FALSE;
+		window = NSWINDOW_OF(wid->owner);
+		first  = [window firstResponder];
+
+		if (first == (NSResponder*)view) return TRUE;
+
+		// The field editor stands in for whichever text field is being
+		// edited, and names it as its delegate.
+		if ([first isKindOfClass:[NSText class]]
+		    && (NSView*)[(NSText*)first delegate] == view) return TRUE;
+
+		return FALSE;
+	}
+}
+
+
 void Gui_Window_Set_Drop(GUIWIN *win, REBOOL accept)
 {
 	@autoreleasepool {
