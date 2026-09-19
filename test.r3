@@ -729,6 +729,15 @@ report: func [event /local type source position][
 				close-window win
 				exit
 			]
+			;; ENTER in a field reports a `click` - the same word a button
+			;; uses, because it is the same thing: the control was activated
+			;; rather than merely edited. An area keeps Enter for itself.
+			source == name [
+				note ajoin ["entered: " mold source/text]
+				label/text: either empty? source/text [
+					"Type your name:"
+				][	ajoin ["Hello, " source/text "!"] ]
+			]
 			;; A check has already toggled itself by the time this arrives.
 			source/kind = 'check [
 				counter/enabled?: source/state

@@ -329,6 +329,12 @@ static void Apply_Button_Color(GUIWIDGET *wid);
 	                Modifier_Bits([NSEvent modifierFlags]));
 }
 
+// ENTER, reported as a `click` - the same word a button uses, because it
+// is the same thing: the control was activated rather than merely edited.
+// Sending the action is also what stops AppKit beeping at an Enter with
+// nowhere to go, which is Win32's complaint too.
+- (void)accepted:(id)sender { [self queue:EVT_CLICK]; }
+
 // These fire for USER edits only - setStringValue: does not call them, so
 // unlike Win32's EN_CHANGE there is nothing to suppress when Rebol writes
 // to the control.
@@ -1686,6 +1692,10 @@ REBOOL Gui_Create_Text_Control(GUIWIDGET *wid, GUIWIN *owner,
 				[field setEditable:YES];
 				[field setBezeled:YES];
 				[field setBezelStyle:NSTextFieldSquareBezel];
+				// Enter sends the action - see -accepted: above. A label
+				// gets none: it is not editable and cannot be activated.
+				[field setTarget:field];
+				[field setAction:@selector(accepted:)];
 			}
 
 			[field setContext:wid];

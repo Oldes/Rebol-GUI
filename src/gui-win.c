@@ -2278,6 +2278,41 @@ static void Paint_Parent_Background(HWND hwnd, HDC dc)
 // be. One per class rather than one per control: every STATIC shares a
 // procedure, and so does every BUTTON, so there is nothing per-widget to
 // keep and nothing to unwind when a widget goes away.
+/***********************************************************************
+**  A one-line field, subclassed so that ENTER does something.
+**
+**  An EDIT hands Enter to the default pushbutton of the dialog it is
+**  in. There is no dialog here, so DefWindowProc answers with
+**  MessageBeep - a noise, and the only thing that happens otherwise.
+**
+**  Reported as a `click`, which is the word a button already uses for
+**  the same thing: the control was activated rather than merely edited.
+**  Both the key and the character have to be swallowed - the beep comes
+**  from WM_CHAR, and returning 0 from WM_KEYDOWN alone still lets
+**  TranslateMessage produce one.
+**
+**  Only fields are subclassed: an `area` is multi-line, has
+**  ES_WANTRETURN, and Enter there is how a new line is typed.
+***********************************************************************/
+static WNDPROC Edit_Proc = NULL;
+
+static LRESULT CALLBACK Field_Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
+{
+	if ((msg == WM_KEYDOWN || msg == WM_CHAR) && wp == VK_RETURN) {
+		if (msg == WM_KEYDOWN) {
+			GUIWIDGET *wid = (GUIWIDGET*)GetWindowLongPtrW(hwnd, GWLP_USERDATA);
+			if (wid && wid->hob) {
+				REBINT x = 0, y = 0, w = 0, h = 0;
+				Gui_Widget_Get_Box(wid, &x, &y, &w, &h);
+				Gui_Queue_Event(wid->hob, EVT_CLICK, x, y, Modifiers());
+			}
+		}
+		return 0;
+	}
+	return CallWindowProcW(Edit_Proc, hwnd, msg, wp, lp);
+}
+
+
 static WNDPROC Static_Proc = NULL;
 static WNDPROC Button_Proc = NULL;
 
@@ -2348,6 +2383,10 @@ static void Subclass_For_Transparency(GUIWIDGET *wid)
 
 	previous = (WNDPROC)GetWindowLongPtrW(hwnd, GWLP_WNDPROC);
 	if (previous == Transparent_Proc) return; // already done
+
+	// A field already has a procedure of its own, and an EDIT is never
+	// transparent anyway - it is a bezeled box with a background.
+	if (previous == Field_Proc) return;
 
 	if (wid->kind == W_GUI_WIDGET_TEXT) {
 		if (!Static_Proc) Static_Proc = previous;
@@ -2506,6 +2545,14 @@ REBOOL Gui_Create_Button_Control(GUIWIDGET *wid, GUIWIN *owner,
 	SendMessageW(hwnd, WM_SETFONT, (WPARAM)Get_Default_Font(), TRUE);
 
 	wid->handle = (void*)hwnd;
+
+	// A one-line field reports ENTER, and swallows it so that the control
+	// does not beep at it - see Field_Proc.
+	if (wid->kind == W_GUI_WIDGET_FIELD) {
+		if (!Edit_Proc) Edit_Proc = (WNDPROC)GetWindowLongPtrW(hwnd, GWLP_WNDPROC);
+		SetWindowLongPtrW(hwnd, GWLP_WNDPROC, (LONG_PTR)Field_Proc);
+	}
+
 	return TRUE;
 }
 
@@ -2571,6 +2618,14 @@ REBOOL Gui_Create_Text_Control(GUIWIDGET *wid, GUIWIN *owner,
 	SendMessageW(hwnd, WM_SETFONT, (WPARAM)Get_Default_Font(), TRUE);
 
 	wid->handle = (void*)hwnd;
+
+	// A one-line field reports ENTER, and swallows it so that the control
+	// does not beep at it - see Field_Proc.
+	if (wid->kind == W_GUI_WIDGET_FIELD) {
+		if (!Edit_Proc) Edit_Proc = (WNDPROC)GetWindowLongPtrW(hwnd, GWLP_WNDPROC);
+		SetWindowLongPtrW(hwnd, GWLP_WNDPROC, (LONG_PTR)Field_Proc);
+	}
+
 	return TRUE;
 }
 
@@ -3108,6 +3163,14 @@ REBOOL Gui_Create_Drop_Down(GUIWIDGET *wid, GUIWIN *owner,
 	SendMessageW(hwnd, WM_SETFONT, (WPARAM)Get_Default_Font(), TRUE);
 
 	wid->handle = (void*)hwnd;
+
+	// A one-line field reports ENTER, and swallows it so that the control
+	// does not beep at it - see Field_Proc.
+	if (wid->kind == W_GUI_WIDGET_FIELD) {
+		if (!Edit_Proc) Edit_Proc = (WNDPROC)GetWindowLongPtrW(hwnd, GWLP_WNDPROC);
+		SetWindowLongPtrW(hwnd, GWLP_WNDPROC, (LONG_PTR)Field_Proc);
+	}
+
 	return TRUE;
 }
 

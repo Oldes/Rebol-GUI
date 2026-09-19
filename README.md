@@ -180,7 +180,7 @@ Each event is one `event!`, read by field:
 
 | field    | type            | meaning                                              |
 |----------|-----------------|------------------------------------------------------|
-| `type`   | `word!`         | `move` `down` `up` `alt-down` `alt-up` `aux-down` `aux-up` `scroll-line` `close` `resize` `click` `change` `focus` `unfocus` `menu-select` |
+| `type`   | `word!`         | `move` `down` `up` `alt-down` `alt-up` `aux-down` `aux-up` `scroll-line` `close` `resize` `click` `change` `focus` `unfocus` `menu-select` `drop-file` `drop-text` |
 | `source` | `handle!`       | what produced it: the window, or the widget itself for `click`, `change`, `focus` and `unfocus` — `evt/source/window` gets back to the window |
 | `offset` | `pair!`         | client coordinates; the new client size for `resize` |
 | `flags`  | `block!`        | `shift` `control` `alt` `double`, where they apply   |
@@ -200,6 +200,10 @@ Two notes on behaviour:
 
 - `close` only *reports* that the user asked to close the window. The window
   stays open until Rebol calls `close-window`, so a handler can refuse.
+- **Enter in a `field` reports a `click`** — the same word a button uses,
+  because it is the same thing: the control was activated rather than merely
+  edited. An `area` is multi-line and keeps Enter for itself, which is how a
+  new line is typed.
 - consecutive `move` events for one window are collapsed to the newest one,
   which keeps a fast mouse from filling the queue.
 
