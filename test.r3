@@ -580,6 +580,26 @@ win/menu-enabled?: [note false]
 print ["menu-enabled? reports:" mold win/menu-enabled?]
 
 ;;=============================================================================
+print as-yellow "^/== Dropped files"
+;;=============================================================================
+
+;; Off until asked for: a window which silently swallows a drop is worse than
+;; one which visibly refuses it.
+print ["drop? before asking:" win/drop?]
+win/drop?: true
+print ["and after:          " win/drop?]
+
+
+;; TRY IT: drag files onto the window. The log names them and says what they
+;; landed on - drop one onto the picture and it is loaded into the canvas.
+;; Dropping TEXT works on macOS, where the pasteboard gives it for nothing;
+;; on Windows it needs a registered IDropTarget and is not implemented.
+print {
+Drag a file onto the window - the log names it and what it landed on.
+Drop an image onto the picture and it replaces it.
+}
+
+;;=============================================================================
 print as-yellow "^/== Events"
 ;;=============================================================================
 
@@ -643,9 +663,39 @@ report: func [event /local type source position][
 		]
 	]
 
-	;; A `menu` event carries the item's WORD in the value slot - the one
-	;; slot with no fixed type - so a handler is a plain switch. `source` is
-	;; the window the menu belongs to.
+	;; A drop's source is a handle of its own, which carries the content and
+	;; what it was dropped ON - so a handler does not have to remember what
+	;; the pointer was over. `count` saves walking the block to ask.
+	if find [drop-file drop-text] type [
+		note ajoin [
+			type " on " either source/target = win ["the window"][source/target/kind]
+			" (" source/count ")"
+		]
+		either type = 'drop-file [
+			;; A block of file!, already in Rebol path form.
+			foreach file source/data [note ajoin ["  " file]]
+			;; Dropping an image onto the canvas shows it. `pic` is NOT
+			;; reassigned: it stays the small gradient buffer the Click
+			;; handler paints into, because that handler walks every pixel
+			;; in interpreted Rebol and a dropped photo can be tens of
+			;; megapixels. Nothing pumps the OS queue while Rebol is inside
+			;; a loop, so painting one would freeze the window for as long
+			;; as it took - the widget only ever held a REFERENCE, so
+			;; showing one image and painting another is free.
+			if all [source/target = canvas  attempt [dropped: load first source/data]] [
+				if image? dropped [
+					note ajoin ["  showing it (" dropped/size ")"]
+					try [dropped: resize dropped pic/size]
+					canvas/image: dropped
+					redraw canvas
+				]
+			]
+		][
+			;; One string, however many lines it has.
+			name/text: source/data
+		]
+	]
+
 	;; A menu pick carries the item's WORD in `code` - the core reads a symbol
 	;; id back as a word, which is what keeps this a plain switch.
 	if type == 'menu-select [
@@ -695,6 +745,7 @@ report: func [event /local type source position][
 				;; Drawing into the very same image the widget was given,
 				;; then asking for it to be shown. Nothing is copied.
 				paint pic clicks * 40
+				unless same? canvas/image pic [canvas/image: pic]
 				redraw canvas
 			]
 			;; The borderless window's own button gives it a frame back - and with
@@ -717,6 +768,8 @@ report: func [event /local type source position][
 			;; the image widget reports its own mouse events
 			source = canvas [ajoin ["on the image " source]]
 			type = 'menu-select [ajoin ["item: " event/code]]
+			;; the drop handle molds as what it holds
+			find [drop-file drop-text] type [ajoin ["dropped " mold source]]
 			;; shift / control / alt / double, already as words
 			true [mold event/flags]
 		]
