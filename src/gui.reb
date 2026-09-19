@@ -167,6 +167,11 @@ typedef struct Gui_Widget_Context {
 	                 // the PARENT is asked for a child's background brush,
 	                 // message by message, so the control itself has
 	                 // nowhere to hold one
+	void   *wndproc; // Win32 only: the control's own window procedure, saved
+	                 // when it is subclassed for keyboard handling. The
+	                 // keyboard never reaches this extension's message pump
+	                 // - the host drains and dispatches the OS queue itself
+	                 // - so navigation has to live in the control
 	REBCNT  color;   // text colour: 0 when the platform decides, otherwise
 	                 // GUI_COLOR_SET | 0xRRGGBB. Kept here rather than in the
 	                 // control because Win32 does not store one: the PARENT
@@ -456,8 +461,6 @@ commands: [
 		/edge  "Draws a frame around it"
 		/title text [string!] "Caption set into the frame; implies /edge"
 	]
-	;; APPENDED, not inserted - the position in this block is the command
-	;; index, so anything put in the middle renumbers everything after it.
 	gui-device:        ["Returns the id of the device this extension registered"]
 	gui-device-polls:  ["Returns how many times the host has polled it"]
 	gui-device-events: ["Returns how many wake events the device has pushed"]
@@ -475,7 +478,6 @@ commands: [
 	gui-device-pumps:    ["Returns how many polls reached the OS pump"]
 	gui-device-messages: ["Returns how many OS messages those pumps dispatched"]
 
-	;; APPENDED, like everything else here - the position is the index.
 	set-focus: [
 		{Gives a widget the keyboard focus; returns false if it cannot take it}
 		target [handle!] "A widget, or a window to focus the window itself"

@@ -632,6 +632,10 @@ print as-yellow "^/== Events"
 
 print {
 Move the mouse over the window, click, use the wheel, resize it.
+TAB and Shift-TAB move between controls - including into the panel.
+CTRL+R, CTRL+W and SHIFT+CTRL+L are the menu shortcuts.
+The arrows move within a radio group; SPACE presses what is focused.
+ENTER in the field reports a click; ESCAPE is deliberately ignored.
 "Click me" counts clicks and repaints the image.
 The checkbox enables and disables it; the radios come in two groups.
 Dragging the slider drives the progress bar below it.

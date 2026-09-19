@@ -879,9 +879,48 @@ activated, another application taking over — so a flag kept here would drift.
 Focusing a widget brings its window forward. That is what both platforms do
 and there is no useful way to ask for less.
 
-**Tab navigation is separate and not implemented yet.** The controls carry
-`WS_TABSTOP`, but on Windows the dialog manager is what acts on it, and nothing
-here calls into it.
+#### Keyboard navigation
+
+Tab and Shift-Tab move between controls, the arrow keys move within a radio
+group, Space presses a focused button or toggles a focused check, and `&` in a
+label is a mnemonic. Navigation descends into panels and image widgets.
+
+On Windows all of that is the **dialog manager's**, not the window's:
+`WS_TABSTOP` and `WS_GROUP` are inert flags until something calls
+`IsDialogMessage`.
+
+Where that call lives is the interesting part. **The keyboard never reaches this
+extension's message pump.** The host drains and dispatches the OS queue itself —
+`Query_Events` in `dev-event.c` — so a `WM_KEYDOWN` is translated and delivered
+straight to the focused control, and anything the extension wanted to do with it
+first never runs. That is also why the **menu accelerators** had never worked.
+
+So every control is subclassed, and both `TranslateAccelerator` and
+`IsDialogMessage` are called from inside it, with a message built on the spot.
+Neither API minds where the message came from. The copy in the pump is kept only
+as a fallback, for a program which drives `poll-events` in a loop of its own and
+never waits — there, those messages really are nobody else's.
+
+Two keys are held back from `IsDialogMessage`, both because it answers them with
+a `WM_COMMAND` carrying `IDOK`/`IDCANCEL` and no control — the exact shape of a
+menu pick here, so Escape would otherwise fire whichever menu item happens to be
+item 2:
+
+- **Enter** belongs to the focused field, which reports it as a `click`.
+- **Escape** is left alone until it means something.
+
+Radio grouping needs a word. The dialog manager's idea of a group comes from
+`WS_GROUP`, which marks the first control of a run; this extension's idea comes
+from the id passed to `add-radio`, deliberately independent of creation order.
+They are reconciled by giving every control its own group *except* a radio whose
+immediately preceding sibling is a radio with the same id. So a run of radios in
+one group is one keyboard group, nothing else arrow-navigates at all, and the
+arrows cannot walk out of a group and check a radio belonging to another.
+
+On macOS the keyboard loop is AppKit's own and mostly works already: Tab moves
+between controls and Space presses the focused one. **Arrow keys do not move
+within a radio group there** — AppKit does that only for an `NSMatrix`, which
+this extension does not use.
 
 ### Dropped files
 

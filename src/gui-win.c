@@ -97,6 +97,11 @@ static REBOOL Setting_Text = FALSE;
 // registered target must go while its HWND is still valid.
 static void Gui_Window_Revoke_Drop(GUIWIN *win);
 
+// Defined with the keyboard handling, below; installed by every control
+// creation, which comes first in the file.
+static void   Subclass_For_Nav(GUIWIDGET *wid);
+static REBOOL Gui_Handle_Key(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);
+
 // Whether OLE came up on this thread, decided once in Gui_Init_Platform,
 // and whether it was us who started it - see the note there.
 static REBOOL Ole_Ready = FALSE;
@@ -689,6 +694,14 @@ static LRESULT CALLBACK Gui_Window_Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
 			                To_Logical((REBINT)LOWORD(lp)),
 			                To_Logical((REBINT)HIWORD(lp)), 0);
 		return 0;
+
+	case WM_KEYDOWN:
+	case WM_SYSKEYDOWN:
+	case WM_SYSCHAR:
+		// The window itself has the focus when nothing inside it does -
+		// a menu accelerator has to work there too.
+		if (Gui_Handle_Key(hwnd, msg, wp, lp)) return 0;
+		break;
 
 	case WM_CLOSE:
 		// Only reported - closing is Rebol's decision, and doing it here
@@ -1919,9 +1932,18 @@ REBCNT Gui_Pump(void)
 		if (msg.message == WM_KEYDOWN    || msg.message == WM_SYSKEYDOWN
 		 || msg.message == WM_KEYUP      || msg.message == WM_SYSKEYUP
 		 || msg.message == WM_CHAR       || msg.message == WM_SYSCHAR) {
-			GUIWIN *win = Our_Window(GetAncestor(msg.hwnd, GA_ROOT));
-			if (win && win->accel && win->handle
-			    && TranslateAcceleratorW(HWND_OF(win), (HACCEL)win->accel, &msg))
+			/***********************************************************
+			**  A FALLBACK, not the mechanism.
+			**
+			**  The keyboard normally never gets here at all: the host
+			**  drains and dispatches the OS queue itself, so a keystroke
+			**  reaches the focused control without passing through this
+			**  loop - which is why the real handling is in the control,
+			**  in Nav_Proc. This covers the other case, a program which
+			**  drives `poll-events` in a loop of its own and never waits,
+			**  where these ARE the messages nobody else has taken.
+			***********************************************************/
+			if (Gui_Handle_Key(msg.hwnd, msg.message, msg.wParam, msg.lParam))
 				continue;
 		}
 
@@ -2322,37 +2344,148 @@ static void Paint_Parent_Background(HWND hwnd, HDC dc)
 // procedure, and so does every BUTTON, so there is nothing per-widget to
 // keep and nothing to unwind when a widget goes away.
 /***********************************************************************
-**  A one-line field, subclassed so that ENTER does something.
+**  Keyboard handling, in the CONTROL rather than in the pump.
 **
-**  An EDIT hands Enter to the default pushbutton of the dialog it is
-**  in. There is no dialog here, so DefWindowProc answers with
-**  MessageBeep - a noise, and the only thing that happens otherwise.
+**  The keyboard never reaches this extension's message loop. The host
+**  drains and dispatches the OS queue itself - Query_Events in
+**  dev-event.c - so a WM_KEYDOWN is translated and delivered straight
+**  to the focused control, and anything this extension wanted to do
+**  with it beforehand simply never runs. That is why the menu
+**  accelerators had never worked, and why Enter and Tab did nothing
+**  when they were handled in Gui_Pump.
 **
-**  Reported as a `click`, which is the word a button already uses for
-**  the same thing: the control was activated rather than merely edited.
-**  Both the key and the character have to be swallowed - the beep comes
-**  from WM_CHAR, and returning 0 from WM_KEYDOWN alone still lets
-**  TranslateMessage produce one.
+**  So every control is subclassed, and the two things that need a
+**  keystroke before the control sees it happen here:
 **
-**  Only fields are subclassed: an `area` is multi-line, has
-**  ES_WANTRETURN, and Enter there is how a new line is typed.
+**    * the menu accelerators, via TranslateAccelerator;
+**    * Tab, Shift-Tab, the arrow keys within a group and Space, via
+**      IsDialogMessage - the dialog manager is what makes WS_TABSTOP
+**      and WS_GROUP mean anything, and it is perfectly happy to be
+**      handed a message built here rather than taken from a queue.
+**
+**  TWO KEYS ARE KEPT BACK from IsDialogMessage, both because it
+**  answers them by sending the window a WM_COMMAND with IDOK or
+**  IDCANCEL and no control - the exact shape of a menu pick here, so
+**  Escape would fire whichever menu item happens to be item 2:
+**
+**    ENTER  belongs to the focused field, which reports it as a click.
+**    ESCAPE is left alone until it means something.
 ***********************************************************************/
-static WNDPROC Edit_Proc = NULL;
+static REBOOL In_Dialog_Message = FALSE;
 
-static LRESULT CALLBACK Field_Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
+static REBOOL Gui_Handle_Key(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
-	if ((msg == WM_KEYDOWN || msg == WM_CHAR) && wp == VK_RETURN) {
-		if (msg == WM_KEYDOWN) {
-			GUIWIDGET *wid = (GUIWIDGET*)GetWindowLongPtrW(hwnd, GWLP_USERDATA);
-			if (wid && wid->hob) {
-				REBINT x = 0, y = 0, w = 0, h = 0;
-				Gui_Widget_Get_Box(wid, &x, &y, &w, &h);
-				Gui_Queue_Event(wid->hob, EVT_CLICK, x, y, Modifiers());
-			}
+	HWND    root = GetAncestor(hwnd, GA_ROOT);
+	GUIWIN *win  = Our_Window(root);
+	MSG     m;
+	REBOOL  taken;
+
+	if (!win || !win->handle) return FALSE;
+	if (msg != WM_KEYDOWN && msg != WM_SYSKEYDOWN && msg != WM_SYSCHAR)
+		return FALSE;
+
+	m.hwnd    = hwnd;
+	m.message = msg;
+	m.wParam  = wp;
+	m.lParam  = lp;
+	m.time    = GetMessageTime();
+	m.pt.x    = 0;
+	m.pt.y    = 0;
+
+	if (win->accel && TranslateAcceleratorW(root, (HACCEL)win->accel, &m))
+		return TRUE;
+
+	if (wp == VK_RETURN || wp == VK_ESCAPE) return FALSE;
+
+	/*******************************************************************
+	**  TAB is done here rather than by the dialog manager.
+	**
+	**  IsDialogMessage asks the focused control what it wants, and a
+	**  multi-line EDIT answers DLGC_WANTALLKEYS - so Tab in an `area`
+	**  would be handed back to the control instead of navigating, and
+	**  the user would be trapped in the text box. GetNextDlgTabItem
+	**  honours WS_TABSTOP and descends through WS_EX_CONTROLPARENT just
+	**  as the dialog manager does, without asking that question.
+	*******************************************************************/
+	if (msg == WM_KEYDOWN && wp == VK_TAB) {
+		HWND next = GetNextDlgTabItem(root, GetFocus(),
+			(GetKeyState(VK_SHIFT) & 0x8000) ? TRUE : FALSE);
+		if (next && next != GetFocus()) {
+			SetFocus(next);
+			return TRUE;
+		}
+		return FALSE;
+	}
+
+	/*******************************************************************
+	**  Everything else - the arrows within a group, Space, mnemonics -
+	**  is the dialog manager's, and it is re-entrant.
+	**
+	**  When the focused control claims the key (DLGC_WANTALLKEYS, which
+	**  is what an `area` answers), IsDialogMessage does not navigate: it
+	**  SENDS THE SAME MESSAGE BACK to the control. That arrives in
+	**  Nav_Proc again, identical, and without this flag it would call
+	**  IsDialogMessage again - down to a stack overflow. The flag turns
+	**  the second visit into "not mine", which hands the key to the
+	**  control's own procedure, which is exactly what it asked for.
+	*******************************************************************/
+	if (In_Dialog_Message) return FALSE;
+
+	In_Dialog_Message = TRUE;
+	taken = IsDialogMessageW(root, &m) ? TRUE : FALSE;
+	In_Dialog_Message = FALSE;
+
+	return taken;
+}
+
+
+/***********************************************************************
+**  The procedure every control is given.
+**
+**  The one it replaces is kept per WIDGET rather than per class: the
+**  controls here come from six different classes, and a widget has a
+**  place to put it.
+***********************************************************************/
+static LRESULT CALLBACK Nav_Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
+{
+	GUIWIDGET *wid  = (GUIWIDGET*)GetWindowLongPtrW(hwnd, GWLP_USERDATA);
+	WNDPROC    base = (wid && wid->wndproc) ? (WNDPROC)wid->wndproc : NULL;
+
+	// ENTER in a one-line field. An EDIT hands it to the default pushbutton
+	// of the dialog it is in; there is none here, so DefWindowProc answers
+	// with MessageBeep. Reported as a `click` - the word a button already
+	// uses for the same thing - and swallowed, key AND character, because
+	// the beep comes from the WM_CHAR.
+	//
+	// An `area` is multi-line and keeps Enter for itself: it is how a new
+	// line is typed.
+	if (wid && wid->kind == W_GUI_WIDGET_FIELD && wp == VK_RETURN
+	    && (msg == WM_KEYDOWN || msg == WM_CHAR)) {
+		if (msg == WM_KEYDOWN && wid->hob) {
+			REBINT x = 0, y = 0, w = 0, h = 0;
+			Gui_Widget_Get_Box(wid, &x, &y, &w, &h);
+			Gui_Queue_Event(wid->hob, EVT_CLICK, x, y, Modifiers());
 		}
 		return 0;
 	}
-	return CallWindowProcW(Edit_Proc, hwnd, msg, wp, lp);
+
+	if (Gui_Handle_Key(hwnd, msg, wp, lp)) return 0;
+
+	return base ? CallWindowProcW(base, hwnd, msg, wp, lp)
+	            : DefWindowProcW(hwnd, msg, wp, lp);
+}
+
+
+// Installed on every control, right after it is created.
+static void Subclass_For_Nav(GUIWIDGET *wid)
+{
+	HWND hwnd;
+
+	if (!wid || !wid->handle || wid->wndproc) return;
+	hwnd = HWND_OF_WID(wid);
+
+	wid->wndproc = (void*)GetWindowLongPtrW(hwnd, GWLP_WNDPROC);
+	SetWindowLongPtrW(hwnd, GWLP_WNDPROC, (LONG_PTR)Nav_Proc);
 }
 
 
@@ -2424,12 +2557,11 @@ static void Subclass_For_Transparency(GUIWIDGET *wid)
 	if (!wid || !wid->handle) return;
 	hwnd = HWND_OF_WID(wid);
 
+	// Chained ON TOP of Nav_Proc, which every control already has: the
+	// saved procedure is whatever was there, and Nav_Proc passes anything
+	// it does not want down to the control's own.
 	previous = (WNDPROC)GetWindowLongPtrW(hwnd, GWLP_WNDPROC);
 	if (previous == Transparent_Proc) return; // already done
-
-	// A field already has a procedure of its own, and an EDIT is never
-	// transparent anyway - it is a bezeled box with a background.
-	if (previous == Field_Proc) return;
 
 	if (wid->kind == W_GUI_WIDGET_TEXT) {
 		if (!Static_Proc) Static_Proc = previous;
@@ -2489,6 +2621,41 @@ static HWND Parent_Hwnd(GUIWIDGET *wid, GUIWIN *owner)
 }
 
 
+/***********************************************************************
+**  Whether this control starts a new keyboard GROUP.
+**
+**  WS_GROUP marks the first control of a run, and the arrow keys move
+**  within a run - which is the whole of what the dialog manager knows
+**  about grouping. Radio grouping HERE is the extension's own: an id
+**  passed to add-radio, deliberately independent of creation order.
+**
+**  The two are reconciled by making every control start its own group
+**  EXCEPT a radio whose immediately preceding sibling is a radio of the
+**  same id. A run of radios in one group is then one keyboard group, and
+**  nothing else arrow-navigates at all - so the arrows cannot walk out
+**  of a group and check a radio that belongs to another one.
+**
+**  The widget is not on the window's list yet - Attach_Widget runs after
+**  creation - so the head of that list is the previous sibling.
+***********************************************************************/
+static REBOOL Starts_New_Group(GUIWIDGET *wid, GUIWIN *owner)
+{
+	GUIWIDGET *prev;
+
+	if (!wid || !owner) return TRUE;
+	if (wid->kind != W_GUI_WIDGET_RADIO) return TRUE;
+
+	// The list is window-wide, so the previous SIBLING is the first entry
+	// with the same container.
+	for (prev = (GUIWIDGET*)owner->widgets; prev; prev = (GUIWIDGET*)prev->next) {
+		if (prev->parent != wid->parent) continue;
+		return (prev->kind == W_GUI_WIDGET_RADIO && prev->group == wid->group)
+			? FALSE : TRUE;
+	}
+	return TRUE;
+}
+
+
 REBOOL Gui_Create_Panel(GUIWIDGET *wid, GUIWIN *owner,
                         REBINT x, REBINT y, REBINT w, REBINT h,
                         const REBYTE *text, REBCNT len)
@@ -2508,9 +2675,12 @@ REBOOL Gui_Create_Panel(GUIWIDGET *wid, GUIWIN *owner,
 	// one is where the classic repaint and tab-order trouble comes from.
 	// The panel keeps being a real container and draws the frame itself,
 	// which is also what lets the frame be turned on and off later.
+	// WS_EX_CONTROLPARENT is what lets keyboard navigation DESCEND into a
+	// container. Without it the radios in a titled panel are skipped
+	// entirely, because the dialog manager never looks inside.
 	hwnd = CreateWindowExW(
-		0, Class_Name_Panel, L"",
-		WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN,
+		WS_EX_CONTROLPARENT, Class_Name_Panel, L"",
+		WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | WS_GROUP,
 		x, y, w, h,
 		Parent_Hwnd(wid, owner),
 		NULL,
@@ -2521,6 +2691,7 @@ REBOOL Gui_Create_Panel(GUIWIDGET *wid, GUIWIN *owner,
 	SetWindowLongPtrW(hwnd, GWLP_USERDATA, (LONG_PTR)wid);
 
 	wid->handle = (void*)hwnd;
+	Subclass_For_Nav(wid);
 
 	// The caption lives in the panel's window text, so the generic text
 	// accessor reaches it with no special case of its own.
@@ -2550,6 +2721,7 @@ REBOOL Gui_Create_Button_Control(GUIWIDGET *wid, GUIWIN *owner,
 	DWORD  style = WS_CHILD | WS_VISIBLE | WS_TABSTOP;
 
 	if (!wid || !owner || !owner->handle) return FALSE;
+	if (Starts_New_Group(wid, owner)) style |= WS_GROUP;
 	// The caller's coordinates are logical units - see the note on Gui_DPI.
 	Box_To_Device(&x, &y, &w, &h);
 
@@ -2588,13 +2760,7 @@ REBOOL Gui_Create_Button_Control(GUIWIDGET *wid, GUIWIN *owner,
 	SendMessageW(hwnd, WM_SETFONT, (WPARAM)Get_Default_Font(), TRUE);
 
 	wid->handle = (void*)hwnd;
-
-	// A one-line field reports ENTER, and swallows it so that the control
-	// does not beep at it - see Field_Proc.
-	if (wid->kind == W_GUI_WIDGET_FIELD) {
-		if (!Edit_Proc) Edit_Proc = (WNDPROC)GetWindowLongPtrW(hwnd, GWLP_WNDPROC);
-		SetWindowLongPtrW(hwnd, GWLP_WNDPROC, (LONG_PTR)Field_Proc);
-	}
+	Subclass_For_Nav(wid);
 
 	return TRUE;
 }
@@ -2613,7 +2779,7 @@ REBOOL Gui_Create_Text_Control(GUIWIDGET *wid, GUIWIN *owner,
 	HWND   hwnd;
 	WCHAR *wide;
 	const WCHAR *class_name;
-	DWORD  style   = WS_CHILD | WS_VISIBLE;
+	DWORD  style   = WS_CHILD | WS_VISIBLE | WS_GROUP;
 	DWORD  exstyle = 0;
 
 	if (!wid || !owner || !owner->handle) return FALSE;
@@ -2623,10 +2789,6 @@ REBOOL Gui_Create_Text_Control(GUIWIDGET *wid, GUIWIN *owner,
 	switch (wid->kind) {
 	case W_GUI_WIDGET_TEXT:
 		class_name = L"STATIC";
-		// Not a tab stop: a label is not a control the keyboard can reach,
-		// and leaving the flag on would make it one the day Tab navigation
-		// is implemented.
-		style &= ~WS_TABSTOP;
 		style |= SS_LEFT;
 		break;
 
@@ -2665,13 +2827,7 @@ REBOOL Gui_Create_Text_Control(GUIWIDGET *wid, GUIWIN *owner,
 	SendMessageW(hwnd, WM_SETFONT, (WPARAM)Get_Default_Font(), TRUE);
 
 	wid->handle = (void*)hwnd;
-
-	// A one-line field reports ENTER, and swallows it so that the control
-	// does not beep at it - see Field_Proc.
-	if (wid->kind == W_GUI_WIDGET_FIELD) {
-		if (!Edit_Proc) Edit_Proc = (WNDPROC)GetWindowLongPtrW(hwnd, GWLP_WNDPROC);
-		SetWindowLongPtrW(hwnd, GWLP_WNDPROC, (LONG_PTR)Field_Proc);
-	}
+	Subclass_For_Nav(wid);
 
 	return TRUE;
 }
@@ -2688,13 +2844,13 @@ REBOOL Gui_Create_Image(GUIWIDGET *wid, GUIWIN *owner,
 	if (!Register_Image_Class()) return FALSE;
 
 	hwnd = CreateWindowExW(
-		0,
+		WS_EX_CONTROLPARENT,   // an image widget is a container too
 		Class_Name_Image,
 		L"",
 		// WS_CLIPCHILDREN for the same reason a panel has it: an image
 		// widget can hold other widgets now, and its blit covers every
 		// pixel of its client area - including theirs, if not clipped out.
-		WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN,
+		WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | WS_GROUP,
 		x, y, w, h,
 		Parent_Hwnd(wid, owner),
 		NULL,
@@ -2704,6 +2860,7 @@ REBOOL Gui_Create_Image(GUIWIDGET *wid, GUIWIN *owner,
 	if (!hwnd) return FALSE;
 
 	wid->handle = (void*)hwnd;
+	Subclass_For_Nav(wid);
 	return TRUE;
 }
 
@@ -3071,7 +3228,7 @@ REBOOL Gui_Create_Range_Control(GUIWIDGET *wid, GUIWIN *owner,
 {
 	HWND  hwnd;
 	const WCHAR *class_name;
-	DWORD style = WS_CHILD | WS_VISIBLE;
+	DWORD style = WS_CHILD | WS_VISIBLE | WS_GROUP;
 
 	if (!wid || !owner || !owner->handle) return FALSE;
 	// The caller's coordinates are logical units - see the note on Gui_DPI.
@@ -3107,6 +3264,7 @@ REBOOL Gui_Create_Range_Control(GUIWIDGET *wid, GUIWIN *owner,
 	}
 
 	wid->handle = (void*)hwnd;
+	Subclass_For_Nav(wid);
 	return TRUE;
 }
 
@@ -3197,7 +3355,7 @@ REBOOL Gui_Create_Drop_Down(GUIWIDGET *wid, GUIWIN *owner,
 
 	hwnd = CreateWindowExW(
 		0, L"COMBOBOX", L"",
-		WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL
+		WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL | WS_GROUP
 		| CBS_DROPDOWNLIST | CBS_HASSTRINGS,
 		x, y, w, h + DROP_LIST_ROOM, // see DROP_LIST_ROOM
 		Parent_Hwnd(wid, owner),
@@ -3210,13 +3368,7 @@ REBOOL Gui_Create_Drop_Down(GUIWIDGET *wid, GUIWIN *owner,
 	SendMessageW(hwnd, WM_SETFONT, (WPARAM)Get_Default_Font(), TRUE);
 
 	wid->handle = (void*)hwnd;
-
-	// A one-line field reports ENTER, and swallows it so that the control
-	// does not beep at it - see Field_Proc.
-	if (wid->kind == W_GUI_WIDGET_FIELD) {
-		if (!Edit_Proc) Edit_Proc = (WNDPROC)GetWindowLongPtrW(hwnd, GWLP_WNDPROC);
-		SetWindowLongPtrW(hwnd, GWLP_WNDPROC, (LONG_PTR)Field_Proc);
-	}
+	Subclass_For_Nav(wid);
 
 	return TRUE;
 }
