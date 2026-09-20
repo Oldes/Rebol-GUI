@@ -656,26 +656,35 @@ static void Apply_Button_Color(GUIWIDGET *wid);
 
 
 /***********************************************************************
-**  Which widget a view belongs to.
+**  Which widget is under a point.
 **
-**  AppKit has no user-data slot on a view, and the controls' own
-**  `context` ivars are declared on several unrelated classes - so this
-**  walks the window's flat widget list instead, which is the one place
-**  that already knows every control it owns.
+**  NOT hitTest:, for two reasons. It takes its point in the
+**  SUPERVIEW's coordinate system rather than the view's own, which is
+**  easy to get wrong and silently finds the wrong control; and it sees
+**  views which are not widgets at all - a field editor, a scroller, a
+**  text view inside an area.
 **
-**  The superview chain is followed because a view under the pointer is
-**  not always the widget's own: an area's control is a scroll view with
-**  a text view inside it, and hitTest: finds the inner one.
+**  So the window's own widget list is walked instead, with the point
+**  converted into each candidate's coordinates. `inRoot` is in the
+**  coordinates of `root`, which is the content view.
+**
+**  Only DIRECT children of the window are considered, which is what
+**  Win32's ChildWindowFromPointEx does: a drop on a label sitting on an
+**  image reports the image, and a drop on a radio inside a panel
+**  reports the panel. The list is in reverse creation order, so the
+**  first match is the topmost.
 ***********************************************************************/
-static GUIWIDGET *Widget_Of_View(GUIWIN *win, NSView *view)
+static GUIWIDGET *Widget_At_Point(GUIWIN *win, NSView *root, NSPoint inRoot)
 {
-	while (view) {
-		GUIWIDGET *wid = (GUIWIDGET*)win->widgets;
-		while (wid) {
-			if ((NSView*)wid->handle == view) return wid;
-			wid = (GUIWIDGET*)wid->next;
-		}
-		view = [view superview];
+	GUIWIDGET *wid;
+
+	if (!win || !root) return NULL;
+
+	for (wid = (GUIWIDGET*)win->widgets; wid; wid = (GUIWIDGET*)wid->next) {
+		NSView *view = (NSView*)wid->handle;
+		if (wid->parent || !view || [view isHidden]) continue;
+		if (NSPointInRect([view convertPoint:inRoot fromView:root],
+		                  [view bounds])) return wid;
 	}
 	return NULL;
 }
@@ -873,19 +882,17 @@ static GUIWIDGET *Widget_Of_View(GUIWIN *win, NSView *view)
 	GUIDROPDATA  *data = NULL;
 	NSPoint       where;
 	REBHOB       *target;
-	NSView       *hit;
 
 	if (!context || !context->hob) return NO;
 	board = [sender draggingPasteboard];
 
 	// Where, in the content view's own coordinates - and on WHAT, because a
 	// drop lands on whatever is under the pointer, the same rule a click
-	// follows. hitTest: gives the deepest view, which is the control.
+	// follows.
 	where  = [self convertPoint:[sender draggingLocation] fromView:nil];
 	target = context->hob;
-	hit    = [self hitTest:where];
-	if (hit && hit != self) {
-		GUIWIDGET *wid = Widget_Of_View(context, hit);
+	{
+		GUIWIDGET *wid = Widget_At_Point(context, self, where);
 		if (wid && wid->hob) target = wid->hob;
 	}
 
