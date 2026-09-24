@@ -495,7 +495,10 @@ static void Queue_Press(NSView *view, GUIWIDGET *ctx, REBCNT type, NSEvent *evt,
 	Queue_Press(self, context, EVT_UP, evt, 0);
 
 	if (inside) {
-		if (context && context->kind == W_GUI_WIDGET_CHECK) [self setNextState];
+		// A check and a toggle keep a state of their own; a radio's is
+		// settled by the shared layer.
+		if (context && (context->kind == W_GUI_WIDGET_CHECK
+		             || context->kind == W_GUI_WIDGET_TOGGLE)) [self setNextState];
 		[self clicked:self];
 	}
 }
@@ -1923,6 +1926,12 @@ REBOOL Gui_Create_Button_Control(GUIWIDGET *wid, GUIWIN *owner,
 		case W_GUI_WIDGET_CHECK:
 			[button setButtonType:NSButtonTypeSwitch];
 			break;
+		case W_GUI_WIDGET_TOGGLE:
+			// A push button which stays pushed: the on state is drawn in
+			// the accent colour, as a pressed-in button would be.
+			[button setButtonType:NSButtonTypePushOnPushOff];
+			[button setBezelStyle:NSBezelStyleRounded];
+			break;
 		case W_GUI_WIDGET_RADIO:
 			// AppKit groups radios sharing a superview and an action, which
 			// here is every radio in the window. It still clears them when
@@ -2329,6 +2338,7 @@ REBOOL Gui_Widget_Natural_Size(GUIWIDGET *wid, REBINT *w, REBINT *h)
 		case W_GUI_WIDGET_BUTTON:
 		case W_GUI_WIDGET_CHECK:
 		case W_GUI_WIDGET_RADIO:
+		case W_GUI_WIDGET_TOGGLE:
 		case W_GUI_WIDGET_TEXT:
 		case W_GUI_WIDGET_FIELD:
 		case W_GUI_WIDGET_DROP_DOWN:
@@ -2593,6 +2603,7 @@ static void Apply_Button_Color(GUIWIDGET *wid)
 	case W_GUI_WIDGET_BUTTON:
 	case W_GUI_WIDGET_CHECK:
 	case W_GUI_WIDGET_RADIO:
+	case W_GUI_WIDGET_TOGGLE:
 		break;
 	default:
 		return;

@@ -20,8 +20,8 @@ in [INTERNALS.md](INTERNALS.md).
 - no DRAW dialect, no compositor - just the image widget
 - no keyboard events, beyond menu shortcuts and the platform's own navigation
 - no checkable menu items, and no popup (context) menus
-- eleven native controls: button, image, text, field, area, check, radio,
-  slider, progress, drop-down, panel
+- twelve native controls: button, image, text, field, area, check, radio,
+  toggle, slider, progress, drop-down, panel
 - Windows and macOS only; there is no X11/Wayland backend yet
 
 ## Build
@@ -272,6 +272,7 @@ pic:   add-image  win some-image       340x20
 | `area`      | multi-line entry with a scrollbar | `change` `focus` `unfocus` |
 | `check`     | checkbox | `down` `move` `up` `click` |
 | `radio`     | radio button | `down` `move` `up` `click` |
+| `toggle`    | push button which stays pushed | `down` `move` `up` `click` |
 | `slider`    | draggable slider | `down` `move` `up`, and `change` continuously while dragged |
 | `progress`  | progress bar | nothing |
 | `drop-down` | pick one of a list | `change` `focus` `unfocus` |
@@ -328,7 +329,7 @@ btn/offset: 30x40        ;; position inside its container
 btn/at                   ;; position in its window, however nested (read-only)
 btn/size: 160x32
 btn/enabled?: false
-opt/state: true          ;; check or radio
+opt/state: true          ;; check, radio or toggle
 bar/value: 40%           ;; slider or progress
 btn/kind                 ;; button | text | field | ... | image
 btn/parent               ;; the window or the container holding it
@@ -453,7 +454,16 @@ note: func [line [string!]][
 ]
 ```
 
-### Check boxes and radio groups
+### Check boxes, toggles and radio groups
+
+A toggle is a push button which stays pushed in until it is pushed again. It
+is on or off like a check, and reads and writes the same way:
+
+```rebol
+bold: add-toggle win "Bold" 20x20 0x0
+bold/state: true          ;; pushed in
+if evt/source == bold [print ["bold is now" bold/state]]   ;; on `click`
+```
 
 Radios sharing a `/group` id turn each other off; anything with a different id
 (no `/group` means 0) is left alone. Grouping follows the id only - not
@@ -849,6 +859,13 @@ Returns a block of the connected screens, the primary one first
 Reports `move` over the screens outside this program's windows, with the screen as the source; returns whether it was on
 * `on` `[logic!]`
 
+#### `add-toggle` `:parent` `:text` `:offset` `:size`
+Creates a toggle - a push button which stays pushed - and returns its handle
+* `parent` `[handle!]` Window, panel or image widget to put it in
+* `text` `[string!]` Label
+* `offset` `[pair!]` Position inside the client area
+* `size` `[pair!]`
+
 
 ## Used handles and its getters / setters
 
@@ -901,9 +918,9 @@ Reports `move` over the screens outside this program's windows, with the screen 
 /offset           pair!               pair!                         "Position inside whatever holds it - a window or a panel"
 /at               pair!               none                          "Top-left corner in its window's client area, however deeply nested - what a mouse event's offset is measured from"
 /id               integer!            none                          "Native control handle as an integer"
-/kind             word!               none                          "What the control is: button, image, text, field, area, check, radio, slider, progress or drop-down"
+/kind             word!               none                          "What the control is: button, image, text, field, area, check, radio, toggle, slider, progress, drop-down or panel"
 /value            percent!            [percent! decimal!]           "Position of a slider or a progress bar; none for other kinds"
-/state            logic!              logic!                        "Whether a check or a radio is on; none for other kinds"
+/state            logic!              logic!                        "Whether a check, a radio or a toggle is on; none for other kinds"
 /edge             logic!              logic!                        "Whether a panel draws a frame around itself; none for other kinds"
 /font             string!             [string! none!]               "Font family; none puts it back to the system font"
 /font-size        integer!            [integer! none!]              "Point size; none puts it back to the system size"

@@ -10,7 +10,7 @@ REBOL [
 		open-window close-window show-window hide-window
 		add-button add-image add-text add-field add-area
 		add-check add-radio add-slider add-progress add-drop-down add-panel
-		remove-widget redraw set-focus screens track-mouse
+		remove-widget redraw set-focus screens track-mouse add-toggle
 		gui-device gui-device-polls gui-device-events
 		gui-device-pumps gui-device-messages
 		poll-events do-events
@@ -312,6 +312,7 @@ words: [
 		progress        ;; shows a value, takes no input
 		drop-down       ;; pick one of a list; reports `change`
 		panel           ;; holds other widgets; see `parent` below
+		toggle          ;; a push button which stays pushed; on or off like a check
 	]
 ]
 
@@ -363,9 +364,9 @@ handles: [
 		offset   pair!     pair!     "Position inside whatever holds it - a window or a panel"
 		at       pair!     none      "Top-left corner in its window's client area, however deeply nested - what a mouse event's offset is measured from"
 		id       integer!  none      "Native control handle as an integer"
-		kind     word!     none      "What the control is: button, image, text, field, area, check, radio, slider, progress or drop-down"
+		kind     word!     none      "What the control is: button, image, text, field, area, check, radio, toggle, slider, progress, drop-down or panel"
 		value    percent!  [percent! decimal!] "Position of a slider or a progress bar; none for other kinds"
-		state    logic!    logic!    "Whether a check or a radio is on; none for other kinds"
+		state    logic!    logic!    "Whether a check, a radio or a toggle is on; none for other kinds"
 		edge     logic!    logic!    "Whether a panel draws a frame around itself; none for other kinds"
 		;; Typography. Every kind which has `text` has these; the rest answer none.
 		font      string!  [string! none!] "Font family; none puts it back to the system font"
@@ -530,6 +531,14 @@ commands: [
 	track-mouse: [
 		{Reports `move` over the screens outside this program's windows, with the screen as the source; returns whether it was on}
 		on [logic!]
+	]
+
+	add-toggle: [
+		"Creates a toggle - a push button which stays pushed - and returns its handle"
+		parent [handle!] "Window, panel or image widget to put it in"
+		text   [string!] "Label"
+		offset [pair!]   "Position inside the client area"
+		size   [pair!]
 	]
 ]
 

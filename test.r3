@@ -340,6 +340,20 @@ print ["after cool/state: true  -> warm:" warm/state "cool:" cool/state]
 print ["the other group is untouched -> slow:" slow/state "fast:" fast/state]
 warm/state: true
 
+;; A toggle is a push button which stays pushed: on or off like a check,
+;; drawn like a button. `state` reads and writes it, and a click reports
+;; the state it has settled into.
+;;
+;; WATCH: "Bold log" stays pushed in after a click and makes the log bold;
+;; a second click lets it out again.
+bolder: add-toggle win "Bold log" 20x440 0x0
+print ["toggle:" bolder/kind "state:" bolder/state]
+bolder/state: true
+print ["set from Rebol:" bolder/state]
+bolder/state: false
+print ["and back:      " bolder/state]
+print ["a button has no state:" none? counter/state]
+
 ;;=============================================================================
 print as-yellow "^/== Slider and progress"
 ;;=============================================================================
@@ -1014,6 +1028,11 @@ report: func [event /local type source position kind][
 			source/kind = 'check [
 				counter/enabled?: source/state
 				note ajoin ["counting " either source/state ["on"]["off"]]
+			]
+			;; A toggle, like a check, reports the state it settled into.
+			source == bolder [
+				log/bold?: source/state
+				note ajoin ["log bold: " source/state]
 			]
 			;; ... and a radio has already settled its group.
 			source/kind = 'radio [

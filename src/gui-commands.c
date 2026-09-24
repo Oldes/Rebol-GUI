@@ -489,6 +489,7 @@ void Gui_Widget_Activated(GUIWIDGET *widget, REBINT x, REBINT y, REBINT flags)
 
 	switch (widget->kind) {
 	case W_GUI_WIDGET_CHECK:
+	case W_GUI_WIDGET_TOGGLE:
 		widget->state = Gui_Widget_Get_State(widget) ? 1 : 0;
 		break;
 	case W_GUI_WIDGET_RADIO:
@@ -799,6 +800,7 @@ static REBOOL Kind_Has_Text(REBCNT kind)
 	     || kind == W_GUI_WIDGET_AREA
 	     || kind == W_GUI_WIDGET_CHECK
 	     || kind == W_GUI_WIDGET_RADIO
+	     || kind == W_GUI_WIDGET_TOGGLE
 	     // the caption of a framed panel; harmless on an unframed one,
 	     // which simply keeps a string nothing draws
 	     || kind == W_GUI_WIDGET_PANEL
@@ -810,7 +812,8 @@ static REBOOL Kind_Has_Text(REBCNT kind)
 static REBOOL Kind_Has_State(REBCNT kind)
 {
 	return (kind == W_GUI_WIDGET_CHECK
-	     || kind == W_GUI_WIDGET_RADIO) ? TRUE : FALSE;
+	     || kind == W_GUI_WIDGET_RADIO
+	     || kind == W_GUI_WIDGET_TOGGLE) ? TRUE : FALSE;
 }
 
 /***********************************************************************
@@ -1155,6 +1158,7 @@ static const char* Kind_Name(REBCNT kind)
 	case W_GUI_WIDGET_AREA:  return "area";
 	case W_GUI_WIDGET_CHECK: return "check";
 	case W_GUI_WIDGET_RADIO: return "radio";
+	case W_GUI_WIDGET_TOGGLE: return "toggle";
 	case W_GUI_WIDGET_SLIDER:   return "slider";
 	case W_GUI_WIDGET_PROGRESS: return "progress";
 	case W_GUI_WIDGET_DROP_DOWN: return "drop-down";
@@ -1963,6 +1967,14 @@ COMMAND cmd_gui_add_button(RXIFRM *frm, void *ctx)
 COMMAND cmd_gui_add_check(RXIFRM *frm, void *ctx)
 {
 	return Add_Button_Control(frm, W_GUI_WIDGET_CHECK);
+}
+
+// A push button which stays pushed: on or off like a check, looking like a
+// button. Everything a check does - `state`, `click` after the state has
+// settled - it does the same way.
+COMMAND cmd_gui_add_toggle(RXIFRM *frm, void *ctx)
+{
+	return Add_Button_Control(frm, W_GUI_WIDGET_TOGGLE);
 }
 
 COMMAND cmd_gui_add_radio(RXIFRM *frm, void *ctx)

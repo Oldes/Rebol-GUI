@@ -2970,6 +2970,7 @@ static REBOOL Is_Pressable(GUIWIDGET *wid)
 	case W_GUI_WIDGET_BUTTON:
 	case W_GUI_WIDGET_CHECK:
 	case W_GUI_WIDGET_RADIO:
+	case W_GUI_WIDGET_TOGGLE:
 	case W_GUI_WIDGET_SLIDER:
 		return TRUE;
 	}
@@ -3334,6 +3335,11 @@ REBOOL Gui_Create_Button_Control(GUIWIDGET *wid, GUIWIN *owner,
 		// AUTO: the control ticks itself and we read the result back.
 		style |= BS_AUTOCHECKBOX;
 		break;
+	case W_GUI_WIDGET_TOGGLE:
+		// A check drawn as a push button: AUTO, so it keeps itself
+		// pushed or not, and PUSHLIKE for the look.
+		style |= BS_AUTOCHECKBOX | BS_PUSHLIKE;
+		break;
 	case W_GUI_WIDGET_RADIO:
 		// NOT auto: BS_AUTORADIOBUTTON would group by sibling order and
 		// WS_GROUP flags, which is not the grouping we promise. This one
@@ -3689,8 +3695,9 @@ REBOOL Gui_Widget_Set_Color(GUIWIDGET *wid)
 
 	// ... except on a push button, which never asks. Win32 draws a
 	// BS_PUSHBUTTON's text itself, in the system colour, and only an
-	// owner-drawn button can say otherwise.
-	return (wid->kind == W_GUI_WIDGET_BUTTON) ? FALSE : TRUE;
+	// owner-drawn button can say otherwise. A toggle is drawn the same way.
+	return (wid->kind == W_GUI_WIDGET_BUTTON || wid->kind == W_GUI_WIDGET_TOGGLE)
+	     ? FALSE : TRUE;
 }
 
 
@@ -4045,6 +4052,7 @@ REBOOL Gui_Widget_Natural_Size(GUIWIDGET *wid, REBINT *w, REBINT *h)
 	dpi = Dpi_Of(hwnd);
 	switch (wid->kind) {
 	case W_GUI_WIDGET_BUTTON:
+	case W_GUI_WIDGET_TOGGLE:
 		pad_x = To_Device(dpi, 24); pad_y = To_Device(dpi, 12);
 		break;
 	case W_GUI_WIDGET_CHECK:
