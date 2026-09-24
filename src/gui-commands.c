@@ -2457,6 +2457,11 @@ int GuiWindow_get_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 		arg->int64 = (i64)(REBUPT)win->handle;
 		break;
 
+	case W_GUI_ARG_DARK_CONTROLSQ:
+		*type = RXT_LOGIC;
+		arg->int32a = (win->flags & GUIW_DARK_CONTROLS) ? 1 : 0;
+		break;
+
 	// Asked of the platform each time rather than taken from GUIW_DARK,
 	// which is only what was last REPORTED.
 	case W_GUI_ARG_DARKQ:
@@ -2619,6 +2624,13 @@ int GuiWindow_set_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 	if (!win->handle) return PE_BAD_SET; // closed windows are read-only
 
 	switch (RL_FIND_WORD(Gui_arg_words, word)) {
+	case W_GUI_ARG_DARK_CONTROLSQ:
+		if (*type != RXT_LOGIC) return PE_BAD_SET_TYPE;
+		if (arg->int32a) win->flags |=  GUIW_DARK_CONTROLS;
+		else             win->flags &= ~(REBCNT)GUIW_DARK_CONTROLS;
+		Gui_Window_Dark_Controls(win, arg->int32a ? TRUE : FALSE);
+		break;
+
 	case W_GUI_ARG_TITLE: {
 		REBYTE *utf8 = NULL;
 		int len;

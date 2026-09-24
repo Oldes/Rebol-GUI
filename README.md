@@ -216,9 +216,20 @@ if evt/type = 'theme-change [
 ]
 ```
 
-On macOS the native controls follow the switch by themselves. On Windows only
-the title bar does: Win32 controls have no documented dark look, so anything
-else is the script's to restyle on this event.
+On macOS the native controls and default colours follow the switch by
+themselves. On Windows only the title bar does, unless the window asks for more:
+
+```rebol
+win/dark-controls?: true
+```
+
+Then, while the system is dark, its buttons, toggles, checks, radios, fields,
+areas, drop-downs, sliders and progress bars are drawn dark, its menu bar and
+menus turn dark,
+and every colour left at `none` (the window's and panels' fill, text, the inside
+and the edges of fields) turns dark too. Off
+by default, since it relies on undocumented parts of Windows. Colours the script set
+are never changed - set them on `theme-change`.
 
 ### Painting
 
@@ -898,6 +909,7 @@ Creates a toggle - a push button which stays pushed - and returns its handle
 /scale            decimal!            none                          "Device pixels per unit of size - 1.0 at 100%, 1.75 at 175%, 2.0 on a Retina Mac"
 /screen           handle!             none                          "The screen most of the window is on"
 /dark?            logic!              none                          "Whether the system shows it in the dark appearance; a `theme-change` event reports when this changes"
+/dark-controls?   logic!              logic!                        "Whether its controls and default colours follow the dark appearance on Windows (macOS always does); off by default"
 /resizable?       logic!              logic!                        "Whether the user can resize it"
 /border?          logic!              logic!                        "Whether it has a title bar and a frame; a borderless window cannot be moved or closed by the user"
 /background       tuple!              [tuple! none!]                "Colour of the client area; none for the system window colour"

@@ -314,8 +314,38 @@ last reported for that window, set when it opens.
 Windows: the setting is `AppsUseLightTheme` under `HKCU\...\Themes\Personalize`
 (read with `RegGetValueW`, loaded late from advapi32). A switch arrives as
 `WM_SETTINGCHANGE` with `"ImmersiveColorSet"`, several times over. The title bar
-follows through `DwmSetWindowAttribute` (attribute 20, or 19 before 20H1); the
-controls do not, having no documented dark look.
+follows through `DwmSetWindowAttribute` (attribute 20, or 19 before 20H1).
+
+The rest follows only for a window with `dark-controls?` (`GUIW_DARK_CONTROLS`),
+because the result is incomplete. `Dark_For(win)` is `Dark_Now` (system-wide)
+and the flag; it picks `Default_Window_Color`/`Default_Text_Color` and a lighter
+entry fill in place of the system colours, which do not change with the
+appearance. Controls get `SetWindowTheme` classes (`Theme_Control`):
+`DarkMode_Explorer` for buttons, toggles, checks, radios, fields and areas,
+`DarkMode_CFD` for drop-downs - undocumented, present since 1809. Applied at
+creation (`Subclass_For_Nav`), when the flag changes, and on a real switch
+(`Theme_Window`), before the event.
+
+Around the styles: uxtheme's ordinal-only dark-mode calls (1809+, checked with
+`RtlGetVersion`) - `SetPreferredAppMode(AllowDark)` once, `AllowDarkModeForWindow`
+per window and control (the scroll bars and popup menus need it),
+`FlushMenuThemes` after a change. The menu BAR never goes dark on its own, so a
+dark window answers the undocumented `WM_UAHDRAWMENU`/`WM_UAHDRAWMENUITEM` and
+paints over the light line under the bar after `WM_NCPAINT`/`WM_NCACTIVATE`.
+A field's or an area's `WS_EX_CLIENTEDGE` is drawn in light system colours
+whatever the style, so `Nav_Proc` repaints that ring dark after the base
+`WM_NCPAINT` (`Paint_Dark_Edge`); `Theme_Window` forces `SWP_FRAMECHANGED` so
+edges and the bar repaint on a switch.
+
+What no style covers is drawn by hand, only for a dark window: a themed check or
+radio ignores the text colour, so its `NM_CUSTOMDRAW` is answered with the
+theme's own glyph (`DrawThemeBackground`, in the control's state) and the label
+drawn here (`Dark_Check_Draw`); a trackbar's channel and thumb through its item
+custom draw (`Dark_Slider_Draw`); and a progress bar, which has no custom draw,
+painted whole in `Nav_Proc` (`Dark_Progress_Paint`). Panels and image widgets
+forward `WM_NOTIFY` so custom draw reaches the window. A themed check/radio draws its label in the
+theme's colour, ignoring `WM_CTLCOLORSTATIC`; an always-on version that removed
+their theme instead (for readable text) looked worse and was dropped.
 
 macOS: `viewDidChangeEffectiveAppearance` on the content view, and the answer
 from `bestMatchFromAppearancesWithNames:` - both by selector and by appearance

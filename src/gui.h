@@ -292,6 +292,11 @@ REBSER* Gui_Widget_Get_Tip(GUIWIDGET *wid);
 **  more often than that: the shared layer reports a change only).
 ***********************************************************************/
 REBOOL  Gui_Window_Dark(GUIWIN *win);
+
+// `dark-controls?` was changed (GUIW_DARK_CONTROLS is already set or
+// cleared). A backend whose controls do not follow the appearance by
+// themselves restyles the window now; one whose do has nothing to do.
+void    Gui_Window_Dark_Controls(GUIWIN *win, REBOOL on);
 void    Gui_Theme_Changed(GUIWIN *win, REBOOL dark);
 
 // Shared layer, called after every pump.

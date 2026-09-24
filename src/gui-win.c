@@ -464,6 +464,65 @@ static COLORREF Window_Fill_Color(GUIWIN *win, REBOOL *have)
 
 
 /***********************************************************************
+**  Default colours, and `dark-controls?`.
+**
+**  Win32's system colours do not change with the dark appearance -
+**  COLOR_WINDOW stays white - and its controls have no documented dark
+**  look. So a window follows the dark appearance only when a script
+**  asks for it with `win/dark-controls?: true`; otherwise only its title
+**  bar does, and everything inside keeps the light look.
+**
+**  With it on, and the system dark, everything left at its default
+**  (`background: none`, `color: none`) resolves to these instead of the
+**  system colours: the window's and the panels' fill, text, and a shade
+**  lighter for what is typed in. A colour a script SET is never changed -
+**  there is no knowing what its dark counterpart should be.
+**
+**  Dark_Now is the system-wide setting, read at start-up and again on
+**  every switch; Dark_For() is whether one window is shown dark.
+***********************************************************************/
+static REBOOL Dark_Now = FALSE;
+static REBOOL System_Dark(void);   // with the rest of the theme code
+
+#define DARK_WINDOW  RGB(32, 32, 32)
+#define DARK_ENTRY   RGB(45, 45, 45)   // a field, an area, a drop-down's list
+#define DARK_TEXT    RGB(235, 235, 235)
+
+static REBOOL Dark_For(GUIWIN *win)
+{
+	return (Dark_Now && win && (win->flags & GUIW_DARK_CONTROLS)) ? TRUE : FALSE;
+}
+
+static COLORREF Default_Window_Color(GUIWIN *win)
+{
+	return Dark_For(win) ? DARK_WINDOW : GetSysColor(COLOR_WINDOW);
+}
+
+static COLORREF Default_Text_Color(GUIWIN *win)
+{
+	return Dark_For(win) ? DARK_TEXT : GetSysColor(COLOR_WINDOWTEXT);
+}
+
+// Real brushes, never deleted by a caller: the system's cached one when
+// light, one made here once when dark.
+static HBRUSH Default_Window_Brush(GUIWIN *win)
+{
+	static HBRUSH dark = NULL;
+	if (!Dark_For(win)) return GetSysColorBrush(COLOR_WINDOW);
+	if (!dark) dark = CreateSolidBrush(DARK_WINDOW);
+	return dark ? dark : GetSysColorBrush(COLOR_WINDOW);
+}
+
+static HBRUSH Default_Entry_Brush(GUIWIN *win)
+{
+	static HBRUSH dark = NULL;
+	if (!Dark_For(win)) return GetSysColorBrush(COLOR_WINDOW);
+	if (!dark) dark = CreateSolidBrush(DARK_ENTRY);
+	return dark ? dark : GetSysColorBrush(COLOR_WINDOW);
+}
+
+
+/***********************************************************************
 **  Fills `rect` of `dc` with what the WINDOW's client area is - its own
 **  colour, the key colour when it is see-through, or the system window
 **  colour. A panel with no colour of its own uses this too, which is
@@ -483,7 +542,7 @@ static void Fill_Window_Background(HDC dc, const RECT *rect, GUIWIN *win)
 			return;
 		}
 	}
-	FillRect(dc, rect, (HBRUSH)(COLOR_WINDOW + 1));
+	FillRect(dc, rect, Default_Window_Brush(win));
 }
 
 // The brush handed back for a widget with a background colour of its own.
@@ -551,7 +610,7 @@ static REBOOL Flat_Background_Of(GUIWIDGET *wid, COLORREF *rgb)
 		if (owner && GUI_BG_IS_CLEAR(owner->background)) return FALSE;
 
 		own = Window_Fill_Color(owner, &have);
-		*rgb = have ? own : GetSysColor(COLOR_WINDOW);
+		*rgb = have ? own : Default_Window_Color(owner);
 	}
 	return TRUE;
 }
@@ -568,7 +627,7 @@ static REBOOL Flat_Background_Of(GUIWIDGET *wid, COLORREF *rgb)
 **  Background stays COLOR_WINDOW throughout, which is what keeps a
 **  label on the same background the window and the panels fill with.
 ***********************************************************************/
-static LRESULT Ctl_Color(HDC dc, HWND child, GUIWIN *win)
+static LRESULT Ctl_Color(HDC dc, HWND child, GUIWIN *win, UINT msg)
 {
 	GUIWIDGET *wid = NULL;
 
@@ -588,7 +647,7 @@ static LRESULT Ctl_Color(HDC dc, HWND child, GUIWIN *win)
 		? RGB(GUI_COLOR_R(wid->color),
 		      GUI_COLOR_G(wid->color),
 		      GUI_COLOR_B(wid->color))
-		: GetSysColor(COLOR_WINDOWTEXT));
+		: Default_Text_Color(win));
 
 	// A colour to fill with: either the widget's own, or - for a
 	// transparent one over a container whose background IS a colour - that
@@ -655,8 +714,15 @@ static LRESULT Ctl_Color(HDC dc, HWND child, GUIWIN *win)
 			}
 		}
 	}
-	SetBkColor(dc, GetSysColor(COLOR_WINDOW));
-	return (LRESULT)GetSysColorBrush(COLOR_WINDOW);
+	// Something to TYPE in - a field, an area, a drop-down's list - is a
+	// shade lighter than a dark window, as Windows' own are, so that it
+	// still reads as a place to type.
+	if (Dark_For(win) && (msg == WM_CTLCOLOREDIT || msg == WM_CTLCOLORLISTBOX)) {
+		SetBkColor(dc, DARK_ENTRY);
+		return (LRESULT)Default_Entry_Brush(win);
+	}
+	SetBkColor(dc, Default_Window_Color(win));
+	return (LRESULT)Default_Window_Brush(win);
 }
 
 
@@ -961,6 +1027,545 @@ static void Dark_Title_Bar(HWND hwnd, REBOOL dark)
 		set(hwnd, 19, &on, sizeof(on));           // ... before Windows 10 20H1
 }
 
+/***********************************************************************
+**  The controls' own dark look, for a window with `dark-controls?`.
+**
+**  Win32 has no documented dark theme for its controls. What Windows'
+**  own programs use are the visual style classes "DarkMode_Explorer"
+**  and "DarkMode_CFD", which SetWindowTheme() can select for a control:
+**  undocumented, but present since Windows 10 1809. Where a class does
+**  not exist, the control keeps its normal look and nothing breaks.
+**
+**    push button, toggle,  DarkMode_Explorer
+**    check, radio
+**    field, area           DarkMode_Explorer - dark scroll bars; fill
+**                          and text come from WM_CTLCOLOREDIT
+**    drop-down             DarkMode_CFD
+**
+**  A themed check or radio draws its label in the theme's own colour,
+**  whatever WM_CTLCOLORSTATIC says - on some Windows versions that is
+**  black, which a dark window does not show well. That is the one part
+**  the platform does not let this file fix without drawing the control
+**  itself.
+**
+**  Going back to light hands every control its normal theme again.
+***********************************************************************/
+typedef HRESULT (WINAPI *SETWINDOWTHEME_T)(HWND, LPCWSTR, LPCWSTR);
+
+/***********************************************************************
+**  The rest of Windows' own dark mode - undocumented, by ordinal.
+**
+**  A dark visual style class is not enough by itself: uxtheme only hands
+**  a window its dark parts (scroll bars, the popup menus) once the
+**  process has said it can take them and the window has opted in. These
+**  are the calls Explorer, Notepad and every open-source dark-mode Win32
+**  program use; they exist only by ordinal, and only from Windows 10
+**  1809 (build 17763) - so they are looked up once, on a build new
+**  enough, and anything missing simply leaves the light look.
+**
+**    #135  SetPreferredAppMode(AllowDark)  (1903+; AllowDarkModeForApp
+**          with TRUE on 1809 - same ordinal, same argument value)
+**    #133  AllowDarkModeForWindow(hwnd, on)
+**    #136  FlushMenuThemes()               - popup menus pick it up
+***********************************************************************/
+typedef int  (WINAPI *SETPREFERREDAPPMODE_T)(int);
+typedef BOOL (WINAPI *ALLOWDARKMODEFORWINDOW_T)(HWND, BOOL);
+typedef void (WINAPI *FLUSHMENUTHEMES_T)(void);
+typedef LONG (WINAPI *RTLGETVERSION_T)(OSVERSIONINFOW*);
+
+static ALLOWDARKMODEFORWINDOW_T pAllowDarkModeForWindow = NULL;
+static FLUSHMENUTHEMES_T        pFlushMenuThemes        = NULL;
+
+static void Load_Dark_Mode(void)
+{
+	static REBOOL looked = FALSE;
+	OSVERSIONINFOW  ver;
+	RTLGETVERSION_T rtl;
+	HMODULE         ux;
+
+	if (looked) return;
+	looked = TRUE;
+
+	// Undocumented ordinals mean something else on other builds, so the
+	// build is checked first - and asked of ntdll, since GetVersionEx
+	// lies to a process without a compatibility manifest.
+	rtl = (RTLGETVERSION_T)GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "RtlGetVersion");
+	ZeroMemory(&ver, sizeof(ver));
+	ver.dwOSVersionInfoSize = sizeof(ver);
+	if (!rtl || rtl(&ver) != 0 || ver.dwMajorVersion < 10 || ver.dwBuildNumber < 17763)
+		return;
+
+	ux = LoadLibraryW(L"uxtheme.dll");
+	if (!ux) return;
+	{
+		SETPREFERREDAPPMODE_T mode =
+			(SETPREFERREDAPPMODE_T)GetProcAddress(ux, MAKEINTRESOURCEA(135));
+		if (mode) mode(1);   // AllowDark: dark where a window opts in
+	}
+	pAllowDarkModeForWindow = (ALLOWDARKMODEFORWINDOW_T)GetProcAddress(ux, MAKEINTRESOURCEA(133));
+	pFlushMenuThemes        = (FLUSHMENUTHEMES_T)GetProcAddress(ux, MAKEINTRESOURCEA(136));
+}
+
+static void Allow_Dark(HWND hwnd, REBOOL dark)
+{
+	Load_Dark_Mode();
+	if (pAllowDarkModeForWindow && hwnd) pAllowDarkModeForWindow(hwnd, dark ? TRUE : FALSE);
+}
+
+
+/***********************************************************************
+**  The edge of a field or an area.
+**
+**  WS_EX_CLIENTEDGE is drawn in the non-client area, in the system's
+**  light frame colours, and no visual style class changes it - a bright
+**  rectangle round a dark box. So for a dark window the base procedure
+**  paints the non-client area first (the scroll bars live there too),
+**  and then the outer ring the edge occupies is painted over in a dark
+**  frame colour.
+***********************************************************************/
+#define DARK_EDGE    RGB(80, 80, 80)
+#define DARK_HOT     RGB(62, 62, 62)   // a menu bar item under the pointer
+#define DARK_GRAYED  RGB(120, 120, 120)
+
+static void Paint_Dark_Edge(HWND hwnd)
+{
+	RECT   r, inner;
+	HDC    dc;
+	HBRUSH brush;
+	HRGN   ring, hole;
+	int    ex, ey, dpi;
+
+	if (!(GetWindowLongPtrW(hwnd, GWL_EXSTYLE) & WS_EX_CLIENTEDGE)) return;
+	if (!GetWindowRect(hwnd, &r)) return;
+	OffsetRect(&r, -r.left, -r.top);
+
+	dpi = Dpi_Of(hwnd);
+	ex  = Metric(dpi, SM_CXEDGE);
+	ey  = Metric(dpi, SM_CYEDGE);
+	inner = r;
+	InflateRect(&inner, -ex, -ey);
+
+	dc = GetWindowDC(hwnd);
+	if (!dc) return;
+	ring = CreateRectRgnIndirect(&r);
+	hole = CreateRectRgnIndirect(&inner);
+	brush = CreateSolidBrush(DARK_EDGE);
+	if (ring && hole && brush) {
+		CombineRgn(ring, ring, hole, RGN_DIFF);
+		FillRgn(dc, ring, brush);
+	}
+	if (brush) DeleteObject(brush);
+	if (hole)  DeleteObject(hole);
+	if (ring)  DeleteObject(ring);
+	ReleaseDC(hwnd, dc);
+}
+
+
+/***********************************************************************
+**  The menu BAR in a dark window.
+**
+**  Popup menus go dark with the calls above; the bar itself never does -
+**  Windows draws it in the light colours whatever the appearance. The
+**  way round it, which is what Notepad++ and the open-source dark-mode
+**  samples do, is two undocumented messages the window receives when
+**  the bar is drawn: WM_UAHDRAWMENU (the whole bar's background) and
+**  WM_UAHDRAWMENUITEM (one item). Answering them paints the bar dark;
+**  not answering leaves Windows' own. One light line is left under the
+**  bar even so, which is painted over after WM_NCPAINT / WM_NCACTIVATE.
+***********************************************************************/
+#define WM_UAHDRAWMENU      0x0091
+#define WM_UAHDRAWMENUITEM  0x0092
+
+typedef struct { HMENU hmenu; HDC hdc; DWORD dwFlags; } UAHMENU;
+typedef union {
+	struct { DWORD cx; DWORD cy; } rgsizeBar[2];
+	struct { DWORD cx; DWORD cy; } rgsizePopup[4];
+} UAHMENUITEMMETRICS;
+typedef struct { DWORD rgcx[4]; DWORD fUpdateMaxWidths : 2; } UAHMENUPOPUPMETRICS;
+typedef struct { int iPosition; UAHMENUITEMMETRICS umim; UAHMENUPOPUPMETRICS umpm; } UAHMENUITEM;
+typedef struct { DRAWITEMSTRUCT dis; UAHMENU um; UAHMENUITEM umi; } UAHDRAWMENUITEM;
+
+static void Dark_Menu_Bar(HWND hwnd, const UAHMENU *um)
+{
+	MENUBARINFO mbi;
+	RECT        win;
+	HBRUSH      brush;
+
+	ZeroMemory(&mbi, sizeof(mbi));
+	mbi.cbSize = sizeof(mbi);
+	if (!GetMenuBarInfo(hwnd, OBJID_MENU, 0, &mbi) || !GetWindowRect(hwnd, &win)) return;
+	OffsetRect(&mbi.rcBar, -win.left, -win.top);
+	brush = CreateSolidBrush(DARK_WINDOW);
+	if (brush) {
+		FillRect(um->hdc, &mbi.rcBar, brush);
+		DeleteObject(brush);
+	}
+}
+
+static void Dark_Menu_Item(const UAHDRAWMENUITEM *item)
+{
+	WCHAR          text[256];
+	MENUITEMINFOW  mii;
+	UINT           state = item->dis.itemState;
+	UINT           format = DT_CENTER | DT_SINGLELINE | DT_VCENTER;
+	HBRUSH         brush;
+	RECT           r = item->dis.rcItem;
+
+	text[0] = 0;
+	ZeroMemory(&mii, sizeof(mii));
+	mii.cbSize     = sizeof(mii);
+	mii.fMask      = MIIM_STRING;
+	mii.dwTypeData = text;
+	mii.cch        = (UINT)(sizeof(text) / sizeof(text[0])) - 1;
+	GetMenuItemInfoW(item->um.hmenu, (UINT)item->umi.iPosition, TRUE, &mii);
+
+	brush = CreateSolidBrush((state & (ODS_HOTLIGHT | ODS_SELECTED)) ? DARK_HOT : DARK_WINDOW);
+	if (brush) {
+		FillRect(item->um.hdc, &r, brush);
+		DeleteObject(brush);
+	}
+	// Underlined access keys only when the keyboard asked for them, as
+	// Windows' own bar does.
+	if (state & ODS_NOACCEL) format |= DT_HIDEPREFIX;
+	SetBkMode(item->um.hdc, TRANSPARENT);
+	SetTextColor(item->um.hdc, (state & (ODS_GRAYED | ODS_DISABLED | ODS_INACTIVE))
+	                          ? DARK_GRAYED : DARK_TEXT);
+	DrawTextW(item->um.hdc, text, -1, &r, format);
+}
+
+// The one light line Windows leaves between the bar and the client area.
+static void Dark_Menu_Line(HWND hwnd)
+{
+	RECT   client, win, line;
+	POINT  origin = {0, 0};
+	HDC    dc;
+	HBRUSH brush;
+
+	if (!GetMenu(hwnd) || !GetClientRect(hwnd, &client) || !GetWindowRect(hwnd, &win)) return;
+	ClientToScreen(hwnd, &origin);
+	line.left   = origin.x - win.left;
+	line.right  = line.left + (client.right - client.left);
+	line.bottom = origin.y - win.top;
+	line.top    = line.bottom - 1;
+
+	dc = GetWindowDC(hwnd);
+	if (!dc) return;
+	brush = CreateSolidBrush(DARK_WINDOW);
+	if (brush) {
+		FillRect(dc, &line, brush);
+		DeleteObject(brush);
+	}
+	ReleaseDC(hwnd, dc);
+}
+
+/***********************************************************************
+**  Drawing what no dark style covers: a check's or a radio's label, a
+**  slider, a progress bar.
+**
+**  A THEMED check or radio draws its label with the theme's own text
+**  colour and ignores the one WM_CTLCOLORSTATIC hands it - black, which
+**  a dark window hides. Its NM_CUSTOMDRAW is answered instead: the box or
+**  the dot is still the theme's (DrawThemeBackground, in the state the
+**  control is in), and only the label is drawn here, in the widget's own
+**  colour or the dark default.
+**
+**  A trackbar has no dark style at all; its channel and thumb are drawn
+**  here through its item custom draw. A progress bar has neither a dark
+**  style nor custom draw, so a dark one is painted whole (in Nav_Proc).
+**
+**  All of it only for a window shown dark: everywhere else the controls
+**  draw themselves exactly as before.
+***********************************************************************/
+typedef HANDLE  (WINAPI *OPENTHEMEDATA_T)(HWND, LPCWSTR);
+typedef HRESULT (WINAPI *CLOSETHEMEDATA_T)(HANDLE);
+typedef HRESULT (WINAPI *DRAWTHEMEBACKGROUND_T)(HANDLE, HDC, int, int, const RECT*, const RECT*);
+typedef HRESULT (WINAPI *GETTHEMEPARTSIZE_T)(HANDLE, HDC, int, int, const RECT*, int, SIZE*);
+
+static OPENTHEMEDATA_T       pOpenThemeData       = NULL;
+static CLOSETHEMEDATA_T      pCloseThemeData      = NULL;
+static DRAWTHEMEBACKGROUND_T pDrawThemeBackground = NULL;
+static GETTHEMEPARTSIZE_T    pGetThemePartSize    = NULL;
+
+static REBOOL Load_Theme_Drawing(void)
+{
+	static REBOOL looked = FALSE;
+	if (!looked) {
+		HMODULE ux = LoadLibraryW(L"uxtheme.dll");
+		looked = TRUE;
+		if (ux) {
+			pOpenThemeData       = (OPENTHEMEDATA_T)GetProcAddress(ux, "OpenThemeData");
+			pCloseThemeData      = (CLOSETHEMEDATA_T)GetProcAddress(ux, "CloseThemeData");
+			pDrawThemeBackground = (DRAWTHEMEBACKGROUND_T)GetProcAddress(ux, "DrawThemeBackground");
+			pGetThemePartSize    = (GETTHEMEPARTSIZE_T)GetProcAddress(ux, "GetThemePartSize");
+		}
+	}
+	return (pOpenThemeData && pCloseThemeData && pDrawThemeBackground && pGetThemePartSize)
+		? TRUE : FALSE;
+}
+
+#define DARK_ACCENT  RGB(76, 160, 255)  // the filled part of a progress bar
+#define DARK_THUMB   RGB(190, 190, 190)
+
+// The part and state numbers of the "Button" theme class (vssym32.h).
+#define GUI_BP_RADIOBUTTON 2
+#define GUI_BP_CHECKBOX    3
+
+static LRESULT Dark_Check_Draw(GUIWIDGET *wid, NMCUSTOMDRAW *cd)
+{
+	HWND    hwnd = cd->hdr.hwndFrom;
+	HDC     dc   = cd->hdc;
+	HANDLE  theme;
+	int     part, state, gap, len;
+	UINT    item = cd->uItemState;
+	REBOOL  on;
+	SIZE    box = {13, 13};
+	RECT    r = cd->rc, glyph, text;
+	WCHAR  *caption = NULL;
+	HFONT   font, old = NULL;
+	COLORREF bg;
+	LRESULT  ui;
+	UINT    format = DT_SINGLELINE | DT_VCENTER | DT_LEFT;
+
+	if (cd->dwDrawStage != CDDS_PREPAINT) return CDRF_DODEFAULT;
+	if (!Load_Theme_Drawing() || !(theme = pOpenThemeData(hwnd, L"Button")))
+		return CDRF_DODEFAULT;
+
+	// What it sits on, as the control itself would fill it.
+	if (!GUI_COLOR_HAS(wid->background) && Flat_Background_Of(wid, &bg)) {
+		HBRUSH b = CreateSolidBrush(bg);
+		if (b) { FillRect(dc, &r, b); DeleteObject(b); }
+	} else if (GUI_COLOR_HAS(wid->background)) {
+		HBRUSH b = CreateSolidBrush(RGB(GUI_COLOR_R(wid->background),
+		                                GUI_COLOR_G(wid->background),
+		                                GUI_COLOR_B(wid->background)));
+		if (b) { FillRect(dc, &r, b); DeleteObject(b); }
+	}
+
+	on   = (SendMessageW(hwnd, BM_GETCHECK, 0, 0) == BST_CHECKED) ? TRUE : FALSE;
+	part = (wid->kind == W_GUI_WIDGET_RADIO) ? GUI_BP_RADIOBUTTON : GUI_BP_CHECKBOX;
+	// Unchecked 1-4, checked 5-8: normal, hot, pressed, disabled.
+	state = (item & CDIS_DISABLED) ? 4 : (item & CDIS_SELECTED) ? 3 : (item & CDIS_HOT) ? 2 : 1;
+	if (on) state += 4;
+
+	pGetThemePartSize(theme, dc, part, state, NULL, 1 /* TS_TRUE */, &box);
+	glyph.left   = r.left;
+	glyph.top    = r.top + ((r.bottom - r.top) - box.cy) / 2;
+	glyph.right  = glyph.left + box.cx;
+	glyph.bottom = glyph.top + box.cy;
+	pDrawThemeBackground(theme, dc, part, state, &glyph, NULL);
+	pCloseThemeData(theme);
+
+	// The label, after the glyph and the gap the themed control leaves.
+	gap  = To_Device(Dpi_Of(hwnd), 3);
+	text = r;
+	text.left = glyph.right + gap;
+
+	len = GetWindowTextLengthW(hwnd);
+	if (len > 0 && (caption = (WCHAR*)MAKE_MEM((len + 1) * sizeof(WCHAR))) != NULL) {
+		len = GetWindowTextW(hwnd, caption, len + 1);
+		font = (HFONT)SendMessageW(hwnd, WM_GETFONT, 0, 0);
+		if (font) old = (HFONT)SelectObject(dc, font);
+
+		ui = SendMessageW(hwnd, WM_QUERYUISTATE, 0, 0);
+		if (ui & UISF_HIDEACCEL) format |= DT_HIDEPREFIX;
+
+		SetBkMode(dc, TRANSPARENT);
+		SetTextColor(dc, (item & CDIS_DISABLED) ? DARK_GRAYED
+			: GUI_COLOR_HAS(wid->color)
+			? RGB(GUI_COLOR_R(wid->color), GUI_COLOR_G(wid->color), GUI_COLOR_B(wid->color))
+			: DARK_TEXT);
+		DrawTextW(dc, caption, len, &text, format);
+
+		if ((item & CDIS_FOCUS) && !(ui & UISF_HIDEFOCUS)) {
+			RECT f = text;
+			DrawTextW(dc, caption, len, &f, format | DT_CALCRECT);
+			f.top = text.top + ((text.bottom - text.top) - (f.bottom - f.top)) / 2;
+			f.bottom = f.top + (f.bottom - f.top);
+			InflateRect(&f, 1, 1);
+			SetTextColor(dc, DARK_TEXT);
+			DrawFocusRect(dc, &f);
+		}
+		if (old) SelectObject(dc, old);
+		FREE_MEM(caption);
+	}
+	return CDRF_SKIPDEFAULT;
+}
+
+static LRESULT Dark_Slider_Draw(NMCUSTOMDRAW *cd)
+{
+	HBRUSH b;
+	RECT   r = cd->rc;
+
+	switch (cd->dwDrawStage) {
+	case CDDS_PREPAINT:
+		return CDRF_NOTIFYITEMDRAW;
+	case CDDS_ITEMPREPAINT:
+		if (cd->dwItemSpec == TBCD_CHANNEL) {
+			b = CreateSolidBrush(DARK_EDGE);
+			if (b) { FillRect(cd->hdc, &r, b); DeleteObject(b); }
+			return CDRF_SKIPDEFAULT;
+		}
+		if (cd->dwItemSpec == TBCD_THUMB) {
+			COLORREF c = (cd->uItemState & CDIS_DISABLED) ? DARK_GRAYED
+			           : (cd->uItemState & (CDIS_HOT | CDIS_SELECTED)) ? DARK_TEXT
+			           : DARK_THUMB;
+			HPEN   pen = CreatePen(PS_SOLID, 1, c);
+			HGDIOBJ op, ob;
+			int    round = (r.right - r.left) < (r.bottom - r.top)
+			             ? (r.right - r.left) : (r.bottom - r.top);
+			b = CreateSolidBrush(c);
+			if (pen && b) {
+				op = SelectObject(cd->hdc, pen);
+				ob = SelectObject(cd->hdc, b);
+				RoundRect(cd->hdc, r.left, r.top, r.right, r.bottom, round / 2, round / 2);
+				SelectObject(cd->hdc, op);
+				SelectObject(cd->hdc, ob);
+			}
+			if (pen) DeleteObject(pen);
+			if (b)   DeleteObject(b);
+			return CDRF_SKIPDEFAULT;
+		}
+		return CDRF_DODEFAULT;
+	}
+	return CDRF_DODEFAULT;
+}
+
+// The window's own widget for a control HWND - asked of the window's list
+// rather than the control's user data, as Ctl_Color() does.
+static GUIWIDGET *Widget_Of(GUIWIN *win, HWND hwnd)
+{
+	GUIWIDGET *w;
+	if (!win || !hwnd) return NULL;
+	for (w = (GUIWIDGET*)win->widgets; w; w = (GUIWIDGET*)w->next)
+		if ((HWND)w->handle == hwnd) return w;
+	return NULL;
+}
+
+// WM_NOTIFY in the window procedure: NM_CUSTOMDRAW for a dark window.
+static REBOOL Dark_Custom_Draw(GUIWIN *win, LPARAM lp, LRESULT *result)
+{
+	NMHDR      *hdr = (NMHDR*)lp;
+	GUIWIDGET  *wid;
+
+	if (!hdr || hdr->code != NM_CUSTOMDRAW || !Dark_For(win)) return FALSE;
+	if (!(wid = Widget_Of(win, hdr->hwndFrom))) return FALSE;
+
+	switch (wid->kind) {
+	case W_GUI_WIDGET_CHECK:
+	case W_GUI_WIDGET_RADIO:
+		*result = Dark_Check_Draw(wid, (NMCUSTOMDRAW*)lp);
+		return TRUE;
+	case W_GUI_WIDGET_SLIDER:
+		*result = Dark_Slider_Draw((NMCUSTOMDRAW*)lp);
+		return TRUE;
+	}
+	return FALSE;
+}
+
+// A progress bar, painted whole: a dark track, the done part in an accent,
+// and the same edge a field has.
+static void Dark_Progress_Paint(HWND hwnd, HDC dc)
+{
+	RECT   r, done;
+	HBRUSH b;
+	int    lo, hi, pos;
+	REBOOL vertical = (GetWindowLongPtrW(hwnd, GWL_STYLE) & PBS_VERTICAL) ? TRUE : FALSE;
+
+	GetClientRect(hwnd, &r);
+	b = CreateSolidBrush(DARK_EDGE);
+	if (b) { FrameRect(dc, &r, b); DeleteObject(b); }
+	InflateRect(&r, -1, -1);
+	b = CreateSolidBrush(DARK_ENTRY);
+	if (b) { FillRect(dc, &r, b); DeleteObject(b); }
+
+	lo  = (int)SendMessageW(hwnd, PBM_GETRANGE, TRUE, 0);
+	hi  = (int)SendMessageW(hwnd, PBM_GETRANGE, FALSE, 0);
+	pos = (int)SendMessageW(hwnd, PBM_GETPOS, 0, 0);
+	if (hi <= lo || pos <= lo) return;
+	if (pos > hi) pos = hi;
+
+	done = r;
+	if (vertical) done.top   = r.bottom - MulDiv(r.bottom - r.top, pos - lo, hi - lo);
+	else          done.right = r.left   + MulDiv(r.right - r.left, pos - lo, hi - lo);
+	b = CreateSolidBrush(DARK_ACCENT);
+	if (b) { FillRect(dc, &done, b); DeleteObject(b); }
+}
+
+static void Theme_Control(GUIWIDGET *wid, REBOOL dark)
+{
+	static SETWINDOWTHEME_T set = NULL;
+	static REBOOL looked = FALSE;
+	HWND hwnd;
+
+	if (!looked) {
+		HMODULE ux = LoadLibraryW(L"uxtheme.dll");
+		looked = TRUE;
+		if (ux) set = (SETWINDOWTHEME_T)GetProcAddress(ux, "SetWindowTheme");
+	}
+	if (!set || !wid || !wid->handle) return;
+	hwnd = HWND_OF_WID(wid);
+	Allow_Dark(hwnd, dark);   // or its scroll bars stay light
+
+	switch (wid->kind) {
+	case W_GUI_WIDGET_BUTTON:
+	case W_GUI_WIDGET_TOGGLE:
+	case W_GUI_WIDGET_CHECK:
+	case W_GUI_WIDGET_RADIO:
+	case W_GUI_WIDGET_FIELD:
+	case W_GUI_WIDGET_AREA:
+		set(hwnd, dark ? L"DarkMode_Explorer" : NULL, NULL);
+		break;
+	case W_GUI_WIDGET_DROP_DOWN:
+		set(hwnd, dark ? L"DarkMode_CFD" : NULL, NULL);
+		break;
+	case W_GUI_WIDGET_SLIDER:
+	case W_GUI_WIDGET_PROGRESS:
+		// No style to switch - they are drawn by hand when dark - but a
+		// trackbar keeps what it drew and repaints only when its own state
+		// changes, so a plain invalidate leaves the old look until it is
+		// touched. WM_THEMECHANGED is what makes it drop that and draw
+		// again, the message SetWindowTheme() sends the others.
+		SendMessageW(hwnd, WM_THEMECHANGED, 0, 0);
+		InvalidateRect(hwnd, NULL, TRUE);
+		break;
+	default:
+		break;
+	}
+}
+
+// Every control in a window, and the window repainted - frames and all,
+// since every default colour in it may just have changed.
+static void Theme_Window(GUIWIN *win, REBOOL dark)
+{
+	GUIWIDGET *wid;
+	HWND       hwnd;
+	if (!win || !win->handle) return;
+	hwnd = HWND_OF(win);
+
+	// The window itself, for its popup menus; then the menus are told.
+	Allow_Dark(hwnd, dark);
+	if (pFlushMenuThemes) pFlushMenuThemes();
+
+	for (wid = (GUIWIDGET*)win->widgets; wid; wid = (GUIWIDGET*)wid->next)
+		Theme_Control(wid, dark);
+
+	// Every frame again - the fields' edges and the menu bar are in the
+	// non-client area, which invalidating alone does not repaint.
+	for (wid = (GUIWIDGET*)win->widgets; wid; wid = (GUIWIDGET*)wid->next)
+		if (wid->handle)
+			SetWindowPos(HWND_OF_WID(wid), NULL, 0, 0, 0, 0,
+			             SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+	if (GetMenu(hwnd)) DrawMenuBar(hwnd);
+	RedrawWindow(hwnd, NULL, NULL,
+	             RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_ALLCHILDREN);
+}
+
+void Gui_Window_Dark_Controls(GUIWIN *win, REBOOL on)
+{
+	(void)on;   // the flag is already set; Dark_For() reads it
+	Theme_Window(win, Dark_For(win));
+}
+
 REBOOL Gui_Window_Dark(GUIWIN *win)
 {
 	(void)win;       // system-wide on Windows
@@ -1144,10 +1749,37 @@ static LRESULT CALLBACK Gui_Window_Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
 	case WM_SETTINGCHANGE:
 		if (lp && lstrcmpiW((LPCWSTR)lp, L"ImmersiveColorSet") == 0) {
 			REBOOL dark = System_Dark();
+			REBOOL was  = Dark_For(win);
+			Dark_Now = dark;
 			Dark_Title_Bar(hwnd, dark);
+			// A window which asked to follow is restyled - once per real
+			// switch, since the broadcast comes several times, and before
+			// the event, so a handler sees the new look.
+			if (Dark_For(win) != was) Theme_Window(win, Dark_For(win));
 			Gui_Theme_Changed(win, dark);
 		}
 		break;   // on to DefWindowProc, which has its own use for it
+
+	case WM_NOTIFY: {
+		LRESULT r;
+		if (Dark_Custom_Draw(win, lp, &r)) return r;
+		break; }
+
+	// The menu bar and the line under it, for a window shown dark - see
+	// Dark_Menu_Bar(). Anything else is Windows' own.
+	case WM_UAHDRAWMENU:
+		if (!Dark_For(win)) break;
+		Dark_Menu_Bar(hwnd, (const UAHMENU*)lp);
+		return TRUE;
+	case WM_UAHDRAWMENUITEM:
+		if (!Dark_For(win)) break;
+		Dark_Menu_Item((const UAHDRAWMENUITEM*)lp);
+		return TRUE;
+	case WM_NCPAINT:
+	case WM_NCACTIVATE: {
+		LRESULT r = DefWindowProcW(hwnd, msg, wp, lp);
+		if (Dark_For(win)) Dark_Menu_Line(hwnd);
+		return r; }
 
 	case WM_DPICHANGED:
 		Rescale_Window(win, hwnd, Remembered_Dpi(hwnd), (int)HIWORD(wp), (const RECT*)lp);
@@ -1320,7 +1952,7 @@ static LRESULT CALLBACK Gui_Window_Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
 	case WM_CTLCOLORBTN:
 	case WM_CTLCOLOREDIT:
 	case WM_CTLCOLORLISTBOX:
-		return Ctl_Color((HDC)wp, (HWND)lp, win);
+		return Ctl_Color((HDC)wp, (HWND)lp, win, msg);
 
 	case WM_ERASEBKGND:
 		return TRUE; // painted below, without the flicker
@@ -1435,6 +2067,7 @@ static LRESULT CALLBACK Gui_Image_Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp
 	// ITS parent, and the window's procedure is the one that knows what to
 	// do with a notification.
 	case WM_COMMAND:
+	case WM_NOTIFY:     // custom draw of a control inside - see Dark_Custom_Draw()
 	case WM_HSCROLL:
 	case WM_VSCROLL:
 	case WM_CTLCOLORSTATIC:
@@ -1542,7 +2175,7 @@ static void Paint_Panel(HWND hwnd, HDC dc)
 			COLORREF rgb  = Window_Fill_Color(wid ? wid->owner : NULL, &have);
 			if (have) bg = CreateSolidBrush(rgb);
 		}
-		fill = bg ? bg : (HBRUSH)(COLOR_WINDOW + 1);
+		fill = bg ? bg : Default_Window_Brush(wid ? wid->owner : NULL);
 		FillRect(dc, &rect, fill);
 	}
 
@@ -1604,7 +2237,7 @@ static void Paint_Panel(HWND hwnd, HDC dc)
 			? RGB(GUI_COLOR_R(wid->color),
 			      GUI_COLOR_G(wid->color),
 			      GUI_COLOR_B(wid->color))
-			: GetSysColor(COLOR_WINDOWTEXT));
+			: Default_Text_Color(wid->owner));
 		TextOutW(dc, PANEL_CAPTION_X(Dpi_Of(hwnd)), rect.top, caption, caption_len);
 		FREE_MEM(caption);
 	}
@@ -1630,6 +2263,7 @@ static LRESULT CALLBACK Gui_Panel_Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp
 	switch (msg) {
 
 	case WM_COMMAND:
+	case WM_NOTIFY:     // custom draw of a control inside - see Dark_Custom_Draw()
 	case WM_HSCROLL:
 	case WM_VSCROLL:
 	case WM_CTLCOLORSTATIC:
@@ -1885,6 +2519,8 @@ void Gui_Init_Platform(void)
 	// AFTER declaring awareness - before it, the system reports a polite
 	// 96 whatever it really is.
 	Read_Screen_DPI();
+
+	Dark_Now = System_Dark();
 }
 
 
@@ -3138,6 +3774,30 @@ static LRESULT CALLBACK Nav_Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 	// control, or anything else, with it.
 	if (wid) Tip_Relay(hwnd, msg, wp, lp);
 
+	// A progress bar in a dark window is painted whole - see
+	// Dark_Progress_Paint(). WM_PRINTCLIENT too, for a transparent parent.
+	if (wid && wid->kind == W_GUI_WIDGET_PROGRESS && Dark_For(wid->owner)) {
+		if (msg == WM_PAINT) {
+			PAINTSTRUCT ps;
+			HDC dc = BeginPaint(hwnd, &ps);
+			Dark_Progress_Paint(hwnd, dc);
+			EndPaint(hwnd, &ps);
+			return 0;
+		}
+		if (msg == WM_PRINTCLIENT) { Dark_Progress_Paint(hwnd, (HDC)wp); return 0; }
+		if (msg == WM_ERASEBKGND) return TRUE;
+	}
+
+	// A field's or an area's edge in a dark window - see Paint_Dark_Edge().
+	if (msg == WM_NCPAINT && wid
+	    && (wid->kind == W_GUI_WIDGET_FIELD || wid->kind == W_GUI_WIDGET_AREA)
+	    && Dark_For(wid->owner)) {
+		LRESULT r = base ? CallWindowProcW(base, hwnd, msg, wp, lp)
+		                 : DefWindowProcW(hwnd, msg, wp, lp);
+		Paint_Dark_Edge(hwnd);
+		return r;
+	}
+
 	if (msg == WM_MOUSEMOVE && wid) {
 		Track_Leave(hwnd);
 		Queue_Widget_Mouse(wid, EVT_MOVE, lp, 0);
@@ -3163,6 +3823,10 @@ static void Subclass_For_Nav(GUIWIDGET *wid)
 
 	wid->wndproc = (void*)GetWindowLongPtrW(hwnd, GWLP_WNDPROC);
 	SetWindowLongPtrW(hwnd, GWLP_WNDPROC, (LONG_PTR)Nav_Proc);
+
+	// Every control passes through here once, right after it is created,
+	// which makes it the place to give it its window's current look.
+	if (Dark_For(wid->owner)) Theme_Control(wid, TRUE);
 }
 
 

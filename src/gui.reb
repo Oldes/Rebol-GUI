@@ -183,6 +183,7 @@ typedef struct Gui_Widget_Context {
 #define GUIW_VISIBLE       1
 #define GUIW_ACCEPTS_DROP  2
 #define GUIW_DARK          4   // the appearance last reported - see Gui_Theme_Changed()
+#define GUIW_DARK_CONTROLS 8   // `dark-controls?`: defaults follow the dark appearance
 
 // Passed to Gui_Open_Window(). Everything a window's frame can be is
 // decided at creation and changeable afterwards through `resizable?` and
@@ -336,6 +337,7 @@ handles: [
 		scale    decimal!  none      "Device pixels per unit of size - 1.0 at 100%, 1.75 at 175%, 2.0 on a Retina Mac"
 		screen   handle!   none      "The screen most of the window is on"
 		dark?    logic!    none      "Whether the system shows it in the dark appearance; a `theme-change` event reports when this changes"
+		dark-controls? logic! logic! "Whether its controls and default colours follow the dark appearance on Windows (macOS always does); off by default"
 		resizable? logic!  logic!    "Whether the user can resize it"
 		border?    logic!  logic!    "Whether it has a title bar and a frame; a borderless window cannot be moved or closed by the user"
 		background tuple!  [tuple! none!] "Colour of the client area; none for the system window colour"

@@ -2326,6 +2326,13 @@ REBOOL Gui_Pointer_At(REBYTE *key, REBINT *x, REBINT *y, REBINT *mods, REBOOL *o
 // later and the SDK floor is 10.13, so it is asked for by selector and by
 // the appearance's NAME rather than the NSAppearanceNameDarkAqua symbol.
 // Before 10.14 there is no dark appearance to be in.
+// Nothing to do: AppKit's controls and default colours follow the
+// appearance by themselves, so `dark-controls?` only matters on Windows.
+void Gui_Window_Dark_Controls(GUIWIN *win, REBOOL on)
+{
+	(void)win; (void)on;
+}
+
 REBOOL Gui_Window_Dark(GUIWIN *win)
 {
 	@autoreleasepool {

@@ -58,6 +58,16 @@ print ["resizable?" win/resizable? " border?" win/border?]
 ;; Asked of the system each time; `theme-change` reports when it switches.
 print ["dark?:   " win/dark?]
 
+;; Off by default: on Windows only the title bar follows the appearance. With
+;; it on, the controls and every colour left at `none` follow as well.
+;;
+;; WATCH (Windows, dark system): the main window is dark inside too - dark
+;; buttons, fields, drop-down and fill. The other windows are light inside
+;; with a dark title bar. Toggle it from the View menu.
+print ["dark-controls? by default:" win/dark-controls?]
+win/dark-controls?: true
+print ["and on:                   " win/dark-controls?]
+
 ;; every accessor which can be read can also be written, except id and open?
 win/title: "Rebol GUI extension - move the mouse"
 print ["title:   " mold win/title]
@@ -298,7 +308,11 @@ box: add-panel/title win 20x285 260x60 "Temperature"
 ;; control fills with the WINDOW's colour by default, not its parent's.
 ;; WATCH: the two radios below must sit on the panel's colour, with no pale
 ;; rectangle around either of them.
-box/background: 235.240.250
+;; A colour a script sets is the script's to change - see `dark-controls?`
+;; below, which leaves it alone - so it is picked from the appearance here,
+;; and again on every `theme-change`.
+panel-color: func [dark [logic!]][either dark [48.52.62][235.240.250]]
+box/background: panel-color did all [win/dark-controls? win/dark?]
 
 ;; Two independent groups. Radios turn each other off only within a group,
 ;; and the grouping is the extension's own - it does not depend on creation
@@ -728,6 +742,7 @@ win/menu: [
 		"Normal text"   normal
 		---
 		"Track the mouse outside" track
+		"Dark controls"           dark-controls
 	]
 	"Help" ["About" about]
 ]
@@ -973,7 +988,7 @@ report: func [event /local type source position kind][
 			if all [source/target = canvas  attempt [dropped: load first source/data]] [
 				if image? dropped [
 					note ajoin ["  showing it (" dropped/size ")"]
-					try [dropped: resize dropped pic/size]
+					try [dropped: resize dropped pic/size * win/scale]
 					canvas/image: dropped
 					redraw canvas
 				]
@@ -990,6 +1005,8 @@ report: func [event /local type source position kind][
 	;; follow by themselves; on Windows only the title bar does.
 	if type == 'theme-change [
 		note ajoin ["theme: " event/code " (dark? " source/dark? ")"]
+		;; The one colour of our own in this window follows the switch.
+		if source == win [box/background: panel-color did all [win/dark-controls? source/dark?]]
 		unless (event/code = 'dark) = source/dark? [note "!! code and dark? disagree"]
 	]
 
@@ -1010,6 +1027,11 @@ report: func [event /local type source position kind][
 			;; WATCH: with this on, moving the mouse OUTSIDE every window
 			;; logs `move` events whose source is a screen; back over a
 			;; window they come from the window again, never both.
+			dark-controls [
+				win/dark-controls?: not win/dark-controls?
+				box/background: panel-color did all [win/dark-controls? win/dark?]
+				note ajoin ["dark controls: " win/dark-controls?]
+			]
 			track     [
 				tracking: not tracking
 				track-mouse tracking
