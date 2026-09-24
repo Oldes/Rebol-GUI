@@ -3097,7 +3097,13 @@ int GuiWidget_set_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 
 	if (!wid->handle) return PE_BAD_SET;
 
-	switch (RL_FIND_WORD(Gui_arg_words, word)) {
+	// Translated once, here, rather than inside the switch: a case which
+	// looks at `word` itself (bold? and italic? share one) must see the
+	// extension's own index, not the raw symbol - which never equals any
+	// W_GUI_ARG_* and made `bold?: true` set ITALIC instead.
+	word = RL_FIND_WORD(Gui_arg_words, word);
+
+	switch (word) {
 	case W_GUI_ARG_ITEMS:
 		if (wid->kind != W_GUI_WIDGET_DROP_DOWN) return PE_BAD_SET;
 		if (*type != RXT_BLOCK) return PE_BAD_SET_TYPE;

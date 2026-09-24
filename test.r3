@@ -218,6 +218,14 @@ label/color:     30.90.170
 print ["... and is now:  " mold label/font label/font-size "bold?" label/bold?]
 print ["colour reads back as:" mold label/color]
 
+;; `bold?` and `italic?` are one setting underneath and share one code path -
+;; each must change only itself. (`bold?: true` once set italic instead.)
+print ["bold, and only bold:    " all [label/bold?  not label/italic?]]
+label/italic?: true
+print ["italic added, bold kept:" all [label/bold?  label/italic?]]
+label/italic?: false
+print ["italic off, bold kept:  " all [label/bold?  not label/italic?]]
+
 ;; Nothing re-measures itself: a control which was told how big to be keeps
 ;; that size, whatever happens to its font, because the box a script laid out
 ;; is the box it meant. A bigger font in the old box clips.
