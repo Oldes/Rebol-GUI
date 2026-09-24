@@ -813,12 +813,15 @@ report: func [event /local type source position kind][
 			]
 		]
 		leave [
-			unless hovered == source [note "!! leave for something not entered"]
+			;; `hovered` starts as none: the `enter` for whatever the
+			;; pointer was over when the window opened went out with the
+			;; events the sections above drained with `poll-events`.
+			if all [hovered  not hovered == source] [note "!! leave for something not entered"]
 			hovered: none
 			if source == win [win/title: "Rebol GUI extension"]
 		]
 		move [
-			unless hovered == source [note ajoin ["!! move from " any [kind source/type] " before its enter"]]
+			if all [hovered  not hovered == source] [note ajoin ["!! move from " any [kind source/type] " before its enter"]]
 		]
 	]
 

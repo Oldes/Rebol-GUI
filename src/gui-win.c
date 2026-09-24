@@ -671,6 +671,52 @@ static REBINT Modifiers(void)
 	return flags;
 }
 
+/***********************************************************************
+**  Keeping a reported position inside what reports it.
+**
+**  At a scale that is not a whole number, device pixels and logical
+**  units do not line up, and every conversion rounds on its own: the
+**  last pixel row of a 22 unit tall radio at 125% is 332.8 units down
+**  the window, which rounds to 333, while the radio's own box rounds to
+**  311 + 22 = 333 - one past its end. So a move the OS delivered to the
+**  radio, because the pointer IS over it, reported a position a unit
+**  outside it; and with the box's origin summed through nested
+**  containers, the error can grow by a unit per level.
+**
+**  Windows' word on which control is under the pointer is the truth, so
+**  the position is pulled back inside that control's box - never by
+**  more than the rounding put it out. Not while the mouse is captured:
+**  a drag goes wherever the pointer does, and is meant to.
+***********************************************************************/
+static void Clamp_Into(REBINT *x, REBINT *y, REBINT ax, REBINT ay, REBINT w, REBINT h)
+{
+	if (w > 0) { if (*x < ax) *x = ax; else if (*x > ax + w - 1) *x = ax + w - 1; }
+	if (h > 0) { if (*y < ay) *y = ay; else if (*y > ay + h - 1) *y = ay + h - 1; }
+}
+
+static void Clamp_To_Widget(GUIWIDGET *wid, REBINT *x, REBINT *y)
+{
+	GUIWIDGET *at;
+	REBINT ax = 0, ay = 0, w = 0, h = 0, bx, by, bw, bh;
+
+	if (GetCapture() || !Gui_Widget_Get_Box(wid, &bx, &by, &w, &h)) return;
+	// Its top-left corner in the window - the same sum `widget/at` makes,
+	// so the clamped position and `at` agree to the unit.
+	for (at = wid; at; at = (GUIWIDGET*)at->parent) {
+		if (!Gui_Widget_Get_Box(at, &bx, &by, &bw, &bh)) return;
+		ax += bx;
+		ay += by;
+	}
+	Clamp_Into(x, y, ax, ay, w, h);
+}
+
+static void Clamp_To_Window(GUIWIN *win, REBINT *x, REBINT *y)
+{
+	REBINT w = 0, h = 0;
+	if (GetCapture() || !Gui_Get_Size(win, &w, &h)) return;
+	Clamp_Into(x, y, 0, 0, w, h);
+}
+
 // Queues a mouse event at the position carried by lParam.
 static void Queue_Mouse(GUIWIN *win, REBCNT type, LPARAM lp, REBINT extra)
 {
@@ -678,10 +724,12 @@ static void Queue_Mouse(GUIWIN *win, REBCNT type, LPARAM lp, REBINT extra)
 	if (!win || !win->hob) return;
 	// Reported in logical units, like every other coordinate here - at
 	// the DPI of the monitor the window is on.
+	REBINT x, y;
 	dpi = Dpi_Of(HWND_OF(win));
-	Gui_Queue_Event(win->hob, type,
-	                To_Logical(dpi, GET_X_LPARAM(lp)), To_Logical(dpi, GET_Y_LPARAM(lp)),
-	                Modifiers() | extra);
+	x = To_Logical(dpi, GET_X_LPARAM(lp));
+	y = To_Logical(dpi, GET_Y_LPARAM(lp));
+	Clamp_To_Window(win, &x, &y);
+	Gui_Queue_Event(win->hob, type, x, y, Modifiers() | extra);
 }
 
 // The same for a child widget. A child covers its part of the window, so
@@ -703,9 +751,12 @@ static void Queue_Widget_Mouse(GUIWIDGET *wid, REBCNT type, LPARAM lp, REBINT ex
 	p.y = GET_Y_LPARAM(lp);
 	if (wid->owner && wid->owner->handle)
 		MapWindowPoints(HWND_OF_WID(wid), HWND_OF(wid->owner), &p, 1);
+	REBINT x, y;
 	dpi = Dpi_Of(HWND_OF_WID(wid));   // a control shares its window's DPI
-	Gui_Queue_Event(wid->hob, type, To_Logical(dpi, p.x), To_Logical(dpi, p.y),
-	                Modifiers() | extra);
+	x = To_Logical(dpi, p.x);
+	y = To_Logical(dpi, p.y);
+	Clamp_To_Widget(wid, &x, &y);
+	Gui_Queue_Event(wid->hob, type, x, y, Modifiers() | extra);
 }
 
 

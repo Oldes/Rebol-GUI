@@ -166,6 +166,12 @@ Cocoa flips offsets against the menu-bar screen; the content view answers
   `Queue_Widget_Mouse`; macOS converts into the (flipped) content view with
   `Client_Point`. `widget/at` is computed in the shared layer by adding
   `offset`s up the `parent` chain.
+- **Positions at fractional scales (Windows):** every conversion rounds on its
+  own, so a pointer on a control's last pixel row can come out one unit past the
+  control's rounded box (and nested `at` sums add a unit per level). Mouse
+  positions are clamped into the box of the window or control Windows
+  delivered them to (`Clamp_To_Widget` / `Clamp_To_Window`) - except while the
+  mouse is captured, when a drag may legitimately be anywhere.
 - **Mouse moves:** on Windows `Nav_Proc`, which every control has, reports
   `WM_MOUSEMOVE` for all of them; labels answer `HTTRANSPARENT`, so their
   container reports instead. On macOS only the content view has a tracking
