@@ -9,7 +9,7 @@
 !/Entitlements.plist
 !/ci-test.r3
 !/test.r3
-!/README.md
+!/*.md
 */gen-*
 !/make-*.r3
 .DS_Store

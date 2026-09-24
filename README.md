@@ -1,118 +1,26 @@
 # Rebol/GUI extension
 
 A minimal windowing extension for [Rebol3](https://github.com/Oldes/Rebol3),
-built on the current extension ABI.
+built on the current extension ABI. It opens native windows, places native
+controls in them, and reports what the user did.
 
-This is a deliberate restart of the old `host-window.c` / `host-event.c` /
-`host-compositor.c` / `host-draw.c` sources. It does not use `gob!`, it does
-not composite, and it does not evaluate the DRAW dialect. It opens windows and
-reports what the mouse did in them.
+It is a fresh start rather than a port of the old View sources: there is no
+`gob!`, no compositor and no DRAW dialect. Custom drawing goes through the
+image widget - render into an `image!` with whatever draws pixels
+([Blend2D](https://github.com/Siskin-framework/Rebol-Blend2D) being the
+intended one) and `redraw` it.
 
-It needs Rebol **3.22.7** or newer - see [Build](#build) for what changed in
-the interpreter and why.
-
-Drawing arrives through the image widget: build an `image!`, render into it
-with whatever draws pixels ([Blend2D](https://github.com/Siskin-framework/Rebol-Blend2D)
-being the intended one), and `redraw` it.
+Requires Rebol **3.22.8** or newer. Implementation notes for contributors are
+in [INTERNALS.md](INTERNALS.md).
 
 ## What it is not (yet)
 
-- no DRAW dialect, no compositor - just the image widget described below
-- no keyboard events, beyond menu shortcuts
+- no DRAW dialect, no compositor - just the image widget
+- no keyboard events, beyond menu shortcuts and the platform's own navigation
 - no checkable menu items, and no popup (context) menus
-- eleven native controls so far: button, image, text, field, area, check,
-  radio, slider, progress, drop-down, panel
-- events are not posted to `system/ports/event` - see below
-- Windows and macOS; there is no X11/Wayland backend yet
-
-## The event model
-
-Two separate questions, and it is worth keeping them apart:
-
-**Who pumps the OS message queue?** The host does, from inside `wait`. The
-extension registers a device with `RDO_AUTO_POLL`, which asks the host to poll
-it from `OS_Wait` even with nothing pending — and that poll calls `Gui_Pump`.
-So `wait` is what sleeps, and one sleep serves both queues: OS messages get
-dispatched, and everything else Rebol has waiting — ports, timers, awake
-handlers — is serviced at the same time.
-
-That matters more than it sounds. The alternative, which this extension did
-until the device existed, is for the GUI loop to sleep inside the extension —
-and then for as long as a window is open, **nothing services Rebol's own
-queue**. A GUI program could not also hold a socket open.
-
-**How does `wait` know to return early?** The poll *pushes* an event with
-`RL_Event`, and the signal that sets is what wakes `WAIT`. So a click is
-delivered as soon as it happens, and the 0.05 s in `do-events` is only a
-ceiling.
-
-It cannot do this by its return code. The poll always answers `DR_DONE`,
-whatever is queued — the request an `RDC_POLL` handler is handed is one `REBREQ`
-on `OS_Poll_Devices`' own C stack, lent to each auto-polled device in turn, and
-a non-zero answer makes `OS_Do_Device` attach that stack temporary to the
-device's pending list, where it stays after the frame is gone. The host then
-walks a list holding a dangling pointer, on behalf of every device on it, and
-the event loop stops working rather than becoming more responsive. (`DR_PEND`
-also makes `OS_Wait` answer -1 on every poll, so `wait` spins instead of
-sleeping.)
-
-A pushed event has to be delivered somewhere, so the device serves a port: the
-`gui` scheme, opened once when the module is imported and reachable as
-`gui/event-port`. Nothing travels through it — GUI events stay in the
-extension's own queue, as below. It is a doorbell: its `awake` returning true is
-what puts it on `WAIT`'s waked list, `read` on it answers how many events are
-waiting behind it, and the GC marks it while an event of its own is queued. A
-program writing its own loop can wait on it alongside anything else:
-
-```rebol
-wait [my-socket gui/event-port 1]
-```
-
-It rings once per batch — on the first poll which finds the queue non-empty, and
-not again until `poll-events` has drained it — so a window nobody is draining
-cannot flood the system port. The condition is "anything waiting", not "anything
-new since the pump", because not every event arrives during a pump: a
-programmatic resize queues one from inside `win/size:`, and a user dragging a
-window runs a modal OS loop which dispatches for itself. Ringing from
-`Gui_Queue_Event` would be the obvious place and is the one thing that must not
-be done — that code can run inside such a modal loop, where growing a Rebol
-series is not safe.
-
-`gui-device-events` reports how many wakes have been pushed, which is the only
-way from Rebol to see this half of the arrangement working.
-
-`gui-device` reports the id the host assigned (any positive number means it was
-accepted) and `gui-device-polls` how many times it has been polled — the only
-way, from Rebol, to see that the arrangement is working.
-
-**Where do events go?** Into the extension's own queue, drained by
-`poll-events` — *not* into `system/ports/event`. They come out as ordinary
-`event!` values which name their window or widget through the `EVM_HANDLE`
-model, so a context handle crosses the boundary where a `REBGOB` used to have
-to, and the host needs to know nothing about windows. Keeping our own queue
-rather than posting to the system port is what lets the loop be one mezzanine
-function (`do-events`), which can be replaced the day the interpreter grows
-something better.
-
-So a loop is `poll-events` to drain, then `wait` to sleep:
-
-```rebol
-forever [
-    foreach evt poll-events [...]
-    unless win/open? [break]
-    wait 0.05          ;; the device pumps the OS queue from in here
-]
-```
-
-`poll-events` never sleeps. The delay is only a ceiling.
-
-**Nothing pumps while your handler runs.** There is one thread of control: the
-OS queue is drained by `poll-events` and by the device from inside `wait`, and
-neither happens while Rebol is inside a handler. So a long computation there —
-a pixel loop over a big image, a file read, a parse of something large — freezes
-the window for exactly as long as it takes, and no amount of work in this
-extension can change that. Long jobs have to be broken into pieces that return
-to the loop, the way any single-threaded GUI requires.
+- eleven native controls: button, image, text, field, area, check, radio,
+  slider, progress, drop-down, panel
+- Windows and macOS only; there is no X11/Wayland backend yet
 
 ## Build
 
@@ -122,41 +30,10 @@ Uses the [Siskin builder](https://github.com/Siskin-framework/Builder):
 siskin Rebol-GUI.nest
 ```
 
-The build generates `src/gen-gui.h` and `src/gen-gui.c` from `src/gui.reb`, and
+The build generates `src/gen-gui.h` and `src/gen-gui.c` from `src/gui.reb` and
 refreshes the reference sections of this file from the same specification. The
 amalgamated `rebol-extension.h` of a matching Rebol3 build must be reachable by
 the compiler.
-
-### What this needs from the interpreter
-
-`Needs: 3.22.7` in the specification, which is also where the C side's
-`MIN_REBOL_VERSION` check comes from. Three things landed in the interpreter
-for this extension, and all three are load-bearing:
-
-**`RL_Register_Device`, `RL_Do_Device`, `RL_Port_State`.** The event model above
-is built on them: an extension that cannot add a device to the host table
-cannot have the OS queue pumped during `wait`, and one that cannot reach its
-own device from a port has nowhere to push a wake event.
-
-**Win32 `Query_Events` dispatches the message it removed.** `OS_Wait` calls it
-as its timing method, and it used to `GetMessage` a message off the thread
-queue and then dispatch it only under `REB_VIEW`, and only while one of View's
-own windows held the focus. Every other case dropped it. That was invisible for
-as long as the View host was the only thing in the process that could own a
-window - and fatal the moment an extension owns one, because `wait` then eats
-a message per call and clicks simply disappear. This extension is unusable
-without the fix; there is nothing it can do from its own side, since the
-message is gone before any poll of ours runs.
-
-**Handle comparison.** `=` on two handles compares their type, so two windows
-compare equal; `==` compares identity. `Cmp_Handle` orders context handles
-before plain ones and falls back to the type name. Both matter here, because
-every window and widget this extension hands out is a handle and test code
-compares them constantly.
-
-Two more the extension leans on, which were already in place: `image!` crossing
-the ABI ignores the series index (`RXIARG` overlaps `index` with the image
-dimensions), and a released context handle still answers `/type`.
 
 ## Usage
 
@@ -166,55 +43,100 @@ gui: import 'gui
 win: open-window/title 640x480 "Hello"
 ok:  add-button win "OK" 20x20 100x32
 
-forever [
-    foreach evt poll-events [
-        print [evt/type evt/offset]
-        if all [evt/type = 'click  evt/source = ok] [print "clicked!"]
-        if evt/type = 'close [close-window win  halt]
-    ]
-    wait 0.05
+do-events win func [evt][
+    print [evt/type evt/offset]
+    if all [evt/type = 'click  evt/source == ok] [print "clicked!"]
 ]
 ```
 
-Each event is one `event!`, read by field:
+`do-events` runs until the window is closed. A loop of your own is
+`poll-events` to take what is queued, then `wait` to sleep:
+
+```rebol
+forever [
+    foreach evt poll-events [...]
+    unless win/open? [break]
+    wait [gui/event-port 0.05]
+]
+```
+
+`poll-events` never sleeps; `wait` does, and the OS message queue is pumped
+from inside it. Because the extension waits through Rebol's own `wait`, ports,
+timers and other awake handlers keep working while a window is open, and
+`gui/event-port` can be waited on together with anything else:
+
+```rebol
+wait [my-socket gui/event-port 1]
+```
+
+Waiting on the port returns as soon as there is something to poll; the number
+is only the longest it will sleep. Events are not posted to
+`system/ports/event` - `poll-events` is the only way to get them.
+
+**Nothing is pumped while your handler runs.** There is one thread: a long
+computation in a handler freezes the window for as long as it takes. Break long
+jobs into pieces that return to the loop.
+
+### Events
+
+Each event is an `event!`:
 
 | field    | type            | meaning                                              |
 |----------|-----------------|------------------------------------------------------|
 | `type`   | `word!`         | `move` `down` `up` `alt-down` `alt-up` `aux-down` `aux-up` `scroll-line` `close` `resize` `click` `change` `focus` `unfocus` `menu-select` `drop-file` `drop-text` |
-| `source` | `handle!`       | what produced it: the window, or the widget itself for `click`, `change`, `focus` and `unfocus` — `evt/source/window` gets back to the window |
+| `source` | `handle!`       | the window, or the widget itself for `click`, `change`, `focus` and `unfocus`; `evt/source/window` gets back to the window |
 | `offset` | `pair!`         | client coordinates; the new client size for `resize` |
 | `flags`  | `block!`        | `shift` `control` `alt` `double`, where they apply   |
 | `code`   | `integer!`/`word!` | signed wheel lines, or a menu item's word         |
 
-The types ARE the core's `EVT_*` codes, straight from `system/catalog/event-types` —
-this extension defines no event vocabulary of its own, which is why a wheel is
-`scroll-line` and a menu pick is `menu-select`, the names every other event
-source in Rebol already uses.
+The types are the core's own (`system/catalog/event-types`); the extension adds
+no vocabulary. An event has an `offset` or a `code`, never both, so a wheel
+event reports no position.
 
-`offset` and `code` are the two readings of the event's one payload word, so an
-event has one or the other and never both. That is why a wheel event reports no
-position: the widget it happened over is in `source`, which is the part anyone
-actually switches on.
+- `close` only *reports* that the user asked to close the window. It stays open
+  until `close-window` is called, so a handler can refuse. (`do-events` closes
+  it for you.)
+- Enter in a `field` reports a `click`: the control was activated, not edited.
+  An `area` keeps Enter for new lines.
+- A `change` means the *user* changed something. Setting a value from Rebol
+  does not report one.
+- Consecutive `move` events for one window are collapsed to the newest.
 
-Two notes on behaviour:
+**Comparing handles:** use `==` to ask "is this that widget?". `=` on two
+handles compares their type only.
 
-- `close` only *reports* that the user asked to close the window. The window
-  stays open until Rebol calls `close-window`, so a handler can refuse.
-- **Enter in a `field` reports a `click`** — the same word a button uses,
-  because it is the same thing: the control was activated rather than merely
-  edited. An `area` is multi-line and keeps Enter for itself, which is how a
-  new line is typed.
-- consecutive `move` events for one window are collapsed to the newest one,
-  which keeps a fast mouse from filling the queue.
+A closed window's handle stays valid and reports `open?` as `false`. Closing a
+window also removes all its widgets: their handles report `id` 0 and `parent`
+`none`, and setting anything on them fails. `remove-widget` does the same for
+one widget (and, for a container, everything in it).
 
-A closed window's handle stays valid and reports `open?` as `false`; it never
-becomes a dangling pointer.
+## Windows
 
-### The window's background
+```rebol
+win: open-window/title 640x480 "Title"
+open-window/fixed      400x300      ;; the user cannot resize it
+open-window/borderless 400x300      ;; no title bar, no frame
+open-window/hidden     400x300      ;; build it first, then show-window
+```
 
-`background` is the client area's colour, `none` for the system window colour,
-and every widget on the window resolves to it — so a transparent label on a
-dark window needs only a light text colour of its own:
+`resizable?` and `border?` can be read and changed afterwards. Changing either
+keeps the client size - the window grows or shrinks around it - and they are
+independent: turning the border back on does not make a `/fixed` window
+resizable.
+
+A **borderless window** has no title bar, so no close box and nothing to drag.
+Give it your own way out, and move it yourself if needed:
+
+```rebol
+if type = 'down [grab: position]
+if all [grab  type = 'move] [win/offset: win/offset + position - grab]
+if type = 'up   [grab: none]
+```
+
+### Background
+
+`background` is the client area's colour (`none` for the system colour), and
+widgets on the window use it too:
 
 ```rebol
 win/background: 24.26.34
@@ -223,97 +145,36 @@ lbl/transparent?: true
 lbl/color: 225.228.235
 ```
 
-`transparent?` is the third state: the client area is **see-through to
-whatever is behind the window**, and only the widgets and drawn pixels are
-left. `open-window/transparent` opens one that way, and it reads and writes
-afterwards like `border?` does.
+`transparent?` makes the client area see-through, leaving only the widgets and
+drawn pixels. Usually combined with `/borderless`:
 
 ```rebol
 ghost: open-window/borderless/transparent 240x80
 add-button ghost "floating" 20x20 0x0
 ```
 
-Usually paired with `/borderless`: a frame around a hole is more confusing
-than no frame, and a window whose background is gone has nothing to be
-dragged by.
+On Windows this uses a colour key of pure magenta: anything drawn in exactly
+`255.0.255` becomes a hole, and clicks there go to whatever is behind.
 
-**How, and what it costs.** macOS has the easy half — an `NSWindow` which is
-not opaque with a clear background colour, and the compositor deals in alpha
-already. Win32 uses `WS_EX_LAYERED` with a **colour key**: the client area is
-filled with a colour the compositor then drops, so child controls go on
-painting normally and are the only thing left visible. The alternative,
-per-pixel alpha through `UpdateLayeredWindow`, does not composite child
-windows at all — it would rule out every native control this extension exists
-to place.
+### Painting
 
-The key is full magenta. A widget painting exactly `255.0.255` will have holes
-punched in it on Windows, which is why the key is a colour nothing sensible
-picks. Clicks on the dropped pixels fall through to whatever is behind, which
-is usually what you want from a window that is not there.
+Creating widgets does not paint them one by one; everything added since the
+last pump appears together, on the next `poll-events` or `wait`. A window
+already on screen therefore fills in a moment after it is built. To have it
+appear complete, open it `/hidden` and call `show-window` when done.
 
-A transparent widget on a see-through window takes the slower path — there is
-no flat colour to hand it, so it renders its parent, which paints the key.
-
-### The window's frame
-
-```rebol
-open-window/fixed      400x300           ;; the user cannot resize it
-open-window/borderless 400x300           ;; no title bar, no frame at all
-
-win/resizable?                           ;; and both are readable ...
-win/border?: false                       ;; ... and writable afterwards
-```
-
-Both are read from the native window rather than from a note this extension
-kept, so what you get back is what the window has — including a style
-something else changed. And **changing either keeps the client size**: a frame
-appearing or going away re-splits the window rather than resizing it, so the
-room comes out of exactly the area everything is laid out in. The window is
-grown by what was lost, the same promise a menu bar makes.
-
-The two are separate properties. Turning a border back on does not turn
-resizing back on — the window may never have had it:
-
-```rebol
-win: open-window/fixed 400x300
-win/border?: false     ;; borderless
-win/border?: true      ;; framed again, still not resizable
-```
-
-**A borderless window has no title bar**, which is more than a matter of
-looks: no close box, so no `close` events, and nothing for the user to drag it
-by. The program is then the only thing that can move it (`win/offset:`) or
-close it (`close-window`), so give it its own way out — a button, a key, a
-timeout — before you open one.
-
-Dragging is deliberately not built in. Making the background draggable would
-mean swallowing the `down` and `move` events over it, which are the events an
-image widget exists to report. Doing it in Rebol costs a few lines and leaves
-you in charge of which part of the window is a handle:
-
-```rebol
-if type = 'down [grab: position]
-if all [grab  type = 'move] [win/offset: win/offset + position - grab]
-if type = 'up   [grab: none]
-```
-
-Each platform gets there its own way. Windows uses `WS_POPUP` in place of the
-caption and frame bits; macOS uses `NSWindowStyleMaskBorderless`, which is the
-*absence* of every other bit rather than a bit of its own — which is why
-`resizable?` refuses on a borderless window there instead of quietly giving it
-a title bar back. Cocoa also refuses to make a borderless window key, and a
-window which cannot become key has no field editor, so a `field` in it could be
-clicked and never typed into: every window this extension opens is an
-`NSWindow` subclass which answers `YES` to `canBecomeKeyWindow`.
+`redraw` repaints a widget after you have changed its image. On Windows it
+paints before returning; on macOS it is drawn at the next pump, like
+everything else there.
 
 ## Widgets
 
-Each `add-*` puts a native control into a window's client area and returns a
-handle of its own. They all take the same arguments - window, string, offset,
-size - except `add-image`, which takes an `image!` instead of a string:
+Each `add-*` puts a native control into a window, a panel or an image widget,
+and returns a handle. They take the container, a string, an offset and a size -
+except `add-image`, which takes an `image!` instead of a string:
 
 ```rebol
-btn:   add-button win "Click me"       20x20  140x32
+btn:   add-button win "Click me"        20x20  140x32
 label: add-text   win "Type your name:" 20x60  220x0   ;; 0 = work it out
 name:  add-field  win ""                20x90  240x0
 notes: add-area   win ""               20x130  300x200
@@ -322,448 +183,236 @@ one:   add-radio/group win "First"     20x370  110x22 1
 pic:   add-image  win some-image       340x20
 ```
 
-Sizes are in logical units and a zero axis means "what does this need?" - both
-explained under [Sizes, DPI and the natural
-size](#sizes-dpi-and-the-natural-size).
-
-| kind     | control | reports |
-|----------|---------|---------|
-| `button` | push button | `click` |
-| `text`   | static label | nothing |
-| `field`  | one-line entry | `change` `focus` `unfocus` |
-| `area`   | multi-line entry with a scrollbar | `change` `focus` `unfocus` |
-| `check`  | checkbox | `click` |
-| `radio`  | radio button, see grouping below | `click` |
-| `slider` | draggable slider | `change`, continuously while dragged |
-| `progress` | progress bar | nothing; it takes no input |
+| kind        | control | reports |
+|-------------|---------|---------|
+| `button`    | push button | `click` |
+| `text`      | static label | nothing |
+| `field`     | one-line entry | `change` `focus` `unfocus`, `click` on Enter |
+| `area`      | multi-line entry with a scrollbar | `change` `focus` `unfocus` |
+| `check`     | checkbox | `click` |
+| `radio`     | radio button | `click` |
+| `slider`    | draggable slider | `change`, continuously while dragged |
+| `progress`  | progress bar | nothing |
 | `drop-down` | pick one of a list | `change` `focus` `unfocus` |
-| `panel`  | holds other widgets, see below | nothing |
-| `image`  | an `image!`, see below | its own mouse events |
+| `panel`     | holds other widgets | nothing |
+| `image`     | shows an `image!` | its own mouse events |
 
-Every accessor works on every kind that has one:
+Common accessors; ones that do not apply to a kind answer `none`:
 
 ```rebol
 btn/text: "Clicked"      ;; label, or the contents of a field or an area
-name/text                ;; what the user has typed
-btn/offset: 30x40        ;; position inside the client area
+btn/offset: 30x40        ;; position inside its container
 btn/size: 160x32
-btn/enabled?: false      ;; everything except an image
-opt/state: true          ;; a check or a radio; none for the rest
-bar/value: 40%           ;; a slider or a progress bar; none for the rest
-pick/items: ["a" "b"]    ;; a drop-down; none for the rest
-pick/index: 2            ;; which item, 1-based; 0 for none
-one/group                ;; which radio group, 0 for everything else
-btn/kind                 ;; button | text | field | area | check | radio |
-                         ;; slider | progress | drop-down | panel | image
-btn/parent               ;; whatever holds it: a window, or a panel
-btn/window               ;; the window either way, however deeply nested
+btn/enabled?: false
+opt/state: true          ;; check or radio
+bar/value: 40%           ;; slider or progress
+btn/kind                 ;; button | text | field | ... | image
+btn/parent               ;; the window or the container holding it
+btn/window               ;; the window, however deeply nested
+win/children             ;; widgets held directly, in the order added
 ```
 
-### When anything actually paints
+`children` answers `none` for a kind that cannot hold widgets, and a block
+(possibly empty) for one that can. The block is the extension's own - read it,
+but do not modify it.
 
-Creating a widget, or giving an image widget a different `image!`, marks it as
-needing paint and returns. The drawing happens on the next pump — inside
-`poll-events`, or inside `wait` by way of the device. `redraw` is the one
-exception: it promises the pixels are on screen before it returns, which is
-what makes it the right thing to call after rendering into an image.
+### Sizes and DPI
 
-This matters because a script builds its layout with nothing pumping in
-between. Painting each control as it was created made a window assemble itself
-visibly, one `add-*` at a time. Now everything added since the last pump
-appears together. (macOS worked this way from the start — AppKit is only in a
-state to draw between events, so `Gui_Pump` has always been the only place
-anything is displayed there. This brought Windows back in line.)
+**Offsets and sizes are logical units** - 96 to the inch, a point on macOS, a
+pixel at 100% scaling on Windows. The same layout is the same physical size on
+any display, and event coordinates use the same units.
 
-A window that is already on screen while its layout is built still appears
-empty and fills in at the first pump. To have it arrive finished, build it
-hidden:
-
-```rebol
-win: open-window/hidden/title 400x300 "All at once"
-add-text   win "ready" 10x10 200x0
-add-button win "go"    10x40 0x0
-show-window win          ;; one frame, everything on it
-```
-
-### Sizes, DPI and the natural size
-
-**Every offset and size is a logical unit** — 96 to the inch, which is what
-macOS calls a point and what a Windows program means by a pixel at 100%
-scaling. So `240x26` is the same physical size on a 96 DPI screen, on a 175%
-one and on a Retina Mac, and one layout is right on all of them. Event
-coordinates come back in the same units.
-
-That is not free on Windows. The process asks for `PROCESS_SYSTEM_DPI_AWARE`,
-so nothing is scaled for it — but `SPI_GETNONCLIENTMETRICS` hands back the
-shell's message font **already scaled for the display**: 12px at 96 DPI, 21px
-at 175%. Left alone, a script's coordinates stay 96-DPI-sized while its text
-grows with the screen, which is a label too small for its own font and a text
-entry that clips its only line. The Win32 backend therefore converts at its own
-boundary, in both directions; the Cocoa backend has nothing to do.
-
-**A zero axis asks the widget what it needs.** The font decides how tall a line
-is, and the control knows its own border and padding, so neither belongs in
-your script:
+**A zero axis asks the widget what it needs**, from its font and its own
+padding:
 
 ```rebol
 add-field  win ""     300x100 240x0   ;; your width, its height
 add-text   win "Name" 300x70  0x0     ;; fits the string
 add-button win "OK"   20x20   0x0     ;; fits the label
-name/size                             ;; what it settled on
 ```
 
-It works on anything with text — button, label, field, area, check, radio,
-drop-down — and is refused on the rest, which have nothing to measure: an image
-has `/size`, and a slider, a progress bar or a panel is whatever size you say.
-A zero *width* on an entry does not mean the width of what happens to be in it
-(an empty field would come out a few pixels wide) but about twenty characters,
-the same guess a dialog makes. A zero *height* on an `area` gives four lines,
-the smallest thing that reads as multi-line.
+This works on anything with text. A zero width on an entry gives room for about
+twenty characters; a zero height on an `area` gives four lines. Image, slider,
+progress and panel need an explicit size.
 
-The measuring happens after the widget's font is settled — including a font
-inherited from `win/font-size` — and before it is first drawn, so nothing is
-ever seen at the wrong size.
+Measuring happens once, at creation. A widget never resizes itself later, so
+after changing its font or text, assign a zero axis to ask again:
 
-It happens **once**. To ask again later, after changing a font or a label,
-assign a zero axis to `size` — see [Typography](#typography) below.
+```rebol
+lbl/font-size: 15
+lbl/size: 220x0          ;; keep the width, measure the height
+lbl/size: 0x0            ;; measure both
+```
 
-**`win/scale`** reports device pixels per unit: `1.0` at 100%, `1.75` at 175%,
-`2.0` on a Retina Mac. Sizes are logical, so you rarely need it — with one
-exception. An image widget stretches its `image!` into the box it was given, so
-a 240x160 image in a 240x160 box is drawn across 420x280 device pixels at 175%
-and looks soft. Render at `240x160 * win/scale` and give the box the size you
-meant:
+**`win/scale`** is device pixels per unit (`1.0`, `1.75`, `2.0` on Retina).
+Its main use is rendering an image at full resolution:
 
 ```rebol
 pic:    make image! to pair! 240x160 * win/scale
 canvas: add-image/size win pic 20x70 240x160
 ```
 
-**`change` means the user changed it.** Writing `field/text: "x"` from Rebol
-does not raise one - on Windows that takes suppressing the `EN_CHANGE` which
-`SetWindowText` sends synchronously, while on macOS `setStringValue:` simply
-never calls the delegate. Same behaviour, two different reasons.
+### Text and colour
 
-Clicking one queues a `click` event whose `source` is the widget, and `=`
-identifies it — two handle values are equal when they name the same handle:
+Anything with text - button, text, field, area, check, radio, drop-down and a
+panel's caption - takes typography:
 
 ```rebol
-if all [type = 'click  source = ok] [...]
-```
-
-This needs an interpreter whose `CT_Handle` compares identity. Older ones
-answer the *type* question in the loose mode, so `source = level` is true for
-every widget in the window — and `==` is no safer there, because it compares
-`VAL_HANDLE_FLAGS` alongside the context, and those flags carry the collector's
-`HANDLE_CONTEXT_MARKED` bit, which changes under a value that has not. On such
-a build, compare `source/id = ok/id` instead: `id` is the native
-`HWND`/`NSView*` as an integer and is stable for the life of the control. (It
-reads `0` for a removed widget and a closed window, so two dead handles compare
-equal that way — which never arises in an event loop, since a control that is
-gone sends nothing.)
-
-Accessors that belong to one kind answer `none` on the others - `btn/image`
-and `pic/text` are both `none`, and `widget/kind` says which is which.
-
-An `area` is one control in Rebol's eyes but two objects on macOS: the handle
-is the `NSScrollView`, and the `NSTextView` inside it holds the text and the
-back-pointer. Everything above the backend is unaware of that.
-
-### Typography
-
-Anything that has `text` has typography — button, label, field, area, check,
-radio, drop-down and a panel's caption. Anything that doesn't (image, slider,
-progress) answers `none`:
-
-```rebol
-label/font:      "Georgia"   ;; family name; none goes back to the system font
-label/font-size: 15          ;; points;      none goes back to the system size
+label/font:      "Georgia"   ;; none: the system font
+label/font-size: 15          ;; points; none: the system size
 label/bold?:     true
 label/italic?:   false
-label/color:     30.90.170   ;; text colour; none lets the platform decide
+label/color:     30.90.170   ;; none: the platform's colour
 ```
 
-**A widget's font is read back out of the control, not out of a note this
-extension kept.** So what you read is what is on screen — including the font a
-control was born with, and one set by anything else. There is nothing to drift
-out of step, at the price of a font being one indivisible object underneath:
-setting `font-size` alone means reading the font, changing the size and putting
-it back, which the shared layer does for you.
+A window's `font` and `font-size` are defaults for widgets created **after**
+they are set; widgets already on the window are not changed.
 
-The colour is the exception, and is kept per widget. Win32 stores no text
-colour on a control — the *parent* is asked, message by message, as each child
-is about to paint — so there is nowhere in the control to read one back from.
+Not every platform honours every setting: a text colour on a Windows push
+button, and on a macOS drop-down, is stored and read back but not shown.
 
-#### Read-only entries
-
-A field or an area can refuse to be edited without being *disabled*:
+`background` and `transparent?` work as on a window:
 
 ```rebol
-log/read-only?: true
+lbl/background: 235.240.250   ;; fill with this
+lbl/background: none          ;; the platform's own
+lbl/transparent?: true        ;; nothing - what it sits on shows through
 ```
 
-The difference matters. `enabled?: false` greys the text, stops it being
-selected and stops an area scrolling; `read-only?` leaves all three working and
-only turns off typing. Which is what a log wants — the program writes to it,
-`log/text:` still works either way, and the user can select and copy from it.
+Setting a colour turns transparency off. A widget fills with the *window's*
+colour by default, so a control inside a coloured panel or on an image needs
+`transparent?: true` to blend in. Transparency applies to `text`, `check`,
+`radio` and `panel`; entries and drop-downs take a `background` colour only.
 
-`none` for a kind that has no such thing, so only a field and an area answer it.
-
-The flag is kept in the widget rather than read back from the control, which is
-against the habit everywhere else here. Win32 does hold one (`ES_READONLY`,
-independent of `WS_DISABLED`) and would answer honestly, but a macOS text view
-says "enabled" and "editable" with the same property — so the two have to be
-combined from something, and a disable/enable cycle has to leave a read-only
-area read-only.
-
-#### Scrolling an area
-
-`scroll` is how far down an area is, as a `percent!`, and it takes either a
-percent or one of three words:
+### Fields and areas
 
 ```rebol
-log/scroll: 'end          ;; or 'bottom - the newest line
-log/scroll: 'top
-log/scroll: 50%
-log/scroll                ;; where it is now
+log/read-only?: true      ;; no typing, but selecting and copying still work
+log/scroll: 'end          ;; or 'bottom, 'top, or a percent!
+log/scroll                ;; where it is now, as a percent!
 ```
 
-`none` for a kind that does not scroll, so only an area answers it. An area
-whose text fits has nowhere to go and reports `0%`.
-
-Both forms are there because both are used: `'end` is what a call site usually
-means and says so, while a percent is what a computed position looks like.
-`'end` and `'bottom` are the same place under the two names that read best in
-different sentences.
-
-**A log has to be told.** Setting `text` puts a Win32 edit control back at the
-top, so an area that should follow its newest line needs one more line:
+`read-only?` differs from `enabled?: false`, which also greys the text and
+stops selection. Setting `text` may scroll an area back to the top, so a log
+that should follow its newest line sets `scroll` after it:
 
 ```rebol
 note: func [line [string!]][
-    log/text: append append log/text NL line
+    log/text: append append log/text newline line
     log/scroll: 'end
 ]
 ```
 
-The fraction is the unit because the platforms are not comparable: a Win32
-`EDIT` control's scrollbar range is in **lines** — `GetScrollInfo` gives the
-position, the range and the page directly, so no font has to be measured — while
-a Cocoa clip view's is in **points** against the document's height. `'end` also
-takes a different route on macOS, through `scrollRangeToVisible:` rather than
-the clip view, because after the string has just been replaced the document's
-height may not be laid out yet and that call forces it first.
+### Check boxes and radio groups
 
-#### Backgrounds, and having none
-
-`background` is the colour painted behind the text; `none` puts it back to the
-platform's own. `transparent?` is the separate question of whether anything is
-painted there at all:
+Radios sharing a `/group` id turn each other off; anything with a different id
+(no `/group` means 0) is left alone. Grouping follows the id only - not
+creation order or which container they are in:
 
 ```rebol
-lbl/background: 235.240.250   ;; fill with this
-lbl/background: none          ;; the platform's own again
-lbl/transparent?: true        ;; nothing at all - what it sits on shows through
+warm: add-radio/group win "Warm"  20x290 110x22 1
+cool: add-radio/group win "Cool"  20x315 110x22 1
+slow: add-radio/group win "Slow" 150x290 110x22 2
+
+cool/state: true    ;; turns `warm` off, leaves `slow` alone
+one/group           ;; 1
 ```
 
-They share one slot, because they are answers to the same question: giving a
-colour turns transparency off, and `transparent?: false` goes back to the
-platform's own rather than to a colour set earlier.
+Setting `state` from Rebol behaves exactly like a click, except that no event
+is reported.
 
-A control fills with the **window's** colour by default, not its parent's — so
-a radio inside a coloured panel needs `transparent?: true` to sit on the
-panel's colour rather than in a pale rectangle of its own.
+### Sliders and progress bars
 
-Transparency applies to `text`, `check`, `radio` and `panel`. An entry, an area
-and a drop-down keep it: their background belongs with their bezel, and showing
-through leaves a frame around nothing. They take a `background` colour.
-
-Why it needs saying at all: on macOS a view is composited into its superview,
-so a control that draws no background already has its parent's pixels
-underneath and there is nothing to arrange. On Win32 there is, and the answer
-depends on what the widget sits on.
-
-**Over a colour** — the window, or a panel with a `background` of its own — the
-control is simply handed *that* colour to fill with. Indistinguishable from
-showing through, and the control keeps painting itself normally, which matters:
-a themed check or radio cross-fades between states through
-`BufferedPaintAnimation`, painting into a memory DC of its own without ever
-asking anyone to erase. Told to fill with nothing, it animates out of an empty
-buffer and disappears for the length of the fade.
-
-**Over rendered pixels** — inside an image widget — there is no colour to hand
-over, so the control is subclassed and its whole `WM_PAINT` taken over: the
-parent's pixels via `WM_PRINTCLIENT`, then the control over them the same way.
-Every class that can hold a widget answers `WM_PRINTCLIENT` for this. The
-consequence is that such a control does not cross-fade — the base procedure
-never runs a paint cycle of its own, which is exactly why nothing can go wrong
-in it. No theme API and no extra library either way.
-
-**A control does not re-measure itself.** The box laid out is the box kept —
-changing a font or a label does not move anything — so a bigger font in a box
-sized for a smaller one clips.
-
-**Asking for a re-fit is a zero axis in `size`**, the same convention `add-*`
-uses, so the two read alike:
+Both take an offset and a size but no label, and carry a `value` from `0%` to
+`100%`:
 
 ```rebol
-lbl: add-text win "Type your name:" 10x10 220x0
-lbl/size                 ;; 220x19 - width given, height measured
-lbl/font-size: 15
-lbl/size                 ;; 220x19 still - nothing moved on its own
-lbl/size: 220x0          ;; keep the width, measure the height again
-lbl/size                 ;; 220x26
-lbl/size: 0x0            ;; measure both
+level: add-slider/value   win 20x370 240x28 25%
+meter: add-progress/value win 20x410 240x20 25%
+
+level/value               ;; => 25%
+meter/value: level/value  ;; decimal! is accepted too; out-of-range clamps
 ```
 
-Which axes to re-measure, and whether there is room to, is a question about the
-rest of the layout — so it belongs in the script rather than in the accessor.
-An image or a panel has no size of its own to report and refuses to be asked.
+A slider taller than it is wide is vertical, with `0%` at the bottom.
 
-#### A window's default
-
-A window carries a default that widgets pick up **as they are created**:
+### Drop-downs
 
 ```rebol
-win/font: "Georgia"
-win/font-size: 16
-add-button win "Big" 20x20 100x30      ;; Georgia 16
+pick: add-drop-down/index win ["Ash" "Birch" "Elm"] 300x350 200x0 2
 
-win/font-size: 11
-add-button win "Small" 20x60 100x30    ;; Georgia 11 - the first is still 16
+pick/items                ;; ["Ash" "Birch" "Elm"]
+pick/index                ;; 2 - 1-based, 0 when nothing is picked
+pick/text                 ;; "Birch" - read-only; set `index` to choose
+pick/items: ["Oak" "Yew"] ;; replaces the list and clears the selection
 ```
 
-Setting it reaches back into nothing. That is the whole of the inheritance:
-the default is read once, at creation, so a widget's font stays its own
-business and there is no "inherited or explicit?" bit to keep straight. To
-restyle what is already on screen, loop over the handles.
+Non-string values in the block are skipped. `size` is the closed control.
+Duplicate entries are kept.
 
-There is deliberately no `win/color`. A window has no text of its own, and a
-colour on a window would read as a background colour — which this extension
-does not paint.
+### Panels and group boxes
 
-#### What each platform will not do
-
-| | |
-|---|---|
-| Windows push button | ignores a text colour. Win32 draws a `BS_PUSHBUTTON`'s text itself, in the system colour; only an owner-drawn button could say otherwise, and owner-drawing means giving up the native look for every button. The colour is still stored and still reads back — it just does not show. A coloured label above the button is the usual way round it. |
-| macOS drop-down | ignores a text colour. A pop-up button shows whichever menu item is selected rather than a title of its own, so an attributed title would fight the menu. |
-
-Fonts and sizes work everywhere, on both platforms, including on those two.
-
-Under the hood the two backends have almost nothing in common here. Windows
-caches an `HFONT` per distinct face and deletes them all at shutdown — a GDI
-object belongs to whoever made it, and a control does not own the font it is
-given, so restyling one label in a loop creates one font rather than one per
-assignment. macOS asks `NSFontManager` for a family and converts it for bold
-or italic, and colours a button by rebuilding its **attributed title** — which
-is why setting a button's text or font rebuilds that string too.
-
-### Panels
-
-A panel holds other widgets. Every `add-*` takes a window, **a panel, or an
-image widget** as its first argument, and what a container holds is positioned
-inside *it*:
+A panel holds other widgets, positioned inside it. Panels nest:
 
 ```rebol
 box:  add-panel win 20x285 260x60
 warm: add-radio/group box "Warm" 10x26 110x22 1   ;; 10x26 within the box
 ```
 
-`parent` is whatever holds a widget; `window` is the window either way,
-however deeply nested. Panels nest inside panels.
-
-**A widget still belongs to its window, not to its panel.** The window keeps
-one flat list of every widget at any depth, which is what keeps closing a
-window a single walk — the nesting only says where a control sits.
-
-`remove-widget` on a panel takes its contents with it, and their handles turn
-into removed ones in the same moment. The children are destroyed *first*,
-depth-first, rather than being left to the container: Windows would take them
-anyway, but on macOS this extension holds a reference to every control, so
-letting the panel drop them would leak one object each.
-
-**No view in the macOS backend fills a background.** A panel with nothing to
-say, and an image widget with no pixels yet, both used to paint their bounds
-with the window background colour — the ordinary thing to do — and both took
-every widget created before them off the window. Whatever the mechanism (their
-frames were verified correct), an opaque fill in a view that has nothing to
-show is how a missing image turns into missing buttons. A view that draws
-nothing hides nothing, so that is what they do.
-
-A panel draws nothing of its own unless asked. It is a place to put things,
-not a visible slab — and on macOS an opaque container is what turns any
-mistake about its frame into a blank window instead of a misplaced rectangle,
-so it paints no background at all. On Windows a child window has to paint or
-it shows whatever was behind it, and Win32 clips a child strictly to its own
-rectangle, so there it fills with the window background colour.
-
-#### Group boxes
-
-`/edge` gives a panel a frame, and `/title` puts a caption in that frame — a
-group box. A caption implies the frame, because a group box without one is
-just floating text:
+`/edge` draws a frame and `/title` a caption in it (a caption implies a frame).
+Both can be changed later:
 
 ```rebol
 box: add-panel/title win 20x285 260x60 "Temperature"
-add-radio/group box "Warm" 10x26 110x22 1
-
-box/edge                    ;; true
-box/text: "Temperature (°C)"    ;; retitles it
-box/edge: false             ;; and it is a plain container again
+box/text: "Temperature (°C)"
+box/edge: false
 ```
 
-Both are read at paint time rather than baked into the control, so
-`box/edge: true` on a panel that has been on screen for an hour is a repaint,
-not a rebuild.
+The frame is drawn inside the panel's box and never moves its children, so
+leave room for it yourself.
 
-**The frame never moves anything.** It is drawn inside the panel's own box,
-and a child is positioned from the panel's top-left corner whether there is a
-frame or not — so adding an edge to an existing panel cannot shift its
-contents, and leaving room for the frame and the caption is the caller's job.
-That is also why the frame is drawn by hand on both platforms rather than
-handed to the native control for it:
+A panel is not transparent to the mouse: clicks on its background are not
+reported to the window. Removing a panel removes everything in it.
 
-| | native option | why not |
-|---|---|---|
-| Windows | `BUTTON` with `BS_GROUPBOX` | not a container — a group box is a sibling drawn *behind* the controls it appears to hold, and parenting children to one is where the classic repaint and tab-order trouble starts |
-| macOS | `NSBox` | puts its children in a `contentView` of its own and insets them by an amount it chooses — so a panel would move its contents the moment it grew an edge, and by a different amount than Windows |
+### Image widgets
 
-Each backend measures the caption with its own font, so the two frames are not
-identical to the pixel. They are not allowed to matter: nothing is laid out
-from them.
+`add-image` shows an `image!` and is where a renderer plugs in:
 
-On macOS the top line is drawn in two pieces with a gap for the caption,
-rather than the usual trick of painting the background back over the text.
-Breaking the line needs no colour and so cannot cover anything — which, given
-what an opaque fill in a container did to this backend once already, is worth
-the four extra lines. On Windows the panel owns its background colour (it
-filled the client area with it a moment earlier), so there the gap is painted
-back exactly rather than guessed at.
+```rebol
+pic:    make image! 240x160
+canvas: add-image win pic 20x70                  ;; takes the image's size
+canvas: add-image/size win pic 20x70 480x320     ;; ... or scales it
 
-Two things to know:
+;; draw into `pic`, then:
+redraw canvas
+```
 
-- **A panel is not transparent to the mouse.** It is a real child window /
-  view, so mouse events over its background are not reported to the window.
-  Only the image widget reports events for its own area.
-- **Windows notifications go to the parent**, which for a control inside a
-  panel is the panel — not the window, where all the reporting lives. The
-  panel's window procedure therefore forwards `WM_COMMAND`, the scroll
-  messages and the control-colour messages straight up. That works because
-  the handlers identify a control from `lParam` rather than from whichever
-  window received the message.
+The widget holds the image itself, not a copy, so drawing into it and calling
+`redraw` is all an animation needs. `canvas/image` returns that same image;
+`canvas/image: other` swaps it (a different size is scaled into the widget's
+box). Alpha is currently ignored.
 
-### Menu bars
+An image widget **reports its own mouse events**, with itself as `source` and
+coordinates relative to it - which is what makes it a canvas.
 
-A menu is one block assigned to the window, the way a drop-down's list is one
-block assigned to the widget:
+It is also a container, so a caption can sit on the picture:
+
+```rebol
+cap: add-text canvas "frame 120" 8x8 200x0
+cap/transparent?: true
+cap/color: 255.255.255
+```
+
+## Menu bars
+
+A menu is one block assigned to the window:
 
 ```rebol
 win/menu: [
     "File" [
         "New"      new   #"N"          ;; Ctrl+N on Windows, Cmd+N on macOS
-        "Save As…" save  [shift #"S"]  ;; ... with extra modifiers
-        ---                            ;; a dividing line
+        "Save As…" save  [shift #"S"]  ;; with extra modifiers
+        ---                            ;; a separator
         "Recent" [                     ;; a block after a label: a submenu
             "report.txt" recent-1
             "notes.txt"  recent-2
@@ -774,542 +423,116 @@ win/menu: [
     "Help" ["About" about]
 ]
 
-win/menu          ;; the very block you assigned, not a rebuilt one
-win/menu: none    ;; takes the bar away
+win/menu          ;; the block you assigned
+win/menu: none    ;; removes the bar
 ```
-
-The grammar is three rules:
 
 | | |
 |---|---|
 | `---` | a separator |
-| label + **block** | a submenu, described by the same grammar again |
-| label + **word** | an item, whose word is its id. A `char!` or a block of modifier words and a `char!` after it is a keyboard shortcut. |
+| label + block | a submenu, in the same grammar |
+| label + word | an item; the word is its id. An optional `char!`, or a block of modifier words and a `char!`, is its shortcut |
 
-**The word is what comes back, not the label.** Renaming `"Save As…"` cannot
-break a handler, and the same word used on two items fires from either:
+A pick is a `menu-select` event with the item's **word** in `code`, so renaming
+a label never breaks a handler:
 
 ```rebol
-foreach evt poll-events [
-    if evt/type = 'menu-select [
-        switch evt/code [
-            new  [...]
-            quit [close-window win]
-        ]
+if evt/type = 'menu-select [
+    switch evt/code [
+        new  [...]
+        quit [close-window win]
     ]
 ]
 ```
 
-A `menu-select` event puts the item's word in `code` — the same slot a wheel
-event uses for its line count. The core stores it as a canon symbol id and
-reads it back as a word, which is what lets a menu handler be a `switch` rather
-than a table of numbers. `evt/source` is the window.
-
-Greying an item out is by word, and **merges** — only what you name changes:
+Items are enabled and disabled by word; only the named ones change:
 
 ```rebol
 win/menu-enabled?: [save false]
-win/menu-enabled?    ;; == [new true save false quit true about true]
+win/menu-enabled?    ;; [new true save false quit true about true]
 ```
 
-Shortcuts are always on the platform's own menu modifier — Ctrl on Windows,
-Command on macOS — and `shift`, `control` and `alt` in a block add to it. That
-is deliberately not configurable: an application that hard-codes Ctrl on a Mac
-is wrong on a Mac.
+Shortcuts always use the platform's menu modifier (Ctrl / Cmd); `shift`,
+`control` and `alt` add to it.
 
-#### What the two platforms disagree about
+Platform differences:
 
-This is the widest gap in the extension, and it is not one an API can paper
-over:
+- On **Windows** the bar is inside the window. Adding or removing it keeps the
+  client area the same size, so widgets never move.
+- On **macOS** the bar is the application's, at the top of the screen, and
+  shows the menu of whichever window is active. An application menu is added
+  first; its Quit reports a `close` event for the window rather than ending
+  the process.
 
-| | Windows | macOS |
-|---|---|---|
-| a menu bar belongs to | the **window**, and is drawn inside it | the **application**, at the top of the screen |
-| several windows | each shows its own | whichever window is key owns the bar |
-| a shortcut is | an entry in an accelerator table, which the message loop must translate | a property of the menu item |
-| the first menu | ordinary | the **application menu**, in bold under the process name |
-
-So on macOS a window's menu goes up when that window becomes key, which is how
-a Mac application with differently-menued windows behaves anyway. An
-application menu is inserted whether you ask for one or not — the alternative
-is your first menu silently becoming it — and its **Quit** reports a `close`
-event for the window rather than ending the process. This is an extension
-inside an interpreter: terminating would take the session with it, so what
-"quit" means is left to Rebol, like any other close.
-
-On Windows a menu bar **eats client area**. `SetMenu` does not resize a window,
-it re-splits it, so a bar appears by taking a row off the top of exactly the
-area everything is laid out in. The window is therefore grown by what was lost,
-measured rather than computed — a bar can wrap onto two rows — and removing the
-menu gives it back the same way. A widget never moves for a menu, the same
-promise a panel's frame makes.
-
-Shortcuts on Windows need `TranslateAccelerator` before a keystroke is
-dispatched, and `Gui_Pump` is the only message loop this extension owns, so it
-does that — looking the window up by class name rather than trusting
-`GWLP_USERDATA` on a window it did not create.
-
-### The keyboard focus
+## Keyboard focus
 
 ```rebol
-set-focus name          ;; true, and the window comes forward with it
+set-focus name          ;; true; the window comes forward too
 name/focused?           ;; true
-set-focus label         ;; false - a label is not something a user can reach
+set-focus label         ;; false - a label cannot take the focus
 ```
 
-`set-focus` takes a widget, or a window to focus the window itself. It answers
-**false when the target cannot take the focus** — rather than pretending it
-worked, because "did that do anything?" is the only question worth asking of a
-focus call.
+`set-focus` takes a widget, or a window. It returns `false` when the target
+cannot take the focus: `text`, `image`, `panel`, `progress` and any disabled
+widget.
 
-What can take it: `button` `field` `area` `check` `radio` `slider` `drop-down`.
-What cannot: `text` `image` `panel` `progress` — and those are refused *by kind*,
-before the platform is asked, because the platforms disagree. Win32's `SetFocus`
-works on any enabled window, so it will happily focus a progress bar, which then
-shows nothing and does nothing with a keystroke; AppKit refuses, since neither a
-progress indicator nor a label accepts first responder. One answer is more use
-than two, and AppKit's is the useful one.
+Tab and Shift-Tab move between controls, including into panels and image
+widgets; Space presses a focused button or check; `&` in a label marks a
+mnemonic. On Windows the arrow keys also move within a radio group; on macOS
+they do not.
 
-A control which is `enabled?: false` is refused as well, on both.
+## Dropped files
 
-`focused?` is asked of the platform every time rather than remembered: focus
-moves for reasons this extension never hears about — a click, the window being
-activated, another application taking over — so a flag kept here would drift.
-
-Focusing a widget brings its window forward. That is what both platforms do
-and there is no useful way to ask for less.
-
-#### Keyboard navigation
-
-Tab and Shift-Tab move between controls, the arrow keys move within a radio
-group, Space presses a focused button or toggles a focused check, and `&` in a
-label is a mnemonic. Navigation descends into panels and image widgets.
-
-On Windows all of that is the **dialog manager's**, not the window's:
-`WS_TABSTOP` and `WS_GROUP` are inert flags until something calls
-`IsDialogMessage`.
-
-Where that call lives is the interesting part. **The keyboard never reaches this
-extension's message pump.** The host drains and dispatches the OS queue itself —
-`Query_Events` in `dev-event.c` — so a `WM_KEYDOWN` is translated and delivered
-straight to the focused control, and anything the extension wanted to do with it
-first never runs. That is also why the **menu accelerators** had never worked.
-
-So every control is subclassed, and both `TranslateAccelerator` and
-`IsDialogMessage` are called from inside it, with a message built on the spot.
-Neither API minds where the message came from. The copy in the pump is kept only
-as a fallback, for a program which drives `poll-events` in a loop of its own and
-never waits — there, those messages really are nobody else's.
-
-Two keys are held back from `IsDialogMessage`, both because it answers them with
-a `WM_COMMAND` carrying `IDOK`/`IDCANCEL` and no control — the exact shape of a
-menu pick here, so Escape would otherwise fire whichever menu item happens to be
-item 2:
-
-- **Enter** belongs to the focused field, which reports it as a `click`.
-- **Escape** is left alone until it means something.
-
-Radio grouping needs a word. The dialog manager's idea of a group comes from
-`WS_GROUP`, which marks the first control of a run; this extension's idea comes
-from the id passed to `add-radio`, deliberately independent of creation order.
-They are reconciled by giving every control its own group *except* a radio whose
-immediately preceding sibling is a radio with the same id. So a run of radios in
-one group is one keyboard group, nothing else arrow-navigates at all, and the
-arrows cannot walk out of a group and check a radio belonging to another.
-
-On macOS the keyboard loop is AppKit's own and mostly works already: Tab moves
-between controls and Space presses the focused one. **Arrow keys do not move
-within a radio group there** — AppKit does that only for an `NSMatrix`, which
-this extension does not use.
-
-### Dropped files
-
-Off until asked for — a window which silently swallows a drop is worse than one
-which visibly refuses it:
+Off until enabled per window:
 
 ```rebol
 win/drop?: true
 ```
 
-A drop then arrives as a `drop-file` event (or `drop-text`), and its **source is
-a handle of its own** rather than the window:
+A drop arrives as `drop-file` (or `drop-text`), and its `source` is a handle
+describing the drop:
 
 ```rebol
-foreach evt poll-events [
-    if evt/type = 'drop-file [
-        print [evt/source/count "file(s) on" evt/source/target]
-        foreach file evt/source/data [print file]
-    ]
+if evt/type = 'drop-file [
+    print [evt/source/count "file(s) on" evt/source/target]
+    foreach file evt/source/data [print file]
 ]
 ```
 
-| field    | meaning                                                          |
-|----------|------------------------------------------------------------------|
-| `kind`   | `files` or `text`                                                |
-| `data`   | a block of `file!` for a file drop, the `string!` for a text drop |
-| `count`  | how many — 1 for a text drop                                      |
-| `target` | the window, or the **widget** it landed on                        |
-| `window` | the window it ended up in, however deeply nested                  |
+| field    | meaning                                                           |
+|----------|-------------------------------------------------------------------|
+| `kind`   | `files` or `text`                                                 |
+| `data`   | a block of `file!`, or the `string!` for a text drop              |
+| `count`  | how many - 1 for text                                             |
+| `target` | the window, or the direct child of the window it landed on        |
+| `window` | the window                                                        |
 
-`target` is the point of the separate handle: a drop lands on whatever is under
-the pointer, the same rule a click follows, so a file dropped on an image widget
-reports that widget and a handler does not have to remember what was being
-hovered. The event's own `offset` is where in the target's client area it
-landed.
-
-The content and the target both live in the handle's GC-marked slot, so a drop
-handle kept by a script stays valid for as long as it is held, and the target
-cannot dangle after its window closes — it reports itself as closed, like any
-other widget handle.
-
-Both platforms take files and text. On macOS that is the content view
-registered as a dragging destination; on Windows it is a real `IDropTarget`
-registered with `RegisterDragDrop`.
-
-**Why not `WM_DROPFILES`.** `DragAcceptFiles` only sets `WS_EX_ACCEPTFILES`, and
-that message is a *courtesy of the drag source*: an application dragging files
-is expected to notice the style and post it itself. Explorer still does, for
-compatibility going back to Windows 3.1 — but anything written against OLE drag
-and drop, which is everything else, talks only to a registered `IDropTarget` and
-silently refuses the drop when there is none. Testing from Explorer alone hides
-this completely. The OLE target also gets the drag-*over* feedback the legacy
-protocol cannot express, so the cursor says whether a drop will be taken before
-the user lets go.
-
-`WM_DROPFILES` is kept as a fallback for one case: `RegisterDragDrop` needs an
-initialised single-threaded apartment, and if the interpreter already has COM up
-as multi-threaded (`RPC_E_CHANGED_MODE`) no target can be registered at all. The
-window then still accepts drops from Explorer rather than refusing everything.
-
-### Drop-downs
-
-The one control that takes a list:
-
-```rebol
-pick: add-drop-down/index win ["Ash" "Birch" "Elm"] 300x350 200x26 2
-
-pick/items                ;; => ["Ash" "Birch" "Elm"]
-pick/index                ;; => 2, 1-based; 0 when nothing is picked
-pick/text                 ;; => "Birch" - read-only, `index` is what chooses
-pick/items: ["Oak" "Yew"] ;; replaces the list, dropping the old selection
-```
-
-Non-string values in the block are skipped rather than refused: a block of
-words or files is a reasonable thing to hand over, and `form`-ing it first is
-the caller's business.
-
-The block↔list marshalling lives in the shared layer; a backend only knows how
-to count, read, add and clear one item at a time (`Gui_Widget_Get_Item` and
-friends). That is the same split the image widget uses, and it keeps the same
-Rebol-side code running on both platforms.
-
-Two platform notes:
-
-- **`size` is the closed control.** On Windows the height passed to
-  `CreateWindow` for a `COMBOBOX` sets the height of the *whole* thing,
-  dropped list included — ask for 26 and the list is a sliver. The backend
-  adds room for the list and reports the closed height back from
-  `CB_GETITEMHEIGHT`, so what you set is what you read. Cocoa needs none of
-  this; the popup's list is drawn outside its frame.
-- **Duplicate entries survive.** `NSPopUpButton`'s convenience methods treat
-  titles as a menu's identity and would drop a repeat, so items are added as
-  `NSMenuItem`s directly. A list of strings here is data, not a menu.
-
-### Sliders and progress bars
-
-Both take an offset and a size but no label, and both carry a `value` from
-`0%` to `100%`:
-
-```rebol
-level: add-slider/value   win 20x370 240x28 25%
-meter: add-progress/value win 20x410 240x20 25%
-
-level/value               ;; => 25%  (a percent!, not a raw decimal)
-meter/value: level/value  ;; decimal! is accepted too; out-of-range clamps
-```
-
-A slider **taller than it is wide is vertical** — the same rule the old View
-widgets used, and one argument fewer to pass. `0%` is always the bottom or the
-left end: Win32 puts position 0 at the *top* of a vertical trackbar, so the
-Windows backend flips both directions and the caller never sees it.
-
-Underneath, the value is a fraction. Windows works in whole steps, so it is
-carried as one part in 1000; macOS gives the control a 0.0–1.0 range directly.
-Either way the resolution is finer than the pixels involved.
-
-### Radio groups
-
-Radios that share a `/group` id turn each other off. Anything with a different
-id — or no `/group` at all, which means group 0 — is left alone:
-
-```rebol
-warm: add-radio/group win "Warm"  20x290 110x22 1
-cool: add-radio/group win "Cool"  20x315 110x22 1
-slow: add-radio/group win "Slow" 150x290 110x22 2
-
-cool/state: true    ;; turns `warm` off, leaves `slow` alone
-```
-
-**The grouping is this extension's, not the platform's** — and that is a
-deliberate refusal of both native behaviours, because neither means what the
-caller does. Win32 groups radios by sibling order bounded by `WS_GROUP` flags;
-AppKit groups them by shared superview *and* action selector. Every control
-here is a direct child of the window and every button shares one action, so
-both would sweep every radio in a window into a single group, and the answer
-would depend on the order things were created in.
-
-Instead the widget's `state` is the truth, the window's widget list is walked
-to settle a group, and the native controls are then made to agree. Setting
-`state` from Rebol goes through exactly the same path as a click, so both
-behave alike.
-
-On Windows the control is created `BS_RADIOBUTTON` rather than
-`BS_AUTORADIOBUTTON`, so it reports the click without deciding anything.
-
-macOS takes one more step. AppKit clears radio siblings when one is clicked,
-so every radio in the window — not just the group — has to be written back
-afterwards. The catch is that a programmatic `setState:` counts as a group
-operation too, so writing the others back re-triggers the clearing, and only
-the radio written last survives. The backend therefore detaches the button's
-action for the length of each state write, which takes it out of any group
-AppKit can see; the writes then mean what they say.
-
-A checkbox needs none of this: it toggles itself and the new state is simply
-read back before the `click` event goes out.
-
-Widget handles are independent of their window's handle: keep one, drop the
-other, release them in any order. **A widget dies with its window.** Closing a
-window destroys every control the OS gave it, so all of that window's widget
-handles turn into removed ones in the same moment - their `id` becomes 0,
-`parent` becomes `none`, and setting anything on them fails rather than
-writing through a freed pointer. `remove-widget` does the same for one widget
-on its own.
-
-### Image widgets
-
-An image widget is also a **container**, like a panel: widgets given to it are
-positioned inside it, clipped to it, and go away with it. That is how a caption
-goes *on* the picture —
-
-```rebol
-canvas: add-image win pic 20x70
-cap: add-text canvas "frame 120" 8x8 200x0
-cap/transparent?: true
-cap/color: 255.255.255
-```
-
-— and it has to be containment rather than two overlapping siblings, because
-two sibling controls have no defined painting order on Win32 and would fight
-over the same pixels. `cap/parent` is the image; `cap/window` is still the
-window.
-
-### Children
-
-Every container answers `children` with the widgets it holds, in the order they
-were added. Only the ones it holds *directly* — a widget inside a panel is in
-that panel's list, not in the window's:
-
-```rebol
-win/children              ;; everything the window holds itself
-box/children              ;; what that panel holds
-canvas/children           ;; what sits on the picture
-btn/children              ;; none - a button cannot hold anything
-```
-
-A kind that cannot hold widgets answers `none` rather than an empty block,
-which is how to tell a container from a leaf without keeping a list of kinds.
-A container with nothing in it answers an empty block.
-
-The list lives in the container's own handle, in the one series a handle
-context has the collector mark. Two things need to be kept alive there — what
-the kind itself holds and the children — so that slot is a block of two:
-the payload (an `image!` for an image widget, the menu block for a window,
-`none` otherwise) and the children. Marking the outer block marks both, and
-only four functions in `gui-commands.c` know the layout.
-
-It is the extension's own block, handed back without copying, so `find` and
-`foreach` over it cost nothing — but modifying it is not meant to move widgets
-around, and nothing will happen if you try.
-
-`add-image` shows a Rebol `image!` in a window, and is the seam a renderer
-plugs into:
-
-```rebol
-pic:    make image! 240x160
-canvas: add-image win pic 20x70          ;; widget takes the image's size
-canvas: add-image/size win pic 20x70 480x320   ;; ... or scales it
-
-;; draw into that very image - with a renderer, or by hand - then:
-redraw canvas
-```
-
-**The widget holds a reference, not a copy.** The `image!` series is kept in
-the handle context's `series` field, which the GC marks, so the image stays
-alive as long as a widget shows it. Both backends read the dimensions and the
-pixel pointer *fresh at every paint*, never caching either - a series can move
-when it is expanded, and its size can change under the widget.
-
-That is what makes the draw-then-`redraw` loop cost nothing: no copy, no
-re-registration, no conversion. `image!` is BGRA on both platforms, which is
-exactly a 32-bit `BI_RGB` DIB on Windows and
-`kCGImageAlphaNoneSkipFirst | kCGBitmapByteOrder32Little` on macOS, so the
-pixels reach the screen untouched. Alpha is currently ignored - the image is
-blitted opaque.
-
-Assigning `canvas/image: other-pic` swaps the reference and repaints; the
-widget keeps its own box, and a differently sized image is scaled into it.
-
-Reading `canvas/image` hands back that same series - not a copy - so it is
-also how a renderer gets at the pixels it is meant to fill.
-
-One ABI note for anyone porting this. `RXIARG` is a union, and the image and
-series views of it overlap:
-
-```c
-struct { void *series; u32 index; };
-struct { void *image;  int width:16; int height:16; };
-```
-
-`index` and the two dimension bitfields are *the same four bytes*, so an
-`RXIARG` carrying a 240x160 image unavoidably reads as `index` 0x00A000F0.
-The accessor fills in the image view and nothing else - `index` is not a
-thing an `image!` has, since an image takes its size from its own series -
-and the conversion on the other side ignores it, in both directions. An
-interpreter which instead reads that index back on the handle path will walk
-ten million values off the end of the series, so this wants a core new enough
-to ignore it.
-
-An image widget also **reports its own mouse events**: a child control covers
-its part of the window, so the window stops hearing about the mouse there. The
-events arrive with the widget as `source` and coordinates relative to it,
-which is what makes the widget usable as a canvas rather than a picture.
-
-Under the hood a window keeps an intrusive list of its widgets. It is the only
-reason the extension can tell the Rebol handles that the OS took their
-controls away.
+`offset` is where in the target it landed. A drop on a label sitting on an
+image reports the image; walk `target/parent` if you need more.
 
 ## Platforms
-
-Everything above the OS is shared. A backend implements the dozen `Gui_*`
-functions declared in `gui.h` and nothing else - no command, no accessor and
-no part of the event queue is platform aware.
 
 | | Windows | macOS |
 |---|---|---|
 | file | `gui-win.c` | `gui-mac.m` |
 | built on | Win32 / GDI | AppKit |
-| needs | user32, gdi32, comctl32 | AppKit, Foundation, a 10.13+ SDK |
+| needs | user32, gdi32, comctl32 | AppKit, Foundation, 10.13+ SDK |
 
-Coordinates are uniform: positions and sizes use a top-left origin with Y
-growing down, they are **logical units** on both platforms (see [Sizes, DPI and
-the natural size](#sizes-dpi-and-the-natural-size)), and `size` always means the
-*client* (content) area. The Cocoa backend flips every offset against the
-menu-bar screen on the way in and out, and its content view answers `YES` to
-`isFlipped` so that event positions need no conversion at all.
+Things worth knowing:
 
-Differences worth knowing about:
-
-- **Scaling.** Neither backend hands the caller device pixels, but they get
-  there differently: AppKit already works in points, so the Cocoa backend
-  converts nothing, while the Win32 one multiplies by the system DPI at its own
-  boundary — event coordinates included. `win/scale` reports the factor either
-  way. Windows is asked for `PROCESS_SYSTEM_DPI_AWARE`, so one scale covers the
-  process; per-monitor awareness would make it per window and would need
-  `WM_DPICHANGED` handling as well.
-- **Main thread.** AppKit requires every call to be made from the main thread,
-  which is where the interpreter runs. `Gui_Init_Platform` also calls
-  `finishLaunching` and sets a regular activation policy, without which a
-  non-bundled `r3` opens windows that never come forward.
-- **Wheel direction** follows the user's "natural scrolling" setting, like
-  every other Mac application; the sign is not normalised.
-- **Dragging.** Cocoa reports movement with a button held as a drag rather
-  than a move; those are reported as plain `move` events, matching Windows,
-  which captures the mouse instead.
-- **All macOS drawing happens in the pump.** `NSApplication`'s own `-run`
-  loop displays dirty views between events, and this extension never calls
-  `-run` — so `Gui_Pump` does it, and nothing else does. Creating a widget or
-  calling `redraw` only *marks* it; it appears at the next `poll-events`.
-  Forcing a display at any other moment is unreliable: a display asked for
-  while AppKit is not ready can clear a view's needs-display flag without
-  painting, after which nothing marks it again and the control stays blank.
-  A batch of widgets created without an intervening poll is exactly the case
-  that breaks, so a program which never polls will see an empty window —
-  which is true of any AppKit program that does not run its loop. Windows has
-  no such rule: `UpdateWindow` paints on the spot.
-- **Never load two copies at once (macOS).** Objective-C class names live in
-  one process-wide namespace, not per binary. A standalone `.rebx` loaded into
-  a host that has these same sources embedded gives:
-
-  ```
-  objc: Class RebolGuiButton is implemented in both …/rebol3 and …/gui.rebx.
-        This may cause spurious casting failures and mysterious crashes.
-  ```
-
-  The runtime keeps one implementation of each duplicated class and messages
-  from the other binary land in it — so some controls half work, or never
-  draw, and nothing in the source looks wrong. The class names therefore carry
-  a build-set prefix (`GUI_CLASS_PREFIX`; the nest gives the standalone build
-  `RebolGuiRebx`, embedded builds get the default). Two builds with *different*
-  prefixes can coexist; two with the same prefix cannot. Windows has no
-  equivalent problem — window classes are registered per module instance.
-- **Keyboard.** There are no key events yet, and no way to move focus from
-  Rebol - a field is reached with the mouse or with Tab.
-- **Button look.** On Windows the control uses the shell's message font, but
-  visual styles need an application manifest naming Comctl32 v6 - which
-  belongs to the `r3` executable, not to a DLL it loads. Without one, buttons
-  come out in the flat pre-XP style. On macOS the rounded bezel is drawn for
-  a fixed height of about 32 points; a taller button keeps its bezel that
-  size and centres it, so `32` is the height to ask for.
-
-### Windows visual styles, and why they felt slow
-
-Once `r3` carries a Comctl32 v6 manifest, the common controls are drawn by the
-theme engine — and the theme engine **animates**. A check and a radio cross-fade
-between states over a couple of hundred milliseconds; a progress bar *slides*
-to a new position instead of jumping. The classic controls do none of this,
-which is why the difference shows up the moment the manifest is added and looks
-like the whole extension got slower.
-
-Three things were making that much worse than it had to be, all now fixed:
-
-- **A redundant `BM_SETCHECK` restarts the fade.** Radio grouping is done in
-  the shared layer, which re-asserts every radio in the window on every click —
-  correct, and nearly free with the classic look. Themed, it meant every radio
-  on screen beginning an animation each time any one of them was picked.
-  `Gui_Widget_Set_State` now asks the control first and returns if it is
-  already in that state.
-- **`PBM_SETPOS` animates.** A program setting a progress bar faster than the
-  animation (a slider driving a meter) watches it trail behind. The animation
-  only plays when the position *increases*, so the backend steps one past and
-  back, which lands exactly on the value with nothing left to play.
-- **The accelerator lookup was on the hot path.** Translating menu shortcuts
-  meant `GetAncestor` + `GetClassNameW` for *every* message, and a themed
-  control produces a great many — animation timers, mouse tracking, buffered
-  paint. It now runs only for keyboard messages.
-
-The fourth and largest part is the loop itself: see [The event
-model](#the-event-model) above. An animation driven by timer messages needs to
-be pumped while the program is idle, not only when its loop comes round — which
-is what the device poll from inside `wait` gives it.
-
-**This is deliberately not solved with a UI thread.** A dedicated thread with a
-blocking `GetMessage` loop is the usual answer to a sluggish Win32 UI, and it
-would be wrong here:
-
-- `WM_PAINT` on an image widget reads the pixels straight out of a Rebol series
-  (`hob->series`) — that is the whole point of the widget. Today a paint can
-  only happen inside `poll-events`, which is to say while the interpreter is
-  inside this extension and not collecting. On another thread a paint could
-  land while the GC is moving or expanding that series. No amount of locking in
-  an extension can hold the collector still.
-- Window ownership on Win32 is per thread: every `add-*`, every accessor and
-  every `remove-widget` would have to be marshalled to the UI thread and waited
-  on. That is the entire backend, and the event ring would need real locking.
-- macOS cannot do it at all — AppKit demands the main thread — so the two
-  backends would stop being the same design, which is what `gui.h` exists to
-  prevent.
-- And it would not have fixed any of the four causes above. A redundant
-  `BM_SETCHECK` restarts an animation on any thread.
+- **Coordinates** have a top-left origin on both platforms, and `size` is
+  always the client (content) area.
+- **Mouse wheel** direction on macOS follows the user's "natural scrolling"
+  setting.
+- **Windows visual styles** need a Comctl32 v6 manifest in the `r3`
+  executable; without one, controls use the classic look. With it, checks and
+  radios animate between states.
+- **macOS button height:** the rounded bezel is drawn for about 32 points; a
+  taller button keeps it centred at that size.
+- **macOS: never load two copies of the extension.** A standalone `gui.rebx`
+  in a host that already embeds the same sources makes the Objective-C runtime
+  report duplicated classes, and controls then misbehave. Builds with
+  different `GUI_CLASS_PREFIX` values can coexist.
 
 ## Extension commands:
 
