@@ -85,7 +85,7 @@ Each event is an `event!`:
 
 | field    | type            | meaning                                              |
 |----------|-----------------|------------------------------------------------------|
-| `type`   | `word!`         | `move` `enter` `leave` `down` `up` `alt-down` `alt-up` `aux-down` `aux-up` `scroll-line` `close` `resize` `click` `change` `focus` `unfocus` `menu-select` `drop-file` `drop-text` |
+| `type`   | `word!`         | `move` `enter` `leave` `down` `up` `alt-down` `alt-up` `aux-down` `aux-up` `scroll-line` `close` `resize` `click` `change` `focus` `unfocus` `menu-select` `drop-file` `drop-text` `theme-change` |
 | `source` | `handle!`       | the window, or the widget the event is about - for `move`, the one under the pointer; `evt/source/window` gets back to the window |
 | `offset` | `pair!`         | the window's client coordinates, whatever the source; the new client size for `resize` |
 | `flags`  | `block!`        | `shift` `control` `alt` `double`, where they apply   |
@@ -203,6 +203,22 @@ add-button ghost "floating" 20x20 0x0
 
 On Windows this uses a colour key of pure magenta: anything drawn in exactly
 `255.0.255` becomes a hole, and clicks there go to whatever is behind.
+
+### Light and dark
+
+`win/dark?` says whether the system shows the window in the dark appearance,
+asked of the system each time. When the user switches, each window reports a
+`theme-change` event with `light` or `dark` in `code` - once per switch:
+
+```rebol
+if evt/type = 'theme-change [
+    win/background: either evt/code = 'dark [30.30.34][none]
+]
+```
+
+On macOS the native controls follow the switch by themselves. On Windows only
+the title bar does: Win32 controls have no documented dark look, so anything
+else is the script's to restyle on this event.
 
 ### Painting
 
@@ -881,6 +897,7 @@ Creates a toggle - a push button which stays pushed - and returns its handle
 /open?            logic!              none                          "False once the window has been closed"
 /scale            decimal!            none                          "Device pixels per unit of size - 1.0 at 100%, 1.75 at 175%, 2.0 on a Retina Mac"
 /screen           handle!             none                          "The screen most of the window is on"
+/dark?            logic!              none                          "Whether the system shows it in the dark appearance; a `theme-change` event reports when this changes"
 /resizable?       logic!              logic!                        "Whether the user can resize it"
 /border?          logic!              logic!                        "Whether it has a title bar and a frame; a borderless window cannot be moved or closed by the user"
 /background       tuple!              [tuple! none!]                "Colour of the client area; none for the system window colour"

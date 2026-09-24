@@ -1115,6 +1115,31 @@ static REBOOL Set_Menu(GUIWIN *win, REBSER *blk, REBCNT index)
 **  WORD is what reaches Rebol, which is why renaming a label cannot
 **  break a handler.
 ***********************************************************************/
+/***********************************************************************
+**  The system switched between the light and the dark appearance.
+**
+**  Reported as `theme-change` with the window as the source and `light`
+**  or `dark` in `code`, and only when the window's appearance really is
+**  different from what was last reported: Windows sends its settings
+**  broadcast several times for one switch, and for plenty of changes
+**  which are not this one.
+***********************************************************************/
+void Gui_Theme_Changed(GUIWIN *win, REBOOL dark)
+{
+	REBOOL was;
+
+	if (!win || !win->hob) return;
+	was = (win->flags & GUIW_DARK) ? TRUE : FALSE;
+	if (was == (dark ? TRUE : FALSE)) return;
+
+	if (dark) win->flags |=  GUIW_DARK;
+	else      win->flags &= ~(REBCNT)GUIW_DARK;
+
+	Gui_Queue_Event(win->hob, EVT_THEME_CHANGE, 0, 0,
+		(REBINT)Gui_theme_words[dark ? W_GUI_THEME_DARK : W_GUI_THEME_LIGHT]);
+}
+
+
 void Gui_Menu_Picked(GUIWIN *win, REBCNT id)
 {
 	if (!win || !win->hob) return;
@@ -1474,6 +1499,9 @@ COMMAND cmd_gui_open_window(RXIFRM *frm, void *ctx)
 		RL_FREE_HANDLE_CONTEXT(hob);
 		RETURN_ERROR(ERR_NO_WINDOW);
 	}
+
+	// What it opened in, so that the first `theme-change` is a real change.
+	if (Gui_Window_Dark(win)) win->flags |= GUIW_DARK;
 
 	// The native window and every queued event point back at this context,
 	// so the GC must leave it alone until the window is closed.
@@ -1842,6 +1870,7 @@ COMMAND cmd_gui_poll_events(RXIFRM *frm, void *ctx)
 			break;
 
 		case EVT_MENU_SELECT:
+		case EVT_THEME_CHANGE:  // `light` or `dark`, the same way
 			// The item's WORD, as a canon symbol id. EVF_HAS_SYM is what
 			// makes `evt/code` read it back as a word instead of a number,
 			// which is what keeps a menu handler a plain `switch`.
@@ -2426,6 +2455,13 @@ int GuiWindow_get_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 	case W_GUI_ARG_ID:
 		*type = RXT_INTEGER;
 		arg->int64 = (i64)(REBUPT)win->handle;
+		break;
+
+	// Asked of the platform each time rather than taken from GUIW_DARK,
+	// which is only what was last REPORTED.
+	case W_GUI_ARG_DARKQ:
+		*type = RXT_LOGIC;
+		arg->int32a = Gui_Window_Dark(win) ? 1 : 0;
 		break;
 
 	// The same handle `screens` hands out for that display, so

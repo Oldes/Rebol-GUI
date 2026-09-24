@@ -1039,6 +1039,19 @@ static GUIWIDGET *Widget_At_Point(GUIWIN *win, NSView *root, NSPoint inRoot)
 	                Modifiers(evt) | extra);
 }
 
+//-- appearance ---------------------------------------------------------------
+// AppKit tells each view when its appearance changes (macOS 10.14 and
+// later; never called before). Asked of the content view, because a
+// window can be given an appearance of its own - so the answer is per
+// window, which is why the event's source is the window. The controls
+// restyle themselves; the event is for what the script painted.
+- (void)viewDidChangeEffectiveAppearance
+{
+	// No call to super: NSView's own does nothing, and naming it would not
+	// build against the 10.13 SDK, which does not declare it.
+	if (context) Gui_Theme_Changed(context, Gui_Window_Dark(context));
+}
+
 //-- mouse motion -------------------------------------------------------------
 // Cocoa reports movement with a button held as a drag rather than a move.
 // Windows makes no such distinction (it captures the mouse instead), so all
@@ -2306,6 +2319,29 @@ REBOOL Gui_Pointer_At(REBYTE *key, REBINT *x, REBINT *y, REBINT *mods, REBOOL *o
 		*y = (REBINT)floor(frame.origin.y + frame.size.height - at.y);
 		*mods = Modifier_Bits([NSEvent modifierFlags]);
 		return TRUE;
+	}
+}
+
+// Whether the window is drawn in the dark appearance. The API is 10.14 and
+// later and the SDK floor is 10.13, so it is asked for by selector and by
+// the appearance's NAME rather than the NSAppearanceNameDarkAqua symbol.
+// Before 10.14 there is no dark appearance to be in.
+REBOOL Gui_Window_Dark(GUIWIN *win)
+{
+	@autoreleasepool {
+		NSView       *view;
+		NSAppearance *look;
+		NSString     *match;
+		SEL           best = NSSelectorFromString(@"bestMatchFromAppearancesWithNames:");
+
+		if (!win || !win->handle) return FALSE;
+		view = [NSWINDOW_OF(win) contentView];
+		if (!view || ![view respondsToSelector:@selector(effectiveAppearance)]) return FALSE;
+		look = [view performSelector:@selector(effectiveAppearance)];
+		if (!look || ![look respondsToSelector:best]) return FALSE;
+		match = [look performSelector:best
+		                   withObject:@[@"NSAppearanceNameAqua", @"NSAppearanceNameDarkAqua"]];
+		return [match isEqualToString:@"NSAppearanceNameDarkAqua"] ? TRUE : FALSE;
 	}
 }
 

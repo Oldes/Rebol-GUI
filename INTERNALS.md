@@ -303,3 +303,20 @@ comctl32's own subclass on top of ours. A label never gets the mouse
 the label (`Tip_Follow` from `Gui_Widget_Set_Box` and `Rescale_Window`). The
 tool is removed before a control is destroyed so a reused HWND cannot inherit
 it. `TTTOOLINFOW_V2_SIZE` keeps it working without a comctl32 v6 manifest.
+
+## Light and dark (`theme-change`)
+
+`Gui_Theme_Changed` in the shared layer queues `theme-change` with the word
+`light`/`dark` (the `theme` word list) as a symbol code, the way `menu-select`
+carries its word, and only when it differs from `GUIW_DARK` - the appearance
+last reported for that window, set when it opens.
+
+Windows: the setting is `AppsUseLightTheme` under `HKCU\...\Themes\Personalize`
+(read with `RegGetValueW`, loaded late from advapi32). A switch arrives as
+`WM_SETTINGCHANGE` with `"ImmersiveColorSet"`, several times over. The title bar
+follows through `DwmSetWindowAttribute` (attribute 20, or 19 before 20H1); the
+controls do not, having no documented dark look.
+
+macOS: `viewDidChangeEffectiveAppearance` on the content view, and the answer
+from `bestMatchFromAppearancesWithNames:` - both by selector and by appearance
+name, since the SDK floor (10.13) predates them.

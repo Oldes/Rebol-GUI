@@ -906,6 +906,69 @@ static void Tip_Relay(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 //== window procedure =========================================================
 
 /***********************************************************************
+**  Light and dark appearance.
+**
+**  Windows has no API for "is the system dark": the setting is the
+**  AppsUseLightTheme value in the user's Personalize key, which is what
+**  every program reads. Loaded late from advapi32, which the extension
+**  does not otherwise link.
+**
+**  A switch arrives as WM_SETTINGCHANGE with "ImmersiveColorSet" as its
+**  string, several times over; the shared layer reports only a real
+**  change.
+**
+**  Only the TITLE BAR follows, through DwmSetWindowAttribute - attribute
+**  20 on current Windows, 19 on builds before 18985. The classic Win32
+**  controls have no documented dark look, so everything inside the
+**  window stays as it is: restyling it is the script's, on the event.
+***********************************************************************/
+typedef LONG (WINAPI *REGGETVALUEW_T)(HKEY, LPCWSTR, LPCWSTR, DWORD, LPDWORD, PVOID, LPDWORD);
+typedef HRESULT (WINAPI *DWMSETWINDOWATTRIBUTE_T)(HWND, DWORD, LPCVOID, DWORD);
+
+static REBOOL System_Dark(void)
+{
+	static REGGETVALUEW_T get = NULL;
+	static REBOOL looked = FALSE;
+	DWORD light = 1, size = sizeof(light);
+
+	if (!looked) {
+		HMODULE advapi = LoadLibraryW(L"advapi32.dll");
+		looked = TRUE;
+		if (advapi) get = (REGGETVALUEW_T)GetProcAddress(advapi, "RegGetValueW");
+	}
+	if (!get) return FALSE;
+	if (get(HKEY_CURRENT_USER,
+	        L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+	        L"AppsUseLightTheme", 0x00000010 /* RRF_RT_REG_DWORD */, NULL, &light, &size)
+	    != ERROR_SUCCESS)
+		return FALSE;   // no such setting: the system has no dark mode
+	return light ? FALSE : TRUE;
+}
+
+static void Dark_Title_Bar(HWND hwnd, REBOOL dark)
+{
+	static DWMSETWINDOWATTRIBUTE_T set = NULL;
+	static REBOOL looked = FALSE;
+	BOOL on = dark ? TRUE : FALSE;
+
+	if (!looked) {
+		HMODULE dwm = LoadLibraryW(L"dwmapi.dll");
+		looked = TRUE;
+		if (dwm) set = (DWMSETWINDOWATTRIBUTE_T)GetProcAddress(dwm, "DwmSetWindowAttribute");
+	}
+	if (!set || !hwnd) return;
+	if (FAILED(set(hwnd, 20, &on, sizeof(on))))   // DWMWA_USE_IMMERSIVE_DARK_MODE
+		set(hwnd, 19, &on, sizeof(on));           // ... before Windows 10 20H1
+}
+
+REBOOL Gui_Window_Dark(GUIWIN *win)
+{
+	(void)win;       // system-wide on Windows
+	return System_Dark();
+}
+
+
+/***********************************************************************
 **  A window moved to a monitor with another scale.
 **
 **  WM_DPICHANGED arrives with the new DPI and a suggested window
@@ -1077,6 +1140,14 @@ static LRESULT CALLBACK Gui_Window_Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
 			                To_Logical(Dpi_Of(hwnd), pt.x), To_Logical(Dpi_Of(hwnd), pt.y),
 			                delta * (REBINT)lines);
 		return 0; }
+
+	case WM_SETTINGCHANGE:
+		if (lp && lstrcmpiW((LPCWSTR)lp, L"ImmersiveColorSet") == 0) {
+			REBOOL dark = System_Dark();
+			Dark_Title_Bar(hwnd, dark);
+			Gui_Theme_Changed(win, dark);
+		}
+		break;   // on to DefWindowProc, which has its own use for it
 
 	case WM_DPICHANGED:
 		Rescale_Window(win, hwnd, Remembered_Dpi(hwnd), (int)HIWORD(wp), (const RECT*)lp);
@@ -1937,6 +2008,9 @@ REBOOL Gui_Open_Window(GUIWIN *win, REBINT x, REBINT y, REBINT w, REBINT h,
 		             SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
 	}
 	Remember_Dpi(hwnd, dpi);
+
+	// The title bar in the system's appearance from the start.
+	Dark_Title_Bar(hwnd, System_Dark());
 
 	// The three states live in one field, so /transparent is recorded as
 	// the same value `win/transparent?: true` would write - and applying

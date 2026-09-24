@@ -284,6 +284,16 @@ void    Gui_Pointer_Left(void);
 REBOOL  Gui_Widget_Set_Tip(GUIWIDGET *wid, const REBYTE *utf8, REBCNT len);
 REBSER* Gui_Widget_Get_Tip(GUIWIDGET *wid);
 
+/***********************************************************************
+**  Light and dark appearance.
+**
+**  Gui_Window_Dark() asks the platform, every time. A backend calls
+**  Gui_Theme_Changed() when it hears the system switch (it may be told
+**  more often than that: the shared layer reports a change only).
+***********************************************************************/
+REBOOL  Gui_Window_Dark(GUIWIN *win);
+void    Gui_Theme_Changed(GUIWIN *win, REBOOL dark);
+
 // Shared layer, called after every pump.
 void    Gui_Track_Pointer(void);
 REBOOL  Gui_Tracking_Pointer(void);

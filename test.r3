@@ -55,6 +55,8 @@ print ["size:    " win/size]
 print ["offset:  " win/offset]
 print ["scale:   " win/scale "(device pixels per unit - sizes below are logical)"]
 print ["resizable?" win/resizable? " border?" win/border?]
+;; Asked of the system each time; `theme-change` reports when it switches.
+print ["dark?:   " win/dark?]
 
 ;; every accessor which can be read can also be written, except id and open?
 win/title: "Rebol GUI extension - move the mouse"
@@ -980,6 +982,15 @@ report: func [event /local type source position kind][
 			;; One string, however many lines it has.
 			name/text: source/data
 		]
+	]
+
+	;; WATCH: switch the system between light and dark. The log names the new
+	;; appearance, once per switch - Windows broadcasts the setting several
+	;; times, and only a real change is reported. On macOS the controls
+	;; follow by themselves; on Windows only the title bar does.
+	if type == 'theme-change [
+		note ajoin ["theme: " event/code " (dark? " source/dark? ")"]
+		unless (event/code = 'dark) = source/dark? [note "!! code and dark? disagree"]
 	]
 
 	;; A menu pick carries the item's WORD in `code` - the core reads a symbol
