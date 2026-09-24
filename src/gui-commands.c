@@ -2251,6 +2251,15 @@ int GuiWindow_get_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 		*type = RXT_PAIR;
 		break;
 
+	// Mouse offsets are measured from the client area's top-left corner,
+	// so a window's own `at` is that corner. It is here only so that
+	// `evt/offset - evt/source/at` needs no "is it a window?" test.
+	case W_GUI_ARG_AT:
+		arg->pair.x = 0;
+		arg->pair.y = 0;
+		*type = RXT_PAIR;
+		break;
+
 	case W_GUI_ARG_ID:
 		*type = RXT_INTEGER;
 		arg->int64 = (i64)(REBUPT)win->handle;
@@ -2814,6 +2823,23 @@ int GuiWidget_get_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 		arg->pair.y = (float)y;
 		*type = RXT_PAIR;
 		break;
+
+	// Where it sits in its WINDOW rather than in its container: the offsets
+	// up the chain of containers, added. Mouse events report window client
+	// coordinates, so `evt/offset - canvas/at` is where on the canvas.
+	case W_GUI_ARG_AT: {
+		REBINT ax = 0, ay = 0;
+		GUIWIDGET *at;
+		for (at = wid; at; at = (GUIWIDGET*)at->parent) {
+			if (!Gui_Widget_Get_Box(at, &x, &y, &w, &h)) break;
+			ax += x;
+			ay += y;
+		}
+		if (at) { *type = RXT_NONE; break; }  // something up the chain is gone
+		arg->pair.x = (float)ax;
+		arg->pair.y = (float)ay;
+		*type = RXT_PAIR;
+		break; }
 
 	case W_GUI_ARG_ID:
 		*type = RXT_INTEGER;

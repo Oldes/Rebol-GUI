@@ -210,6 +210,8 @@ static void Apply_Button_Color(GUIWIDGET *wid);
 @interface RebolGuiButton : NSButton
 {
 	GUIWIDGET *context;
+	BOOL       pressing;  // between `down` and its `up`
+	BOOL       inside;    // the pointer is over it, so releasing clicks
 }
 - (void)setContext:(GUIWIDGET*)ctx;
 - (void)clicked:(id)sender;
@@ -275,6 +277,7 @@ static void Apply_Button_Color(GUIWIDGET *wid);
 {
 	GUIWIDGET *context;
 	NSPoint    last;      // previous point of a drag, for the cell's hooks
+	BOOL       pressing;  // between `down` and its `up`
 }
 - (void)setContext:(GUIWIDGET*)ctx;
 - (void)moved:(id)sender;
@@ -291,6 +294,126 @@ static void Apply_Button_Color(GUIWIDGET *wid);
 - (void)setContext:(GUIWIDGET*)ctx;
 @end
 
+
+/***********************************************************************
+**  Where an event happened, in its window's client coordinates.
+**
+**  Every mouse event reports this, whichever view receives it: the
+**  content view is flipped, so a point converted into it already has
+**  the top-left origin and Y growing down that the rest of the extension
+**  uses. A control's own view is usually NOT flipped, which is why no
+**  event is measured in one.
+***********************************************************************/
+static NSPoint Client_Point(NSView *view, NSEvent *evt)
+{
+	NSView *content = [[view window] contentView];
+	if (!content) content = view;
+	return [content convertPoint:[evt locationInWindow] fromView:nil];
+}
+
+
+/***********************************************************************
+**  The widget a `move` at this point is about: the DEEPEST one under
+**  it, or NULL for the window's own background.
+**
+**  Walked through the window's widget list rather than asked of
+**  hitTest:, for the reasons Widget_At_Point gives - hitTest: finds
+**  field editors, scrollers and the text view inside an area, none of
+**  which is a widget. One level at a time: the topmost direct child of
+**  the window, then the topmost child of that, and so on.
+**
+**  A label is skipped, as if the pointer went through it: on Windows a
+**  static control answers HTTRANSPARENT and its container gets the
+**  mouse, so a caption sitting on an image leaves the image reporting.
+**  A disabled control is skipped for the same reason - Win32 hands its
+**  mouse input to the parent.
+***********************************************************************/
+static GUIWIDGET *Widget_Under_Point(GUIWIN *win, NSView *root, NSPoint inRoot)
+{
+	GUIWIDGET *found = NULL;
+	GUIWIDGET *wid;
+	REBOOL     deeper = TRUE;
+
+	if (!win || !root) return NULL;
+
+	while (deeper) {
+		deeper = FALSE;
+		// The list is in reverse creation order, so the first match at a
+		// level is the topmost one there.
+		for (wid = (GUIWIDGET*)win->widgets; wid; wid = (GUIWIDGET*)wid->next) {
+			NSView *view = (NSView*)wid->handle;
+			if ((GUIWIDGET*)wid->parent != found || !view || [view isHidden]) continue;
+			if (wid->kind == W_GUI_WIDGET_TEXT) continue;
+			if ([view isKindOfClass:[NSControl class]] && ![(NSControl*)view isEnabled]) continue;
+			if (NSPointInRect([view convertPoint:inRoot fromView:root], [view bounds])) {
+				found  = wid;
+				deeper = TRUE;
+				break;
+			}
+		}
+	}
+	return found;
+}
+
+
+/***********************************************************************
+**  Whether a mouseMoved: that reached a window's content view is one
+**  it should report, and where.
+**
+**  AppKit sends a tracking area's mouse-moved event to its owner AND
+**  down the key window's responder chain - and the first responder of
+**  every window here is its content view. So while one window is key,
+**  moves over ANOTHER window arrive at the key one too, and the owner
+**  can get the same event twice. Windows reports WM_MOUSEMOVE only to
+**  the window under the pointer, once; that is the rule applied here.
+***********************************************************************/
+static BOOL Move_Point(NSView *content, NSEvent *evt, NSPoint *out)
+{
+	// The two copies are not necessarily the same NSEvent object, so they
+	// are recognised by what they say: same moment, same place, same
+	// window. Two real moves never share a timestamp.
+	static NSTimeInterval last_time = -1;
+	static NSPoint        last_at   = {0, 0};
+	static NSInteger      last_win  = 0;
+	NSWindow *win = [content window];
+
+	if (!win) return NO;
+
+	if ([evt timestamp] == last_time
+	    && NSEqualPoints([evt locationInWindow], last_at)
+	    && [[evt window] windowNumber] == last_win) return NO;
+	last_time = [evt timestamp];
+	last_at   = [evt locationInWindow];
+	last_win  = [[evt window] windowNumber];
+
+	if ([evt window]) {
+		if ([evt window] != win) return NO;
+		*out = [content convertPoint:[evt locationInWindow] fromView:nil];
+	} else {
+		// No window on the event (an inactive application can get these):
+		// ask which window is under the pointer instead.
+		NSPoint at = [NSEvent mouseLocation];
+		if ([NSWindow windowNumberAtPoint:at belowWindowWithWindowNumber:0]
+		    != [win windowNumber]) return NO;
+		at   = [win convertRectFromScreen:NSMakeRect(at.x, at.y, 0, 0)].origin;
+		*out = [content convertPoint:at fromView:nil];
+	}
+	return NSPointInRect(*out, [content bounds]);
+}
+
+/***********************************************************************
+**  `down` / `up` on the pressable controls (button, check, radio, slider).
+**
+**  In window client coordinates, like every other mouse event.
+***********************************************************************/
+static void Queue_Press(NSView *view, GUIWIDGET *ctx, REBCNT type, NSEvent *evt, REBINT extra)
+{
+	NSPoint p;
+	if (!ctx || !ctx->hob || !evt) return;
+	p = Client_Point(view, evt);
+	Gui_Queue_Event(ctx->hob, type, (REBINT)floor(p.x), (REBINT)floor(p.y),
+	                Modifiers(evt) | extra);
+}
 
 @implementation RebolGuiButton
 
@@ -309,6 +432,71 @@ static void Apply_Button_Color(GUIWIDGET *wid);
 	frame = [self frame];
 	Gui_Widget_Activated(context, (REBINT)frame.origin.x, (REBINT)frame.origin.y,
 	                     Modifier_Bits([NSEvent modifierFlags]));
+}
+
+/***********************************************************************
+**  The press is tracked HERE rather than by NSButtonCell.
+**
+**  -[NSButton mouseDown:] runs a modal loop until the button comes up,
+**  and Gui_Pump is inside [NSApp sendEvent:] for all of it - so a `down`
+**  queued before calling super would reach Rebol only together with the
+**  `up`. The same problem the slider has, solved the same way: without
+**  super, dragged and up arrive as ordinary messages, one per pump.
+**
+**  That leaves this subclass doing what the loop did: the pressed look
+**  (highlighted while the pointer is over it, as a native button does),
+**  and on release inside, what a click means - a check toggles itself
+**  here, a radio is switched on by the shared layer. `clicked:` is
+**  called directly rather than through the target/action machinery, so
+**  AppKit's own radio grouping is not involved.
+**
+**  Keyboard activation (Space, a key equivalent) still goes through
+**  -performClick: and the action, and reports only `click`.
+***********************************************************************/
+- (void)mouseDown:(NSEvent*)evt
+{
+	if (![self isEnabled]) return;
+	pressing = YES;
+	inside   = YES;
+	[self highlight:YES];
+	Queue_Press(self, context, EVT_DOWN, evt,
+	            [evt clickCount] == 2 ? GUI_FLAG_DOUBLE : 0);
+}
+
+- (void)mouseDragged:(NSEvent*)evt
+{
+	NSPoint p;
+	BOOL    now;
+
+	if (!pressing) return;
+	Queue_Press(self, context, EVT_MOVE, evt, 0);
+
+	p   = [self convertPoint:[evt locationInWindow] fromView:nil];
+	now = NSPointInRect(p, [self bounds]);
+	if (now != inside) {
+		inside = now;
+		[self highlight:now];
+	}
+}
+
+- (void)mouseUp:(NSEvent*)evt
+{
+	NSPoint p;
+
+	if (!pressing) return;
+	pressing = NO;
+	[self highlight:NO];
+
+	// Asked again rather than trusted: there may have been no drag.
+	p      = [self convertPoint:[evt locationInWindow] fromView:nil];
+	inside = NSPointInRect(p, [self bounds]);
+
+	Queue_Press(self, context, EVT_UP, evt, 0);
+
+	if (inside) {
+		if (context && context->kind == W_GUI_WIDGET_CHECK) [self setNextState];
+		[self clicked:self];
+	}
 }
 
 @end
@@ -567,6 +755,13 @@ static void Apply_Button_Color(GUIWIDGET *wid);
 {
 	NSPoint p = [self convertPoint:[evt locationInWindow] fromView:nil];
 
+	// Tracking without super means the enabled check is ours as well.
+	if (![self isEnabled]) return;
+	pressing = YES;
+
+	Queue_Press(self, context, EVT_DOWN, evt,
+	            [evt clickCount] == 2 ? GUI_FLAG_DOUBLE : 0);
+
 	[[self cell] setHighlighted:YES];
 	[[self cell] startTrackingAt:p inView:self];
 	last = p;
@@ -579,6 +774,10 @@ static void Apply_Button_Color(GUIWIDGET *wid);
 {
 	NSPoint p = [self convertPoint:[evt locationInWindow] fromView:nil];
 
+	if (!pressing) return;
+
+	Queue_Press(self, context, EVT_MOVE, evt, 0);
+
 	[[self cell] continueTracking:last at:p inView:self];
 	last = p;
 
@@ -590,11 +789,17 @@ static void Apply_Button_Color(GUIWIDGET *wid);
 {
 	NSPoint p = [self convertPoint:[evt locationInWindow] fromView:nil];
 
+	if (!pressing) return;
+	pressing = NO;
+
 	[self trackTo:evt];
 
 	[[self cell] stopTracking:last at:p inView:self mouseIsUp:YES];
 	[[self cell] setHighlighted:NO];
 	[self setNeedsDisplay:YES];
+
+	// After the last `change`, so `up` is the end of the drag.
+	Queue_Press(self, context, EVT_UP, evt, 0);
 }
 
 @end
@@ -640,20 +845,18 @@ static void Apply_Button_Color(GUIWIDGET *wid);
 	[super dealloc];
 }
 
-// Its own tracking area, for the same reason the window's view has one:
-// without it mouseMoved: never reaches this view.
+// No tracking area of its own any more: plain moves are all reported by
+// the window's content view, whose area covers the whole window and which
+// works out the widget under the pointer (see Widget_Under_Point). Two
+// areas meant two copies of every move over an image. The ivar stays, so
+// that an area left from before is still removed.
 - (void)updateTrackingAreas
 {
 	if (tracking) {
 		[self removeTrackingArea:tracking];
 		[tracking release];
+		tracking = nil;
 	}
-	tracking = [[NSTrackingArea alloc]
-		initWithRect:[self bounds]
-		     options:(NSTrackingMouseMoved | NSTrackingActiveAlways | NSTrackingInVisibleRect)
-		       owner:self
-		    userInfo:nil];
-	[self addTrackingArea:tracking];
 	[super updateTrackingAreas];
 }
 
@@ -717,16 +920,17 @@ static void Apply_Button_Color(GUIWIDGET *wid);
 {
 	NSPoint pt;
 	if (!context || !context->hob) return;
-	pt = [self convertPoint:[evt locationInWindow] fromView:nil];
+	pt = Client_Point(self, evt);   // the window's coordinates, not ours
 	Gui_Queue_Event(context->hob, type,
 	                (REBINT)floor(pt.x), (REBINT)floor(pt.y),
 	                Modifiers(evt) | extra);
 }
 
 // A subview covers its part of the window, so the window's own view stops
-// hearing about the mouse there - these report it instead, with the widget
-// as the source and coordinates of its own.
-- (void)mouseMoved:(NSEvent*)evt        { [self queue:EVT_MOVE from:evt extra:0]; }
+// hearing about clicks there - these report them instead, with the widget
+// as the source. Plain moves are the content view's to report (see its
+// mouseMoved:), so one arriving here through the responder chain is not.
+- (void)mouseMoved:(NSEvent*)evt { }
 - (void)mouseDragged:(NSEvent*)evt      { [self queue:EVT_MOVE from:evt extra:0]; }
 - (void)rightMouseDragged:(NSEvent*)evt { [self queue:EVT_MOVE from:evt extra:0]; }
 
@@ -834,7 +1038,25 @@ static GUIWIDGET *Widget_At_Point(GUIWIN *win, NSView *root, NSPoint inRoot)
 // Windows makes no such distinction (it captures the mouse instead), so all
 // four are reported here as plain `move` events.
 
-- (void)mouseMoved:(NSEvent*)evt        { [self queue:EVT_MOVE from:evt extra:0]; }
+// Every plain move in the window is reported from here - over the window's
+// own background and over every widget alike - because this view's
+// tracking area covers the whole window and the widgets have none. The
+// source is the widget under the pointer, the position the window's.
+- (void)mouseMoved:(NSEvent*)evt
+{
+	NSPoint    pt;
+	GUIWIDGET *wid;
+	REBHOB    *source;
+
+	if (!context || !context->hob) return;
+	if (!Move_Point(self, evt, &pt)) return;
+
+	wid    = Widget_Under_Point(context, self, pt);
+	source = (wid && wid->hob) ? wid->hob : context->hob;
+	Gui_Queue_Event(source, EVT_MOVE,
+	                (REBINT)floor(pt.x), (REBINT)floor(pt.y),
+	                Modifiers(evt));
+}
 - (void)mouseDragged:(NSEvent*)evt      { [self queue:EVT_MOVE from:evt extra:0]; }
 - (void)rightMouseDragged:(NSEvent*)evt { [self queue:EVT_MOVE from:evt extra:0]; }
 - (void)otherMouseDragged:(NSEvent*)evt { [self queue:EVT_MOVE from:evt extra:0]; }

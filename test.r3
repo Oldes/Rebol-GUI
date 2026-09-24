@@ -10,6 +10,16 @@ Rebol [
 	}
 ]
 
+;; Temporary. Provide as native.
+within?: func[point offset size][
+	did all [
+		point/x >= offset/x
+		point/y >= offset/y
+		point/x < (offset/x + size/x)
+		point/y < (offset/y + size/y)
+	]
+]
+
 print ["Running test on Rebol build:" mold to-block system/build]
 
 ;; make sure that we load a fresh extension
@@ -108,6 +118,14 @@ caption/bold?:  true
 print ["caption's parent is the image:" caption/parent = canvas]
 print ["and its window is still the window:" caption/window = win]
 print ["transparent?" caption/transparent? " background:" mold caption/background]
+
+;; `at` is where a widget sits in its WINDOW, however deeply nested - the
+;; point mouse offsets are measured from. For something the window holds
+;; directly it is just `offset`; one level down it adds up. A window's own
+;; is 0x0, so `evt/offset - evt/source/at` works whatever the source.
+print ["canvas/at is its offset:" canvas/at == canvas/offset]
+print ["caption/at adds the canvas:" caption/at == (canvas/at + caption/offset)]
+print ["win/at:" win/at]
 
 ;; Every container answers `children`, kept in the handle's own GC-marked
 ;; slot alongside whatever else that kind holds - the image! here, the menu
@@ -649,19 +667,45 @@ Events over the image report the image widget as their source.
 ;; `move` events are collapsed by the extension, but there are still plenty
 ;; of them - only report a move once it has travelled a bit.
 last-move: 0x0
+pressed:   none   ;; the control between its `down` and its `up`
+float-grab: none  ;; where the `floating` button was grabbed
+held:      false  ;; the left button is down in a window
 clicks: 0
 
 ;; ONE argument now: `poll-events` returns a block of event! values, so the
 ;; handler reads what it needs by name instead of counting positions. `window`
 ;; is the window for window events and the WIDGET itself for a click, a change
 ;; or a focus change.
-report: func [event /local type source position][
+report: func [event /local type source position kind][
 	type:     event/type
 	source:   event/source
 	position: event/offset
+	;; Windows and drops have no `kind`, so it is only asked of a widget.
+	kind:     all [source/type = 'GUI-WIDGET  source/kind]
 
 	;if all [type = 'move  10 > distance last-move position] [exit]
 	if type = 'move [last-move: position]
+
+	;; Every mouse event is in the client coordinates of its window, whatever
+	;; its source. With no button held, a move comes from the window under
+	;; the pointer - including over its widgets, which report it with
+	;; themselves as the source - so it always lands inside that window,
+	;; and inside the widget it names. (A drag belongs to where it started
+	;; and may leave both.)
+	switch type [down [held: true] up [held: false]]
+	if all [type = 'move  not held] [
+		either source/type = 'GUI-WINDOW [
+			unless within? position 0x0 source/size [
+				note ajoin ["!! move outside its window: " position]
+			]
+		][
+			if kind = 'text [note "!! move from a label - labels are see-through"]
+			unless within? position source/at source/size [
+				note ajoin ["!! move on " kind " not over it: " position
+				            " (it is at " source/at ")"]
+			]
+		]
+	]
 
 	;; Everything a control reports about itself goes into the area, which
 	;; is also how the area proves it can be written to while in use.
@@ -669,8 +713,46 @@ report: func [event /local type source position][
 	;; it is the one thing not written into the log.
 	if all [
 		find [click change focus unfocus] type
-		not all [type = 'change  source/kind = 'slider]
-	][	note ajoin [type " on " source/kind] ]
+		not all [type = 'change  kind = 'slider]
+	][	note ajoin [type " on " kind] ]
+
+	;; `down` and `up` on the pressable controls: every `down` must be
+	;; answered by exactly one `up` on the same control, with `move` and a
+	;; slider's `change` events in between and a `click` after.
+	;;
+	;; WATCH (macOS especially): `down` must appear in the log as soon as
+	;; the button is pressed, not when it is released.
+	if all [
+		find [down up] type
+		find [button check radio slider] kind
+	][
+		note ajoin [type " on " kind " at " position]
+		either type = 'down [
+			if pressed [note "!! down while another press is still open"]
+			pressed: source
+		][
+			unless pressed == source [note "!! up without a matching down"]
+			pressed: none
+		]
+	]
+	if all [type = 'click  pressed == source] [
+		note "!! click arrived before up"
+	]
+	;; While a control is pressed, every move is its own.
+	if all [type = 'move  pressed  not pressed == source] [
+		note ajoin ["!! move from " any [kind "the window"] " during a press"]
+	]
+
+	;; WATCH: the `floating` button drags its borderless window around.
+	;; The offset is in the window's client coordinates, which move with the
+	;; window, so the grab point stays under the pointer.
+	if source == float [
+		switch type [
+			down [float-grab: position]
+			move [if float-grab [ghost/offset: ghost/offset + position - float-grab]]
+			up   [float-grab: none]
+		]
+	]
 
 	if type == 'change [
 		case [
@@ -805,8 +887,10 @@ report: func [event /local type source position][
 			;; where a position would otherwise be, which is why it has none.
 			type = 'scroll-line [ajoin ["lines: " event/code]]
 			type = 'click [source]
-			;; the image widget reports its own mouse events
-			source = canvas [ajoin ["on the image " source]]
+			;; The image widget reports its own mouse events, in window
+			;; coordinates like everything else - `at` turns them into
+			;; a position on the picture.
+			source == canvas [ajoin ["on the image at " position - canvas/at]]
 			type = 'menu-select [ajoin ["item: " event/code]]
 			;; the drop handle molds as what it holds
 			find [drop-file drop-text] type [ajoin ["dropped " mold source]]

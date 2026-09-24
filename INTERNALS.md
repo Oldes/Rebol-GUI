@@ -142,6 +142,26 @@ Cocoa flips offsets against the menu-bar screen; the content view answers
   `RebolGuiSlider` tracks the mouse itself and calls the cell's
   `startTrackingAt:` / `continueTracking:at:` / `stopTracking:at:` hooks so the
   pressed knob still renders.
+- **Mouse coordinates:** every mouse event is in window client coordinates.
+  Windows maps a child's `lParam` up with `MapWindowPoints` in
+  `Queue_Widget_Mouse`; macOS converts into the (flipped) content view with
+  `Client_Point`. `widget/at` is computed in the shared layer by adding
+  `offset`s up the `parent` chain.
+- **Mouse moves:** on Windows `Nav_Proc`, which every control has, reports
+  `WM_MOUSEMOVE` for all of them; labels answer `HTTRANSPARENT`, so their
+  container reports instead. On macOS only the content view has a tracking
+  area; its `mouseMoved:` picks the deepest widget under the point with
+  `Widget_Under_Point`, skipping labels and disabled controls to match Win32.
+  AppKit also sends tracking-area moves down the key window's responder chain
+  (first responder: the content view), so `Move_Point` drops moves for other
+  windows and a second copy of the same move.
+- **Press events (`down`/`move`/`up`):** Windows reports them from
+  `Nav_Proc` while the control holds the capture; `WM_CAPTURECHANGED` closes a
+  press that loses it. `up` goes out before a button's `BN_CLICKED` and after a
+  trackbar's own `WM_LBUTTONUP`, so it is the last event of a drag. On macOS
+  `NSButton` tracks in a modal loop too, so `RebolGuiButton` tracks the press
+  itself (highlight while inside, `setNextState` for a check, then `clicked:`
+  directly) - otherwise `down` reaches Rebol only together with `up`.
 - **Drop-down:** Windows' `COMBOBOX` height includes the list, so the backend
   adds it and reports `CB_GETITEMHEIGHT`. macOS adds `NSMenuItem`s directly
   so duplicate titles survive.

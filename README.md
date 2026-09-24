@@ -1,3 +1,5 @@
+[![Rebol-GUI](https://github.com/Siskin-framework/Rebol-GUI/actions/workflows/build.yml/badge.svg)](https://github.com/Siskin-framework/Rebol-GUI/actions/workflows/build.yml)
+
 # Rebol/GUI extension
 
 A minimal windowing extension for [Rebol3](https://github.com/Oldes/Rebol3),
@@ -84,8 +86,8 @@ Each event is an `event!`:
 | field    | type            | meaning                                              |
 |----------|-----------------|------------------------------------------------------|
 | `type`   | `word!`         | `move` `down` `up` `alt-down` `alt-up` `aux-down` `aux-up` `scroll-line` `close` `resize` `click` `change` `focus` `unfocus` `menu-select` `drop-file` `drop-text` |
-| `source` | `handle!`       | the window, or the widget itself for `click`, `change`, `focus` and `unfocus`; `evt/source/window` gets back to the window |
-| `offset` | `pair!`         | client coordinates; the new client size for `resize` |
+| `source` | `handle!`       | the window, or the widget the event is about - for `move`, the one under the pointer; `evt/source/window` gets back to the window |
+| `offset` | `pair!`         | the window's client coordinates, whatever the source; the new client size for `resize` |
 | `flags`  | `block!`        | `shift` `control` `alt` `double`, where they apply   |
 | `code`   | `integer!`/`word!` | signed wheel lines, or a menu item's word         |
 
@@ -100,7 +102,27 @@ event reports no position.
   An `area` keeps Enter for new lines.
 - A `change` means the *user* changed something. Setting a value from Rebol
   does not report one.
-- Consecutive `move` events for one window are collapsed to the newest.
+- Consecutive `move` events from one source are collapsed to the newest.
+
+### Mouse position
+
+Every mouse event's `offset` is in the **client coordinates of its window** -
+the window's own events, and a widget's alike. A `move` is reported wherever
+the pointer is in the window, over widgets too, with the widget under the
+pointer as `source` (or the window, over its background). Labels are
+see-through: over one, the source is whatever holds it.
+
+While a button is held, moves keep coming from wherever the press started,
+even outside the window.
+
+To get a position relative to a widget, subtract its `at` - where its top-left
+corner is in the window, however deeply it is nested. A window's `at` is
+`0x0`, so this works whatever the source:
+
+```rebol
+evt/offset - evt/source/at    ;; the position within the source
+evt/offset - canvas/at        ;; the position on a particular widget
+```
 
 **Comparing handles:** use `==` to ask "is this that widget?". `=` on two
 handles compares their type only.
@@ -185,23 +207,66 @@ pic:   add-image  win some-image       340x20
 
 | kind        | control | reports |
 |-------------|---------|---------|
-| `button`    | push button | `click` |
+| `button`    | push button | `down` `move` `up` `click` |
 | `text`      | static label | nothing |
 | `field`     | one-line entry | `change` `focus` `unfocus`, `click` on Enter |
 | `area`      | multi-line entry with a scrollbar | `change` `focus` `unfocus` |
-| `check`     | checkbox | `click` |
-| `radio`     | radio button | `click` |
-| `slider`    | draggable slider | `change`, continuously while dragged |
+| `check`     | checkbox | `down` `move` `up` `click` |
+| `radio`     | radio button | `down` `move` `up` `click` |
+| `slider`    | draggable slider | `down` `move` `up`, and `change` continuously while dragged |
 | `progress`  | progress bar | nothing |
 | `drop-down` | pick one of a list | `change` `focus` `unfocus` |
 | `panel`     | holds other widgets | nothing |
 | `image`     | shows an `image!` | its own mouse events |
+
+Buttons, checks, radios and sliders report the left mouse button going
+`down` and `up` on them, and `move` from themselves while it is held -
+wherever the pointer goes, not only over the control. Every `down` is followed
+by exactly one `up`, and the order is `down`, then any `move` and `change`,
+then `up`, then `click` (only when released over the control) - so a slider's
+`down` and `up` bracket one drag:
+
+```rebol
+switch evt/type [
+    down   [if evt/source == level [dragging: true]]
+    change [if evt/source == level [preview level/value]]
+    up     [if evt/source == level [dragging: false  commit level/value]]
+]
+```
+
+Dragging with a control is ordinary arithmetic on window coordinates.
+Moving a borderless window by one of its buttons - the client area moves with
+the window, so the grab point stays put:
+
+```rebol
+switch evt/type [
+    down [grab: evt/offset]
+    move [if grab [win/offset: win/offset + evt/offset - grab]]
+    up   [grab: none]
+]
+```
+
+Moving the control itself inside the window - here the pointer moves
+relative to the client area, so the grab point follows it:
+
+```rebol
+switch evt/type [
+    down [grab: evt/offset]
+    move [if grab [btn/offset: btn/offset + evt/offset - grab  grab: evt/offset]]
+    up   [grab: none]
+]
+```
+
+A `click` still follows a drag released over the control; ignore it if the
+drag moved anything. These are mouse events only: pressing Space on a button, or moving a slider
+with the arrow keys, reports `click` or `change` without them.
 
 Common accessors; ones that do not apply to a kind answer `none`:
 
 ```rebol
 btn/text: "Clicked"      ;; label, or the contents of a field or an area
 btn/offset: 30x40        ;; position inside its container
+btn/at                   ;; position in its window, however nested (read-only)
 btn/size: 160x32
 btn/enabled?: false
 opt/state: true          ;; check or radio
@@ -392,8 +457,11 @@ The widget holds the image itself, not a copy, so drawing into it and calling
 `canvas/image: other` swaps it (a different size is scaled into the widget's
 box). Alpha is currently ignored.
 
-An image widget **reports its own mouse events**, with itself as `source` and
-coordinates relative to it - which is what makes it a canvas.
+An image widget **reports its own mouse events**, with itself as `source` -
+which is what makes it a canvas. Like every mouse event they are in window
+coordinates, so the point on the picture is `evt/offset - canvas/at`. A press
+on the canvas keeps reporting moves from it until the button comes up, even
+over a caption or outside the window.
 
 It is also a container, so a caption can sit on the picture:
 
@@ -507,7 +575,8 @@ if evt/type = 'drop-file [
 | `target` | the window, or the direct child of the window it landed on        |
 | `window` | the window                                                        |
 
-`offset` is where in the target it landed. A drop on a label sitting on an
+`offset` is where it landed, in the window's client coordinates like every
+other event (`evt/offset - evt/source/target/at` for the target's own). A drop on a label sitting on an
 image reports the image; walk `target/parent` if you need more.
 
 ## Platforms
@@ -533,7 +602,6 @@ Things worth knowing:
   in a host that already embeds the same sources makes the Objective-C runtime
   report duplicated classes, and controls then misbehave. Builds with
   different `GUI_CLASS_PREFIX` values can coexist.
-
 ## Extension commands:
 
 
@@ -699,6 +767,7 @@ Gives a widget the keyboard focus; returns false if it cannot take it
 /title            string!             string!                       "Text shown in the title bar"
 /size             pair!               pair!                         "Size of the client area in pixels"
 /offset           pair!               pair!                         "Position of the top-left corner on the screen"
+/at               pair!               none                          "Always 0x0 - a window's client area is where mouse offsets are measured from; here so that `evt/offset - evt/source/at` works for any source"
 /id               integer!            none                          "Native window handle as an integer"
 /open?            logic!              none                          "False once the window has been closed"
 /scale            decimal!            none                          "Device pixels per unit of size - 1.0 at 100%, 1.75 at 175%, 2.0 on a Retina Mac"
@@ -737,6 +806,7 @@ Gives a widget the keyboard focus; returns false if it cannot take it
 /image            image!              image!                        "Image shown by an image widget, none for other kinds"
 /size             pair!               pair!                         "Size of the control; a zero axis asks it what that axis needs, the same as at creation"
 /offset           pair!               pair!                         "Position inside whatever holds it - a window or a panel"
+/at               pair!               none                          "Top-left corner in its window's client area, however deeply nested - what a mouse event's offset is measured from"
 /id               integer!            none                          "Native control handle as an integer"
 /kind             word!               none                          "What the control is: button, image, text, field, area, check, radio, slider, progress or drop-down"
 /value            percent!            [percent! decimal!]           "Position of a slider or a progress bar; none for other kinds"

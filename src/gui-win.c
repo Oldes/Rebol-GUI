@@ -594,12 +594,23 @@ static void Queue_Mouse(GUIWIN *win, REBCNT type, LPARAM lp, REBINT extra)
 
 // The same for a child widget. A child covers its part of the window, so
 // the parent stops hearing about the mouse there - the widget reports it
-// instead, with itself as the source and its own coordinates.
+// instead, with itself as the source.
+//
+// The position is still the WINDOW's: every mouse event is in client
+// coordinates of the window it happened in, whichever widget reports it,
+// so a handler never has to know which one it was over to use it. lParam
+// is in the child's own coordinates, so it is mapped up to the window
+// first. `widget/at` converts back for a handler that wants that.
 static void Queue_Widget_Mouse(GUIWIDGET *wid, REBCNT type, LPARAM lp, REBINT extra)
 {
-	if (!wid || !wid->hob) return;
-	Gui_Queue_Event(wid->hob, type,
-	                To_Logical(GET_X_LPARAM(lp)), To_Logical(GET_Y_LPARAM(lp)),
+	POINT p;
+
+	if (!wid || !wid->hob || !wid->handle) return;
+	p.x = GET_X_LPARAM(lp);
+	p.y = GET_Y_LPARAM(lp);
+	if (wid->owner && wid->owner->handle)
+		MapWindowPoints(HWND_OF_WID(wid), HWND_OF(wid->owner), &p, 1);
+	Gui_Queue_Event(wid->hob, type, To_Logical(p.x), To_Logical(p.y),
 	                Modifiers() | extra);
 }
 
@@ -996,9 +1007,8 @@ static LRESULT CALLBACK Gui_Image_Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp
 		Paint_Image(hwnd, (HDC)wp, wid);
 		return 0;
 
-	case WM_MOUSEMOVE:
-		Queue_Widget_Mouse(wid, EVT_MOVE, lp, 0);
-		return 0;
+	// WM_MOUSEMOVE is not here: Nav_Proc, which every control has in
+	// front of its own procedure, reports it for all of them alike.
 
 	case WM_LBUTTONDBLCLK:
 		Queue_Widget_Mouse(wid, EVT_DOWN, lp, GUI_FLAG_DOUBLE);
@@ -2446,10 +2456,98 @@ static REBOOL Gui_Handle_Key(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 **  controls here come from six different classes, and a widget has a
 **  place to put it.
 ***********************************************************************/
+/***********************************************************************
+**  `down` and `up` on the pressable controls.
+**
+**  Button, check, radio and slider report the left button going down
+**  and coming up on them, in window client coordinates like every mouse
+**  event - so a program can tell when the user starts and stops working
+**  a slider, or show something only while a button is held.
+**
+**  Each of these captures the mouse while pressed, so the `up` arrives
+**  here wherever the pointer is let go. The order is down, (move and
+**  change...), up, (click): `up` goes out BEFORE the base procedure for
+**  the button family, which raises BN_CLICKED from inside WM_LBUTTONUP, and AFTER
+**  it for a trackbar, which may still post a final position there - so
+**  `up` is the last thing a drag reports.
+**
+**  Capture can also be taken away without a button-up (a window
+**  coming forward, Alt+Tab). WM_CAPTURECHANGED then closes the press,
+**  so every `down` is matched by exactly one `up`.
+***********************************************************************/
+static HWND   Pressed_Control = NULL;
+static REBOOL In_Button_Up    = FALSE;
+
+static REBOOL Is_Pressable(GUIWIDGET *wid)
+{
+	if (!wid) return FALSE;
+	switch (wid->kind) {
+	case W_GUI_WIDGET_BUTTON:
+	case W_GUI_WIDGET_CHECK:
+	case W_GUI_WIDGET_RADIO:
+	case W_GUI_WIDGET_SLIDER:
+		return TRUE;
+	}
+	return FALSE;
+}
+
+// Closes a press with the pointer's current position, for the paths
+// where no button-up message carries one.
+static void Release_Press(HWND hwnd, GUIWIDGET *wid)
+{
+	POINT p;
+	Pressed_Control = NULL;
+	if (!wid || !wid->hob) return;
+	GetCursorPos(&p);
+	// Window client coordinates, like every other mouse event.
+	ScreenToClient((wid->owner && wid->owner->handle) ? HWND_OF(wid->owner) : hwnd, &p);
+	Gui_Queue_Event(wid->hob, EVT_UP, To_Logical(p.x), To_Logical(p.y), Modifiers());
+}
+
 static LRESULT CALLBACK Nav_Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
 	GUIWIDGET *wid  = (GUIWIDGET*)GetWindowLongPtrW(hwnd, GWLP_USERDATA);
 	WNDPROC    base = (wid && wid->wndproc) ? (WNDPROC)wid->wndproc : NULL;
+
+	if (Is_Pressable(wid)) switch (msg) {
+	case WM_LBUTTONDOWN:
+	case WM_LBUTTONDBLCLK:
+		// A press left open by a lost message is closed first, so the
+		// pairing survives it.
+		if (Pressed_Control && Pressed_Control != hwnd) {
+			HWND old = Pressed_Control;
+			Release_Press(old, (GUIWIDGET*)GetWindowLongPtrW(old, GWLP_USERDATA));
+		}
+		Pressed_Control = hwnd;
+		Queue_Widget_Mouse(wid, EVT_DOWN, lp,
+		                   msg == WM_LBUTTONDBLCLK ? GUI_FLAG_DOUBLE : 0);
+		break;  // on to the control, which captures and presses
+
+	case WM_LBUTTONUP: {
+		LRESULT r;
+		REBOOL  open = (Pressed_Control == hwnd);
+
+		if (!open) break;
+		if (wid->kind != W_GUI_WIDGET_SLIDER) {
+			Pressed_Control = NULL;
+			Queue_Widget_Mouse(wid, EVT_UP, lp, 0);
+			break;
+		}
+		In_Button_Up = TRUE;  // the release below is ours to report
+		r = base ? CallWindowProcW(base, hwnd, msg, wp, lp)
+		         : DefWindowProcW(hwnd, msg, wp, lp);
+		In_Button_Up = FALSE;
+		if (Pressed_Control == hwnd) {
+			Pressed_Control = NULL;
+			Queue_Widget_Mouse(wid, EVT_UP, lp, 0);
+		}
+		return r; }
+
+	case WM_CAPTURECHANGED:
+		if (Pressed_Control == hwnd && !In_Button_Up)
+			Release_Press(hwnd, wid);
+		break;
+	}
 
 	// ENTER in a one-line field. An EDIT hands it to the default pushbutton
 	// of the dialog it is in; there is none here, so DefWindowProc answers
@@ -2468,6 +2566,16 @@ static LRESULT CALLBACK Nav_Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 		}
 		return 0;
 	}
+
+	// A control covers its part of the window, so the window stops hearing
+	// about the mouse there. Every control reports the move instead - a
+	// `move` over a button is still a move over the window, and a program
+	// following the pointer should not see it vanish over each widget.
+	// (A label answers HTTRANSPARENT, so its container reports it.) While
+	// a control is pressed it holds the capture, so its moves keep coming
+	// wherever the pointer goes - which is what lets a program drag the
+	// control, or anything else, with it.
+	if (msg == WM_MOUSEMOVE && wid) Queue_Widget_Mouse(wid, EVT_MOVE, lp, 0);
 
 	if (Gui_Handle_Key(hwnd, msg, wp, lp)) return 0;
 
