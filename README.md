@@ -1,3 +1,5 @@
+[![Rebol-GUI](https://github.com/Siskin-framework/Rebol-GUI/actions/workflows/build.yml/badge.svg)](https://github.com/Siskin-framework/Rebol-GUI/actions/workflows/build.yml)
+
 # Rebol/GUI extension
 
 A minimal windowing extension for [Rebol3](https://github.com/Oldes/Rebol3),
@@ -331,12 +333,28 @@ bar/value: 40%           ;; slider or progress
 btn/kind                 ;; button | text | field | ... | image
 btn/parent               ;; the window or the container holding it
 btn/window               ;; the window, however deeply nested
+btn/tip: "Does this"     ;; tooltip; see below
 win/children             ;; widgets held directly, in the order added
 ```
 
 `children` answers `none` for a kind that cannot hold widgets, and a block
 (possibly empty) for one that can. The block is the extension's own - read it,
 but do not modify it.
+
+### Tooltips
+
+Any widget can have a tooltip, shown by the platform with its own delay,
+placement and look:
+
+```rebol
+save-btn/tip: "Saves the file"
+save-btn/tip: "Saves the file^/Ctrl+S"   ;; a newline starts a second line
+save-btn/tip                           ;; what is set, or none
+save-btn/tip: none                     ;; none, or "", takes it away
+```
+
+For anything the platform's tooltip cannot do - custom look, rich content,
+status-bar hints - use `enter` and `leave` instead.
 
 ### Sizes and DPI
 
@@ -900,6 +918,7 @@ Reports `move` over the screens outside this program's windows, with the screen 
 /scroll           percent!            [percent! decimal! word!]     "How far an area is scrolled; set a percent, or one of top, bottom and end; none for kinds which do not scroll"
 /group            integer!            none                          "Which radio group it belongs to; 0 for everything else"
 /enabled?         logic!              logic!                        "Whether the control responds to the user"
+/tip              string!             [string! none!]               "Text the platform shows when the pointer rests on it; none for no tip"
 /parent           handle!             none                          "Whatever holds it - a window, or a panel; none once gone"
 /window           handle!             none                          "The window it ends up in, however deeply nested"
 ```

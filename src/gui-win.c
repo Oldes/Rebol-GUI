@@ -798,6 +798,111 @@ static void Mouse_Left(HWND hwnd)
 }
 
 
+/***********************************************************************
+**  Tooltips.
+**
+**  One tooltip control per top-level window, made the first time a
+**  widget in it is given a tip, and owned by the window - so Windows
+**  destroys it together with the window. It is kept as a property of
+**  the window rather than in GUIWIN, which has no Win32 types in it.
+**
+**  Each widget is a tool identified by its own HWND (TTF_IDISHWND), and
+**  the tooltip is fed its mouse messages by hand (TTM_RELAYEVENT) from
+**  Nav_Proc and the window procedure. That is instead of TTF_SUBCLASS,
+**  which would subclass every control a second time with comctl32's
+**  own procedure on top of ours.
+**
+**  A LABEL cannot be done that way: a static answers HTTRANSPARENT, so
+**  it never sees the mouse - its container does. A label's tip is a
+**  RECTANGLE tool on its container instead, covering the label, which
+**  the container's relayed messages hit. The rectangle is kept in step
+**  when the label moves (Gui_Widget_Set_Box, WM_DPICHANGED).
+***********************************************************************/
+static const WCHAR *Tip_Prop = L"RebolGuiTip";
+
+static HWND Tip_Of(HWND any, REBOOL make)
+{
+	HWND root = any ? GetAncestor(any, GA_ROOT) : NULL;
+	HWND tip;
+
+	if (!root) return NULL;
+	tip = (HWND)GetPropW(root, Tip_Prop);
+	if (tip || !make) return tip;
+
+	tip = CreateWindowExW(WS_EX_TOPMOST, TOOLTIPS_CLASSW, NULL,
+	                      // No fade in or out and no slide: the tip is there
+	                      // when it is due and gone when it is not.
+	                      WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX
+	                      | TTS_NOFADE | TTS_NOANIMATE,
+	                      CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT,
+	                      root, NULL, App_Instance, NULL);
+	if (!tip) return NULL;
+	// A width makes it wrap long text - and honour a newline in it.
+	SendMessageW(tip, TTM_SETMAXTIPWIDTH, 0, (LPARAM)To_Device(Dpi_Of(root), 400));
+	SetPropW(root, Tip_Prop, tip);
+	return tip;
+}
+
+// The tool describing `wid`. TTTOOLINFOW_V2_SIZE rather than sizeof: the
+// full structure is only accepted by comctl32 6, which needs a manifest
+// the `r3` executable may not have.
+static void Tip_Tool(TOOLINFOW *ti, GUIWIDGET *wid)
+{
+	HWND hwnd = HWND_OF_WID(wid);
+
+	ZeroMemory(ti, sizeof(*ti));
+	ti->cbSize = TTTOOLINFOW_V2_SIZE;
+	ti->hwnd   = GetParent(hwnd);
+	ti->uId    = (UINT_PTR)hwnd;
+	if (wid->kind == W_GUI_WIDGET_TEXT) {
+		// Its rectangle in the container, which gets the label's mouse.
+		if (GetWindowRect(hwnd, &ti->rect))
+			MapWindowPoints(NULL, ti->hwnd, (POINT*)&ti->rect, 2);
+	} else {
+		ti->uFlags = TTF_IDISHWND;
+	}
+}
+
+// Keeps a label's rectangle tool on top of the label. Nothing to do for
+// any other kind, or for a label with no tip.
+static void Tip_Follow(GUIWIDGET *wid)
+{
+	TOOLINFOW ti;
+	HWND      tip;
+
+	if (!wid || !wid->handle || wid->kind != W_GUI_WIDGET_TEXT) return;
+	if (!(tip = Tip_Of(HWND_OF_WID(wid), FALSE))) return;
+	Tip_Tool(&ti, wid);
+	SendMessageW(tip, TTM_NEWTOOLRECTW, 0, (LPARAM)&ti);
+}
+
+// Hands a mouse message on to the window's tooltip, if it has one.
+static void Tip_Relay(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
+{
+	HWND tip;
+	MSG  m;
+
+	switch (msg) {
+	case WM_MOUSEMOVE:
+	case WM_LBUTTONDOWN: case WM_LBUTTONUP:
+	case WM_RBUTTONDOWN: case WM_RBUTTONUP:
+	case WM_MBUTTONDOWN: case WM_MBUTTONUP:
+		break;
+	default:
+		return;
+	}
+	if (!(tip = Tip_Of(hwnd, FALSE))) return;
+
+	m.hwnd    = hwnd;
+	m.message = msg;
+	m.wParam  = wp;
+	m.lParam  = lp;
+	m.time    = GetMessageTime();
+	GetCursorPos(&m.pt);
+	SendMessageW(tip, TTM_RELAYEVENT, 0, (LPARAM)&m);
+}
+
+
 //== window procedure =========================================================
 
 /***********************************************************************
@@ -843,6 +948,7 @@ static void Rescale_Window(GUIWIN *win, HWND hwnd, int was, int now, const RECT 
 				             MulDiv(r.right - r.left, now, was),
 				             MulDiv(r.bottom - r.top, now, was),
 				             SWP_NOZORDER | SWP_NOACTIVATE);
+				Tip_Follow(wid);
 			}
 
 			// Same face, same point size, same style - made for `now`.
@@ -897,6 +1003,8 @@ static LRESULT CALLBACK Gui_Window_Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
 
 	win = GUIWIN_OF(hwnd);
 	if (!win) return DefWindowProcW(hwnd, msg, wp, lp);
+
+	Tip_Relay(hwnd, msg, wp, lp);  // a label's tip is the window's to show
 
 	switch (msg) {
 
@@ -2953,6 +3061,8 @@ static LRESULT CALLBACK Nav_Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 	// a control is pressed it holds the capture, so its moves keep coming
 	// wherever the pointer goes - which is what lets a program drag the
 	// control, or anything else, with it.
+	if (wid) Tip_Relay(hwnd, msg, wp, lp);
+
 	if (msg == WM_MOUSEMOVE && wid) {
 		Track_Leave(hwnd);
 		Queue_Widget_Mouse(wid, EVT_MOVE, lp, 0);
@@ -3420,7 +3530,72 @@ void Gui_Destroy_Widget(GUIWIDGET *wid)
 {
 	// A widget whose window is already gone has a NULL handle: the OS
 	// destroyed the control together with its parent.
-	if (wid && wid->handle) DestroyWindow(HWND_OF_WID(wid));
+	HWND tip;
+	if (!wid || !wid->handle) return;
+	// Its tool first: the tooltip would otherwise keep a stale HWND, which
+	// Windows is free to hand to the next control.
+	if ((tip = Tip_Of(HWND_OF_WID(wid), FALSE)) != NULL) {
+		TOOLINFOW ti;
+		Tip_Tool(&ti, wid);
+		SendMessageW(tip, TTM_DELTOOLW, 0, (LPARAM)&ti);
+	}
+	DestroyWindow(HWND_OF_WID(wid));
+}
+
+
+REBOOL Gui_Widget_Set_Tip(GUIWIDGET *wid, const REBYTE *utf8, REBCNT len)
+{
+	TOOLINFOW ti, probe;
+	HWND      hwnd, tip;
+	WCHAR    *wide;
+	REBOOL    ok;
+
+	if (!wid || !wid->handle) return FALSE;
+	hwnd = HWND_OF_WID(wid);
+
+	tip = Tip_Of(hwnd, (utf8 && len > 0) ? TRUE : FALSE);
+	if (!tip) return (utf8 && len > 0) ? FALSE : TRUE;  // nothing to remove
+
+	Tip_Tool(&ti, wid);
+	probe = ti;   // lpszText NULL: asks whether it exists, copies nothing
+	if (!utf8 || len == 0) {
+		SendMessageW(tip, TTM_DELTOOLW, 0, (LPARAM)&ti);
+		return TRUE;
+	}
+
+	wide = To_Wide(utf8, len);
+	if (!wide) return FALSE;
+	ti.lpszText = wide;       // the tooltip keeps a copy of its own
+	if (SendMessageW(tip, TTM_GETTOOLINFOW, 0, (LPARAM)&probe)) {
+		SendMessageW(tip, TTM_UPDATETIPTEXTW, 0, (LPARAM)&ti);
+		ok = TRUE;
+	} else {
+		ok = SendMessageW(tip, TTM_ADDTOOLW, 0, (LPARAM)&ti) ? TRUE : FALSE;
+	}
+	FREE_MEM(wide);
+	return ok;
+}
+
+
+REBSER* Gui_Widget_Get_Tip(GUIWIDGET *wid)
+{
+	TOOLINFOW ti;
+	HWND      tip;
+	WCHAR     buf[1024];
+
+	if (!wid || !wid->handle) return NULL;
+	if (!(tip = Tip_Of(HWND_OF_WID(wid), FALSE))) return NULL;
+
+	Tip_Tool(&ti, wid);
+	if (!SendMessageW(tip, TTM_GETTOOLINFOW, 0, (LPARAM)&ti)) return NULL;
+
+	buf[0] = 0;
+	Tip_Tool(&ti, wid);
+	ti.lpszText = buf;
+	SendMessageW(tip, TTM_GETTEXTW, (WPARAM)(sizeof(buf) / sizeof(buf[0])), (LPARAM)&ti);
+	buf[(sizeof(buf) / sizeof(buf[0])) - 1] = 0;
+	if (!buf[0]) return NULL;
+	return RL_ENCODE_UTF8_STRING(buf, (REBCNT)wcslen(buf), TRUE, 0);
 }
 
 
@@ -4008,6 +4183,7 @@ REBOOL Gui_Widget_Set_Box(GUIWIDGET *wid, REBINT x, REBINT y, REBINT w, REBINT h
 		RedrawWindow(parent, &dirty, NULL,
 		             RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_ALLCHILDREN);
 	}
+	Tip_Follow(wid);
 	return TRUE;
 }
 

@@ -2367,6 +2367,41 @@ REBOOL Gui_Widget_Natural_Size(GUIWIDGET *wid, REBINT *w, REBINT *h)
 }
 
 
+/***********************************************************************
+**  Tooltips: NSView's own `toolTip`, so AppKit does the delay, the
+**  placement and the look. Read back from the view, like the font.
+**
+**  An area is two views - the scroll view which is the widget, and the
+**  text view filling it - and a tip belongs to whichever view is under
+**  the pointer, which is the text view. Both get it.
+***********************************************************************/
+REBOOL Gui_Widget_Set_Tip(GUIWIDGET *wid, const REBYTE *utf8, REBCNT len)
+{
+	@autoreleasepool {
+		NSString *tip = nil;
+		if (!wid || !wid->handle) return FALSE;
+		if (utf8 && len > 0) {
+			tip = To_NSString(utf8, len);
+			if (!tip) return FALSE;
+		}
+		[NSVIEW_OF(wid) setToolTip:tip];
+		if (wid->kind == W_GUI_WIDGET_AREA) [Text_View_Of(wid) setToolTip:tip];
+		return TRUE;
+	}
+}
+
+REBSER* Gui_Widget_Get_Tip(GUIWIDGET *wid)
+{
+	@autoreleasepool {
+		NSString *tip;
+		if (!wid || !wid->handle) return NULL;
+		tip = [NSVIEW_OF(wid) toolTip];
+		if (!tip || [tip length] == 0) return NULL;
+		return From_NSString(tip);
+	}
+}
+
+
 REBSER* Gui_Widget_Get_Text(GUIWIDGET *wid)
 {
 	@autoreleasepool {

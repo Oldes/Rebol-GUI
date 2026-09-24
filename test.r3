@@ -395,6 +395,39 @@ note: func ["Appends a line to the area" line [string!]][
 
 
 ;;=============================================================================
+print as-yellow "^/== Tooltips"
+;;=============================================================================
+
+;; The platform's own tooltip - its delay, its placement, its look. Any kind
+;; can have one; `none` (or an empty string) takes it away again.
+;;
+;; WATCH: rest the pointer on "Click me", on the picture, on the label above
+;; the field and on the slider - each shows its tip. A label is a special
+;; case on Windows (it never sees the mouse itself), so it is worth checking.
+print ["no tip to begin with:" none? counter/tip]
+counter/tip: "Counts the clicks and repaints the picture"
+canvas/tip:  "Drop an image file here to show it"
+label/tip:   "Greets whoever types in the field below"
+level/tip:   "Drives the progress bar below it"
+name/tip:    "Type your name - Enter reports a click"
+log/tip:     "Read-only: select and copy, but no typing"
+print ["and read back:       " mold counter/tip]
+print ["a label has one too: " mold label/tip]
+
+;; Replaced, not added to...
+counter/tip: "Counts the clicks^/and repaints the picture"
+print ["replaced, two lines: " mold counter/tip]
+
+;; ... and taken away with either `none` or an empty string.
+closer/tip: "about to go"
+closer/tip: none
+print ["removed with none:   " none? closer/tip]
+closer/tip: "about to go"
+closer/tip: ""
+print ["removed with empty:  " none? closer/tip]
+print ["a wrong type is refused:" error? try [closer/tip: 42]]
+
+;;=============================================================================
 print as-yellow "^/== Showing the finished layout"
 ;;=============================================================================
 

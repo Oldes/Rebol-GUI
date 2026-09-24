@@ -275,6 +275,15 @@ REBOOL  Gui_Pointer_At(REBYTE *key, REBINT *x, REBINT *y, REBINT *mods, REBOOL *
 // the pointer until the button is up.
 void    Gui_Pointer_Left(void);
 
+/***********************************************************************
+**  Tooltips - the platform's own, with its delay, placement and look.
+**
+**  Set_Tip with no text (NULL or length 0) removes the tip. Get_Tip
+**  answers what the platform holds, as a new string, or NULL for none.
+***********************************************************************/
+REBOOL  Gui_Widget_Set_Tip(GUIWIDGET *wid, const REBYTE *utf8, REBCNT len);
+REBSER* Gui_Widget_Get_Tip(GUIWIDGET *wid);
+
 // Shared layer, called after every pump.
 void    Gui_Track_Pointer(void);
 REBOOL  Gui_Tracking_Pointer(void);

@@ -288,3 +288,18 @@ top-level window, which is what a move onto a child looks like) and
 `mouseExited:` on the content view's tracking area. Both skip presses in
 progress. A handle going away forgets its hover (`Forget_Hover` in
 `Release_Handle`); turning `track-mouse` off leaves a hovered screen.
+
+## Tooltips
+
+macOS: `NSView.toolTip`, on the text view as well for an area (the scroll view
+is covered by it).
+
+Windows: one `TOOLTIPS_CLASS` control per top-level window, created on the first
+tip and owned by the window (kept as the `RebolGuiTip` property). Tools are
+`TTF_IDISHWND` keyed by the control's HWND, fed by `TTM_RELAYEVENT` from
+`Nav_Proc` and the window procedure rather than `TTF_SUBCLASS`, which would add
+comctl32's own subclass on top of ours. A label never gets the mouse
+(`HTTRANSPARENT`), so its tip is a rectangle tool on its container, moved with
+the label (`Tip_Follow` from `Gui_Widget_Set_Box` and `Rescale_Window`). The
+tool is removed before a control is destroyed so a reused HWND cannot inherit
+it. `TTTOOLINFOW_V2_SIZE` keeps it working without a comctl32 v6 manifest.

@@ -3028,6 +3028,16 @@ int GuiWidget_get_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 		arg->int32a = (wid->state & GUI_TEXT_READ_ONLY) ? 1 : 0;
 		break;
 
+	// Asked of the control, like the font: what is reported is what the
+	// platform will show. None when there is no tip.
+	case W_GUI_ARG_TIP: {
+		REBSER *tip = Gui_Widget_Get_Tip(wid);
+		if (!tip) { *type = RXT_NONE; break; }
+		arg->series = tip;
+		arg->index  = 0;
+		*type = RXT_STRING;
+		break; }
+
 	case W_GUI_ARG_ENABLEDQ:
 		if (!Kind_Has_Enabled(wid->kind)) { *type = RXT_NONE; break; }
 		*type = RXT_LOGIC;
@@ -3322,6 +3332,19 @@ int GuiWidget_set_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 		if (*type != RXT_LOGIC) return PE_BAD_SET_TYPE;
 		Gui_Widget_Set_Enabled(wid, arg->int32a ? TRUE : FALSE);
 		break;
+
+	// Any kind can have one. None, or an empty string, takes it away.
+	case W_GUI_ARG_TIP: {
+		REBYTE *utf8 = NULL;
+		int     len  = 0;
+		if (*type == RXT_STRING) {
+			len = RL_GET_UTF8_STRING((REBSER*)arg->series, arg->index, (void**)&utf8);
+			if (len < 0) return PE_BAD_SET;
+		} else if (*type != RXT_NONE) {
+			return PE_BAD_SET_TYPE;
+		}
+		if (!Gui_Widget_Set_Tip(wid, utf8, (REBCNT)len)) return PE_BAD_SET;
+		break; }
 
 	case W_GUI_ARG_READ_ONLYQ:
 		if (!Kind_Has_Read_Only(wid->kind)) return PE_BAD_SET;

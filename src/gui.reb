@@ -381,6 +381,7 @@ handles: [
 		scroll    percent!  [percent! decimal! word!] "How far an area is scrolled; set a percent, or one of top, bottom and end; none for kinds which do not scroll"
 		group    integer!  none      "Which radio group it belongs to; 0 for everything else"
 		enabled? logic!    logic!    "Whether the control responds to the user"
+		tip      string!   [string! none!] "Text the platform shows when the pointer rests on it; none for no tip"
 		parent   handle!   none      "Whatever holds it - a window, or a panel; none once gone"
 		window   handle!   none      "The window it ends up in, however deeply nested"
 	]
