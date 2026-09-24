@@ -189,6 +189,35 @@ appear complete, open it `/hidden` and call `show-window` when done.
 paints before returning; on macOS it is drawn at the next pump, like
 everything else there.
 
+### Screens
+
+`screens` returns one handle per connected display, the primary first, and
+`win/screen` is the one holding most of a window:
+
+```rebol
+foreach scr screens [print [scr/name scr/size scr/scale]]
+
+home: win/screen
+home/offset home/size             ;; the whole display
+home/work-offset home/work-size   ;; without the taskbar, the Dock or the menu bar
+home/primary?
+
+;; centre a window in the usable part of its screen
+win/offset: home/work-offset + (home/work-size - win/size / 2)
+```
+
+Positions are in the same space as a window's `offset`, so the two can be
+compared directly. Every read asks the system again, so a handle always
+describes the display as it is now; one whose display was unplugged reads
+`none` for everything. The same display is always the same handle, so use `==`
+to ask whether two screens are the same one.
+
+On Windows, `scale` is currently the system scale, the same for every screen:
+a window moved to a monitor with a different scale setting is stretched by
+Windows rather than redrawn. `name` is what the display settings show, which on
+some systems is only "Generic PnP Monitor". On macOS before 10.15 a display is
+named by its id.
+
 ## Widgets
 
 Each `add-*` puts a native control into a window, a panel or an image widget,
@@ -757,6 +786,9 @@ Returns how many OS messages those pumps dispatched
 Gives a widget the keyboard focus; returns false if it cannot take it
 * `target` `[handle!]` A widget, or a window to focus the window itself
 
+#### `screens`
+Returns a block of the connected screens, the primary one first
+
 
 ## Used handles and its getters / setters
 
@@ -771,6 +803,7 @@ Gives a widget the keyboard focus; returns false if it cannot take it
 /id               integer!            none                          "Native window handle as an integer"
 /open?            logic!              none                          "False once the window has been closed"
 /scale            decimal!            none                          "Device pixels per unit of size - 1.0 at 100%, 1.75 at 175%, 2.0 on a Retina Mac"
+/screen           handle!             none                          "The screen most of the window is on"
 /resizable?       logic!              logic!                        "Whether the user can resize it"
 /border?          logic!              logic!                        "Whether it has a title bar and a frame; a borderless window cannot be moved or closed by the user"
 /background       tuple!              [tuple! none!]                "Colour of the client area; none for the system window colour"
@@ -827,6 +860,19 @@ Gives a widget the keyboard focus; returns false if it cannot take it
 /enabled?         logic!              logic!                        "Whether the control responds to the user"
 /parent           handle!             none                          "Whatever holds it - a window, or a panel; none once gone"
 /window           handle!             none                          "The window it ends up in, however deeply nested"
+```
+
+#### __SCREEN__ - GUI screen handle - one display; every read asks the platform again
+
+```rebol
+;Refinement       Gets                Sets                          Description
+/name             string!             none                          "What the system calls the display"
+/size             pair!               none                          "Size of the whole display"
+/offset           pair!               none                          "Top-left corner, in the same space as a window's offset"
+/work-size        pair!               none                          "Size of the part windows should use - without the taskbar, the Dock or the menu bar"
+/work-offset      pair!               none                          "Top-left corner of that part"
+/scale            decimal!            none                          "Device pixels per unit of size; on Windows the system scale, the same for every screen"
+/primary?         logic!              none                          "Whether this is the primary screen - the one with the menu bar on macOS"
 ```
 
 

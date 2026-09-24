@@ -34,6 +34,12 @@ int GuiDrop_free(void *hndl);
 int GuiDrop_get_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg);
 int GuiDrop_mold(REBHOB *hob, REBSER *str);
 
+// A screen handle is read-only too: it names a display by key and asks the
+// platform about it at every read, so nothing about it can be set.
+int GuiScreen_free(void *hndl);
+int GuiScreen_get_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg);
+int GuiScreen_mold(REBHOB *hob, REBSER *str);
+
 
 //== event queue ==============================================================
 // Filled by the platform's window procedure, drained by `poll-events`.
@@ -222,6 +228,27 @@ REBOOL  Gui_Set_Offset(GUIWIN *win, REBINT x, REBINT y);
 **  is how a caller sizes an image to land on device pixels one for one.
 ***********************************************************************/
 REBDEC  Gui_Get_Scale(GUIWIN *win);
+
+/***********************************************************************
+**  Screens.
+**
+**  A display is named by a KEY - a NUL-terminated string of at most
+**  GUI_SCREEN_KEY bytes, whatever the backend can find again later: the
+**  device name on Windows, the display id on macOS. Nothing above this
+**  interface reads a key; it is only stored and handed back.
+**
+**  Coordinates are logical units in the same space as Gui_Get_Offset(),
+**  so a window's offset and a screen's can be compared directly.
+**
+**  Gui_Screen_Keys() fills up to `max` keys, PRIMARY FIRST, and returns
+**  how many displays there are. Gui_Screen_Info() answers FALSE once the
+**  display is gone. Gui_Window_Screen() answers the display holding most
+**  of the window, or FALSE when it is on none.
+***********************************************************************/
+REBCNT  Gui_Screen_Keys(REBYTE (*keys)[GUI_SCREEN_KEY], REBCNT max);
+REBOOL  Gui_Screen_Info(const REBYTE *key, GUISCREENINFO *info);
+REBSER* Gui_Screen_Name(const REBYTE *key);
+REBOOL  Gui_Window_Screen(GUIWIN *win, REBYTE *key);
 
 // What a widget needs for the text it holds, in logical units - border,
 // padding and all. FALSE for a kind with no text, which has no natural

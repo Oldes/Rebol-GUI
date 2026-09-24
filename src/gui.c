@@ -28,6 +28,7 @@ static char *init_block = GUI_EXT_INIT_CODE;
 REBCNT Handle_GuiWindow = 0;
 REBCNT Handle_GuiWidget = 0;
 REBCNT Handle_GuiDrop   = 0;
+REBCNT Handle_GuiScreen = 0;
 
 
 /***********************************************************************
@@ -236,6 +237,19 @@ int Gui_Init(void) {
 
 	Handle_GuiDrop = RL_REGISTER_HANDLE_SPEC(cb_cast("GUI-DROP"), &spec);
 	if (Handle_GuiDrop == 0) return FALSE;
+
+	// A screen names a display by key and asks the platform on every read.
+	// Nothing to set, and nothing native to lock it to: a handle the script
+	// lets go of is simply collected.
+	spec.size     = sizeof(GUISCREEN);
+	spec.flags    = HANDLE_REQUIRES_HOB_ON_FREE;
+	spec.free     = GuiScreen_free;
+	spec.get_path = GuiScreen_get_path;
+	spec.set_path = NULL;
+	spec.mold     = GuiScreen_mold;
+
+	Handle_GuiScreen = RL_REGISTER_HANDLE_SPEC(cb_cast("GUI-SCREEN"), &spec);
+	if (Handle_GuiScreen == 0) return FALSE;
 
 	// The menu dialect's separator. Every other word it knows comes from a
 	// `words:` list in the specification; this one is mapped by name

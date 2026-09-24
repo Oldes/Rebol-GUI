@@ -209,3 +209,26 @@ Content and target live in the drop handle's GC-marked slot.
 Objective-C classes share one process-wide namespace, so names carry
 `GUI_CLASS_PREFIX` (the nest gives the standalone build `RebolGuiRebx`).
 Two copies with the same prefix in one process collide.
+
+## Screens
+
+A screen handle stores only a key: the GDI device name on Windows
+(`MONITORINFOEX.szDevice`; an `HMONITOR` can change with the display
+configuration) and the `CGDirectDisplayID` on macOS (`NSScreen` objects are
+replaced). Every read enumerates the displays again and matches by key, so a
+handle is never stale, and reads `none` once its display is gone.
+
+`gui-commands.c` keeps a 16-entry table of live screen handles so the same
+display always comes back as the same handle and `==` works. The table holds
+no reference: a collected handle's free callback removes itself.
+
+Windows positions go through `To_Logical`, so they share the window-offset
+space, and `scale` is `Gui_DPI / 96` for every screen - correct only while the
+process is system-DPI aware. Making it per monitor needs
+`PER_MONITOR_AWARE_V2` and `WM_DPICHANGED` (step 2). The name comes from
+`EnumDisplayDevices` on the monitor under the output; `QueryDisplayConfig`
+would give the EDID friendly name more reliably.
+
+macOS flips `frame` / `visibleFrame` against the menu-bar screen with
+`Screen_Height()`, as window offsets are, and asks `localizedName` by selector
+because the SDK floor is 10.13.

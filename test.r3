@@ -537,6 +537,61 @@ print ["and the doorbell is armed again:" zero? read gui/event-port]
 
 
 ;;=============================================================================
+print as-yellow "^/== Screens"
+;;=============================================================================
+
+;; One handle per display, the primary first. Every read asks the platform
+;; again, so a handle always describes the display as it is NOW - and one
+;; whose display has been unplugged reads none for everything.
+all-screens: screens
+print ["screens:" length? all-screens]
+foreach scr all-screens [
+	print [
+		pad mold scr/name 28
+		"size" pad scr/size 10 "at" pad scr/offset 10
+		"work" pad scr/work-size 10 "at" pad scr/work-offset 10
+		"scale" scr/scale
+		either scr/primary? ["primary"][""]
+	]
+]
+
+main: first all-screens
+print ["the first one is the primary:" main/primary?]
+primaries: 0
+foreach scr all-screens [if scr/primary? [primaries: primaries + 1]]
+print ["and there is exactly one:    " primaries = 1]
+
+;; The same display is the same HANDLE, however it was reached - so `==`
+;; answers "is this the same screen?" as it does for windows and widgets.
+;; (`=` would not: on handles it compares only the type.)
+print ["asking twice gives one handle:" main == first screens]
+on-screen?: func [scr][
+	foreach s screens [if s == scr [return true]]
+	false
+]
+print ["the window knows its screen:  " on-screen? win/screen]
+
+;; Everything is in the space a window's `offset` uses, so the two can be
+;; compared directly: the window's top-left corner is on its own screen.
+home: win/screen
+print ["the window is on it:          " within? win/offset home/offset home/size]
+
+;; The work area is the part not covered by the taskbar, the Dock or the
+;; menu bar - inside the screen, and never bigger than it.
+print ["the work area is inside:      " did all [
+	within? home/work-offset home/offset home/size
+	home/work-size/x <= home/size/x
+	home/work-size/y <= home/size/y
+]]
+
+;; On macOS a window's scale IS its screen's. On Windows every screen
+;; reports the system scale for now - the process is system-DPI aware.
+print ["and so is the window's scale: " win/scale = home/scale]
+
+;; A word this extension does not know still reaches the core's own answer.
+print ["a screen handle's type:" main/type]
+
+;;=============================================================================
 print as-yellow "^/== Window frames"
 ;;=============================================================================
 
@@ -932,6 +987,8 @@ foreach handle reduce [
 	toggle box warm cool slow fast level meter picker
 	fixed bare back-again
 ][	release handle ]
+;; Screen handles lock nothing native, so they need no release - the
+;; collector takes them once nothing refers to them.
 release win
 print ["released:" win]
 

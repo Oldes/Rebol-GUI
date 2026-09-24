@@ -25,6 +25,8 @@
 // rebol-extension.h nor windows.h is required to declare them - the wide
 // string conversions and the font cache here both allocate.
 #include <stdlib.h>
+#include <string.h> // strcmp
+#include <wchar.h>  // wcslen
 // The drag and drop trace prints; MSVC does not get stdio from windows.h.
 #include <stdio.h>
 
@@ -3136,6 +3138,147 @@ REBDEC Gui_Get_Scale(GUIWIN *win)
 	// One scale for the process - the window is not consulted, but it is in
 	// the signature because macOS answers per screen.
 	return (REBDEC)Gui_DPI / 96.0;
+}
+
+
+//== screens ==================================================================
+//
+// A display is named by its GDI device name ("\\.\DISPLAY1"), which stays
+// the same while the display is connected. An HMONITOR does not: it can be
+// replaced whenever the display configuration changes, so it is never kept
+// - every question enumerates the monitors again and matches by name.
+//
+// Coordinates go through To_Logical() like everything else, so a screen's
+// offset is in the same space as a window's.
+//
+// THE SCALE IS THE SYSTEM'S. This process is PROCESS_SYSTEM_DPI_AWARE, so
+// Windows reports one DPI for all of it and bitmap-stretches a window shown
+// on a monitor set to anything else. Every screen therefore answers the
+// same scale until the extension becomes per-monitor aware - and so do the
+// positions, which are consistent with each other but in the system DPI's
+// units, not each monitor's own.
+
+#define MAX_MONITORS 16
+
+typedef struct {
+	MONITORINFOEXW info[MAX_MONITORS];
+	int            count;
+} MONITOR_LIST;
+
+static BOOL CALLBACK Collect_Monitor(HMONITOR mon, HDC dc, LPRECT rect, LPARAM lp)
+{
+	MONITOR_LIST *list = (MONITOR_LIST*)lp;
+	(void)dc; (void)rect;
+
+	if (list->count >= MAX_MONITORS) return FALSE;
+	ZeroMemory(&list->info[list->count], sizeof(MONITORINFOEXW));
+	list->info[list->count].cbSize = sizeof(MONITORINFOEXW);
+	if (GetMonitorInfoW(mon, (MONITORINFO*)&list->info[list->count])) list->count++;
+	return TRUE;
+}
+
+static void Monitor_Key(const MONITORINFOEXW *mi, REBYTE *key)
+{
+	int n = WideCharToMultiByte(CP_UTF8, 0, mi->szDevice, -1,
+	                            (char*)key, GUI_SCREEN_KEY, NULL, NULL);
+	if (n <= 0) key[0] = 0;
+	key[GUI_SCREEN_KEY - 1] = 0;
+}
+
+static REBOOL Find_Monitor(const REBYTE *key, MONITORINFOEXW *out)
+{
+	MONITOR_LIST list;
+	REBYTE       k[GUI_SCREEN_KEY];
+	int          n;
+
+	list.count = 0;
+	EnumDisplayMonitors(NULL, NULL, Collect_Monitor, (LPARAM)&list);
+	for (n = 0; n < list.count; n++) {
+		Monitor_Key(&list.info[n], k);
+		if (strcmp((const char*)k, (const char*)key) == 0) {
+			*out = list.info[n];
+			return TRUE;
+		}
+	}
+	return FALSE;
+}
+
+REBCNT Gui_Screen_Keys(REBYTE (*keys)[GUI_SCREEN_KEY], REBCNT max)
+{
+	MONITOR_LIST list;
+	REBCNT       at = 0;
+	int          pass, n;
+
+	list.count = 0;
+	EnumDisplayMonitors(NULL, NULL, Collect_Monitor, (LPARAM)&list);
+
+	// Two passes: the primary first, then the rest in the system's order.
+	for (pass = 0; pass < 2; pass++) {
+		for (n = 0; n < list.count; n++) {
+			REBOOL primary = (list.info[n].dwFlags & MONITORINFOF_PRIMARY) != 0;
+			if (primary != (pass == 0)) continue;
+			if (at < max) Monitor_Key(&list.info[n], keys[at]);
+			at++;
+		}
+	}
+	return at;
+}
+
+REBOOL Gui_Screen_Info(const REBYTE *key, GUISCREENINFO *info)
+{
+	MONITORINFOEXW mi;
+
+	if (!key || !info || !Find_Monitor(key, &mi)) return FALSE;
+
+	info->x  = To_Logical(mi.rcMonitor.left);
+	info->y  = To_Logical(mi.rcMonitor.top);
+	info->w  = To_Logical(mi.rcMonitor.right - mi.rcMonitor.left);
+	info->h  = To_Logical(mi.rcMonitor.bottom - mi.rcMonitor.top);
+	info->wx = To_Logical(mi.rcWork.left);
+	info->wy = To_Logical(mi.rcWork.top);
+	info->ww = To_Logical(mi.rcWork.right - mi.rcWork.left);
+	info->wh = To_Logical(mi.rcWork.bottom - mi.rcWork.top);
+	info->scale   = (REBDEC)Gui_DPI / 96.0;   // see the note above
+	info->primary = (mi.dwFlags & MONITORINFOF_PRIMARY) ? TRUE : FALSE;
+	return TRUE;
+}
+
+// What the monitor calls itself, as the display settings list it. Asked of
+// the MONITOR under the adapter output rather than of the output itself,
+// whose own name is only the device path. Often a model name; on some
+// systems only "Generic PnP Monitor". The device name when even that fails.
+REBSER* Gui_Screen_Name(const REBYTE *key)
+{
+	MONITORINFOEXW mi;
+	DISPLAY_DEVICEW dd;
+	const WCHAR    *name;
+
+	if (!key || !Find_Monitor(key, &mi)) return NULL;
+
+	ZeroMemory(&dd, sizeof(dd));
+	dd.cb = sizeof(dd);
+	name = (EnumDisplayDevicesW(mi.szDevice, 0, &dd, 0) && dd.DeviceString[0])
+	     ? dd.DeviceString : mi.szDevice;
+
+	return RL_ENCODE_UTF8_STRING((void*)name, (REBCNT)wcslen(name), TRUE, 0);
+}
+
+REBOOL Gui_Window_Screen(GUIWIN *win, REBYTE *key)
+{
+	HMONITOR       mon;
+	MONITORINFOEXW mi;
+
+	if (!win || !win->handle || !key) return FALSE;
+	// The monitor holding most of the window, the same answer Windows
+	// itself uses to decide where a maximised window goes.
+	mon = MonitorFromWindow(HWND_OF(win), MONITOR_DEFAULTTONULL);
+	if (!mon) return FALSE;
+
+	ZeroMemory(&mi, sizeof(mi));
+	mi.cbSize = sizeof(mi);
+	if (!GetMonitorInfoW(mon, (MONITORINFO*)&mi)) return FALSE;
+	Monitor_Key(&mi, key);
+	return key[0] ? TRUE : FALSE;
 }
 
 

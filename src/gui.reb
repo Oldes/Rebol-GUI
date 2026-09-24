@@ -10,7 +10,7 @@ REBOL [
 		open-window close-window show-window hide-window
 		add-button add-image add-text add-field add-area
 		add-check add-radio add-slider add-progress add-drop-down add-panel
-		remove-widget redraw set-focus
+		remove-widget redraw set-focus screens
 		gui-device gui-device-polls gui-device-events
 		gui-device-pumps gui-device-messages
 		poll-events do-events
@@ -56,6 +56,7 @@ c-header: {
 extern REBCNT Handle_GuiWindow;
 extern REBCNT Handle_GuiWidget;
 extern REBCNT Handle_GuiDrop;
+extern REBCNT Handle_GuiScreen;
 extern REBCNT Word_Separator; // the menu dialect's `---`
 
 // The device this extension registers so that WAIT pumps the OS message
@@ -243,6 +244,30 @@ typedef struct Gui_Drop_Context {
 	REBCNT  kind;   // GUI_DROP_*
 	REBCNT  count;  // how many items, without walking the block
 } GUIDROP;
+
+
+// A screen handle names a display by a KEY the platform keeps stable while
+// the display stays connected - the device name on Windows (an HMONITOR is
+// not stable: it can change with the display configuration), the
+// CGDirectDisplayID on macOS. Every read asks the platform again by that
+// key, so what a handle reports is the display as it is NOW, and a handle
+// whose display has gone reads none for everything.
+#define GUI_SCREEN_KEY 64
+
+typedef struct Gui_Screen_Context {
+	REBHOB *hob;                 // back reference
+	REBYTE  key[GUI_SCREEN_KEY]; // NUL-terminated, backend-defined
+} GUISCREEN;
+
+// One display, as a backend reports it. Everything in LOGICAL units, in
+// the same space as a window's `offset` - see the note in gui.h.
+typedef struct Gui_Screen_Info {
+	REBINT  x, y, w, h;          // the whole display
+	REBINT  wx, wy, ww, wh;      // the part windows should use: without the
+	                             // taskbar, the Dock or the menu bar
+	REBDEC  scale;               // device pixels per unit
+	REBOOL  primary;
+} GUISCREENINFO;
 }
 
 ;; ---------------------------------------------------------------------------
@@ -303,6 +328,7 @@ handles: [
 		id       integer!  none      "Native window handle as an integer"
 		open?    logic!    none      "False once the window has been closed"
 		scale    decimal!  none      "Device pixels per unit of size - 1.0 at 100%, 1.75 at 175%, 2.0 on a Retina Mac"
+		screen   handle!   none      "The screen most of the window is on"
 		resizable? logic!  logic!    "Whether the user can resize it"
 		border?    logic!  logic!    "Whether it has a title bar and a frame; a borderless window cannot be moved or closed by the user"
 		background tuple!  [tuple! none!] "Colour of the client area; none for the system window colour"
@@ -357,6 +383,17 @@ handles: [
 		enabled? logic!    logic!    "Whether the control responds to the user"
 		parent   handle!   none      "Whatever holds it - a window, or a panel; none once gone"
 		window   handle!   none      "The window it ends up in, however deeply nested"
+	]
+	screen: [
+		"GUI screen handle - one display; every read asks the platform again"
+		;NAME    GET       SET   DESCRIPTION
+		name     string!   none  "What the system calls the display"
+		size     pair!     none  "Size of the whole display"
+		offset   pair!     none  "Top-left corner, in the same space as a window's offset"
+		work-size   pair!  none  "Size of the part windows should use - without the taskbar, the Dock or the menu bar"
+		work-offset pair!  none  "Top-left corner of that part"
+		scale    decimal!  none  "Device pixels per unit of size; on Windows the system scale, the same for every screen"
+		primary? logic!    none  "Whether this is the primary screen - the one with the menu bar on macOS"
 	]
 ]
 
@@ -485,6 +522,9 @@ commands: [
 		target [handle!] "A widget, or a window to focus the window itself"
 	]
 
+	screens: [
+		"Returns a block of the connected screens, the primary one first"
+	]
 ]
 
 ;; ---------------------------------------------------------------------------

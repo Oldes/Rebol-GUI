@@ -361,6 +361,7 @@ void Gui_Widget_Activated(GUIWIDGET *widget, REBINT x, REBINT y, REBINT flags)
 // Fills an RXIARG with a handle context; defined further down, where the
 // rest of the argument helpers are.
 static void Set_Handle_Arg(RXIARG *arg, REBHOB *hob);
+static REBHOB *Screen_Handle(const REBYTE *key);
 
 /***********************************************************************
 **  The one GC-marked slot, shared.
@@ -2265,6 +2266,19 @@ int GuiWindow_get_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 		arg->int64 = (i64)(REBUPT)win->handle;
 		break;
 
+	// The same handle `screens` hands out for that display, so
+	// `win/screen == first screens` asks the obvious question.
+	case W_GUI_ARG_SCREEN: {
+		REBYTE  key[GUI_SCREEN_KEY];
+		REBHOB *scr;
+		if (!Gui_Window_Screen(win, key) || !(scr = Screen_Handle(key))) {
+			*type = RXT_NONE;
+			break;
+		}
+		Set_Handle_Arg(arg, scr);
+		*type = RXT_HANDLE;
+		break; }
+
 	case W_GUI_ARG_OPENQ:
 		*type = RXT_LOGIC;
 		arg->int32a = (win->handle != NULL);
@@ -3280,5 +3294,209 @@ int GuiDrop_mold(REBHOB *hob, REBSER *str)
 	SERIES_TAIL(str) = 0;
 	APPEND_STRING(str, "%s %u",
 		(drop->kind == GUI_DROP_TEXT) ? "text" : "files", drop->count);
+	return len;
+}
+
+
+//== screens ==================================================================
+//
+// One handle per display, reused: `screens` and `win/screen` hand back the
+// SAME handle for the same display while anything still holds it, so `==`
+// answers "is this the same screen?" as it does for windows and widgets.
+//
+// The table only remembers; it does not keep anything alive. A screen
+// handle nobody holds is collected like any other value, and its free
+// callback takes it out of the table - so a slot can never point at a
+// context the collector has reused.
+//
+// Sixteen displays is far beyond anything real. A seventeenth still gets a
+// handle; it just is not shared, so `==` on two reads of it says false.
+
+#define SCREEN_CACHE 16
+static REBHOB *Screen_Cache[SCREEN_CACHE];
+
+static REBHOB *Screen_Handle(const REBYTE *key)
+{
+	REBHOB    *hob;
+	GUISCREEN *scr;
+	REBCNT     n, free_slot = SCREEN_CACHE;
+
+	if (!key || !key[0]) return NULL;
+
+	for (n = 0; n < SCREEN_CACHE; n++) {
+		hob = Screen_Cache[n];
+		if (!hob) { if (free_slot == SCREEN_CACHE) free_slot = n; continue; }
+		scr = (GUISCREEN*)hob->data;
+		if (IS_USED_HOB(hob) && scr
+		    && strncmp((const char*)scr->key, (const char*)key, GUI_SCREEN_KEY) == 0)
+			return hob;
+	}
+
+	hob = RL_MAKE_HANDLE_CONTEXT(Handle_GuiScreen);
+	if (!hob) return NULL;
+	scr = (GUISCREEN*)hob->data;
+	scr->hob = hob;
+	strncpy((char*)scr->key, (const char*)key, GUI_SCREEN_KEY - 1);
+	scr->key[GUI_SCREEN_KEY - 1] = 0;
+
+	// Making the handle may have collected - and a collected screen handle
+	// empties its own slot - so the free slot is looked for again.
+	for (n = 0; n < SCREEN_CACHE; n++) {
+		if (!Screen_Cache[n]) { Screen_Cache[n] = hob; break; }
+	}
+	return hob;
+}
+
+
+/***********************************************************************
+**  screens
+**
+**  One handle per connected display, primary first. Asked of the
+**  platform every time, so a display plugged in since the last call is
+**  there and one taken away is not.
+***********************************************************************/
+COMMAND cmd_gui_screens(RXIFRM *frm, void *ctx)
+{
+	REBYTE  keys[SCREEN_CACHE][GUI_SCREEN_KEY];
+	REBCNT  count, n, at = 0;
+	REBSER *blk;
+	RXIARG  val;
+
+	count = Gui_Screen_Keys(keys, SCREEN_CACHE);
+	if (count > SCREEN_CACHE) count = SCREEN_CACHE;
+
+	blk = (REBSER*)RL_MAKE_BLOCK(count);
+	if (!blk) RETURN_ERROR(ERR_NO_HANDLE);
+
+	// Each handle made below can collect; the block is what keeps the ones
+	// already made alive, so it is protected until it is in the frame.
+	RL_PROTECT_GC(blk, 1);
+	for (n = 0; n < count; n++) {
+		REBHOB *hob = Screen_Handle(keys[n]);
+		if (!hob) continue;
+		Set_Handle_Arg(&val, hob);
+		RL_SET_VALUE(blk, at++, val, RXT_HANDLE);
+	}
+	RL_PROTECT_GC(blk, 0);
+
+	RXA_SERIES(frm, 1) = blk;
+	RXA_INDEX(frm, 1) = 0;
+	RXA_TYPE(frm, 1) = RXT_BLOCK;
+	return RXR_VALUE;
+}
+
+
+//== screen handle callbacks ==================================================
+
+int GuiScreen_free(void *hndl)
+{
+	REBHOB    *hob = (REBHOB*)hndl;
+	GUISCREEN *scr = hob ? (GUISCREEN*)hob->data : NULL;
+	REBCNT     n;
+
+	for (n = 0; n < SCREEN_CACHE; n++) {
+		if (Screen_Cache[n] == hob) Screen_Cache[n] = NULL;
+	}
+	if (scr) CLEARS(scr);
+	if (hob) UNMARK_HOB(hob);
+	return 0;
+}
+
+
+int GuiScreen_get_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
+{
+	GUISCREEN    *scr = (GUISCREEN*)hob->data;
+	GUISCREENINFO info;
+
+	if (!scr) return PE_BAD_SELECT;
+
+	word = RL_FIND_WORD(Gui_arg_words, word);
+
+	// A word this extension does not know is refused, so that `scr/type`
+	// still reaches the core's own answer - see GuiWindow_get_path.
+	switch (word) {
+	case W_GUI_ARG_NAME:
+	case W_GUI_ARG_SIZE:
+	case W_GUI_ARG_OFFSET:
+	case W_GUI_ARG_WORK_SIZE:
+	case W_GUI_ARG_WORK_OFFSET:
+	case W_GUI_ARG_SCALE:
+	case W_GUI_ARG_PRIMARYQ:
+		break;
+	default:
+		return PE_BAD_SELECT;
+	}
+
+	// A display which has gone answers none for everything, the way a
+	// closed window does - the handle itself stays valid.
+	CLEARS(&info);
+	if (!Gui_Screen_Info(scr->key, &info)) {
+		*type = RXT_NONE;
+		return PE_USE;
+	}
+
+	switch (word) {
+	case W_GUI_ARG_NAME: {
+		REBSER *name = Gui_Screen_Name(scr->key);
+		if (!name) { *type = RXT_NONE; break; }
+		arg->series = name;
+		arg->index  = 0;
+		*type = RXT_STRING;
+		break; }
+
+	case W_GUI_ARG_SIZE:
+		arg->pair.x = (float)info.w;
+		arg->pair.y = (float)info.h;
+		*type = RXT_PAIR;
+		break;
+
+	case W_GUI_ARG_OFFSET:
+		arg->pair.x = (float)info.x;
+		arg->pair.y = (float)info.y;
+		*type = RXT_PAIR;
+		break;
+
+	case W_GUI_ARG_WORK_SIZE:
+		arg->pair.x = (float)info.ww;
+		arg->pair.y = (float)info.wh;
+		*type = RXT_PAIR;
+		break;
+
+	case W_GUI_ARG_WORK_OFFSET:
+		arg->pair.x = (float)info.wx;
+		arg->pair.y = (float)info.wy;
+		*type = RXT_PAIR;
+		break;
+
+	case W_GUI_ARG_SCALE:
+		arg->dec64 = (double)info.scale;
+		*type = RXT_DECIMAL;
+		break;
+
+	case W_GUI_ARG_PRIMARYQ:
+		arg->int32a = info.primary ? 1 : 0;
+		*type = RXT_LOGIC;
+		break;
+	}
+	return PE_USE;
+}
+
+
+int GuiScreen_mold(REBHOB *hob, REBSER *str)
+{
+	int len;
+	GUISCREEN    *scr;
+	GUISCREENINFO info;
+
+	if (!str || !hob || !(scr = (GUISCREEN*)hob->data)) return 0;
+
+	SERIES_TAIL(str) = 0;
+	CLEARS(&info);
+	if (Gui_Screen_Info(scr->key, &info)) {
+		APPEND_STRING(str, "%dx%d at %dx%d%s", info.w, info.h, info.x, info.y,
+		              info.primary ? " primary" : "");
+	} else {
+		APPEND_STRING(str, "%s", "gone");
+	}
 	return len;
 }

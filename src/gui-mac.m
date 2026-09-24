@@ -32,6 +32,7 @@
 #import <AppKit/AppKit.h>
 #include <math.h>
 #include <string.h>
+#include <stdio.h>  // snprintf
 #include <float.h>
 
 #include "gen-gui.h"
@@ -2135,6 +2136,118 @@ REBDEC Gui_Get_Scale(GUIWIN *win)
 		}
 		if (!screen) screen = [NSScreen mainScreen];
 		return screen ? (REBDEC)[screen backingScaleFactor] : 1.0;
+	}
+}
+
+
+//== screens ==================================================================
+//
+// A display is named by its CGDirectDisplayID, which stays the same while
+// the display is connected - an NSScreen object is not kept, because AppKit
+// replaces them when the configuration changes. Every question walks
+// [NSScreen screens] again and matches by id.
+//
+// Index 0 of that array is the screen with the menu bar: the primary one,
+// and the origin of the global space - which is why Screen_Height() flips
+// against it, here as for windows, so that a screen's offset is in the
+// same top-left, Y-down space as a window's.
+
+static CGDirectDisplayID Display_Id(NSScreen *screen)
+{
+	NSNumber *num = [[screen deviceDescription] objectForKey:@"NSScreenNumber"];
+	return num ? (CGDirectDisplayID)[num unsignedIntValue] : 0;
+}
+
+static void Display_Key(NSScreen *screen, REBYTE *key)
+{
+	snprintf((char*)key, GUI_SCREEN_KEY, "%u", (unsigned)Display_Id(screen));
+}
+
+static NSScreen *Find_Screen(const REBYTE *key, REBOOL *primary)
+{
+	NSArray   *screens = [NSScreen screens];
+	REBYTE     k[GUI_SCREEN_KEY];
+	NSUInteger n;
+
+	for (n = 0; n < [screens count]; n++) {
+		NSScreen *screen = [screens objectAtIndex:n];
+		Display_Key(screen, k);
+		if (strcmp((const char*)k, (const char*)key) == 0) {
+			if (primary) *primary = (n == 0);
+			return screen;
+		}
+	}
+	return nil;
+}
+
+// A Cocoa rectangle (bottom-left origin, Y up) as a top-left one, Y down.
+static void Flip_Rect(NSRect r, REBINT *x, REBINT *y, REBINT *w, REBINT *h)
+{
+	*x = (REBINT)r.origin.x;
+	*y = (REBINT)(Screen_Height() - (r.origin.y + r.size.height));
+	*w = (REBINT)r.size.width;
+	*h = (REBINT)r.size.height;
+}
+
+REBCNT Gui_Screen_Keys(REBYTE (*keys)[GUI_SCREEN_KEY], REBCNT max)
+{
+	@autoreleasepool {
+		NSArray   *screens = [NSScreen screens];
+		NSUInteger n, count = [screens count];
+
+		// Already primary first: AppKit puts the menu-bar screen at 0.
+		for (n = 0; n < count && n < max; n++)
+			Display_Key([screens objectAtIndex:n], keys[n]);
+		return (REBCNT)count;
+	}
+}
+
+REBOOL Gui_Screen_Info(const REBYTE *key, GUISCREENINFO *info)
+{
+	@autoreleasepool {
+		REBOOL    primary = FALSE;
+		NSScreen *screen;
+
+		if (!key || !info || !(screen = Find_Screen(key, &primary))) return FALSE;
+
+		Flip_Rect([screen frame],        &info->x,  &info->y,  &info->w,  &info->h);
+		// Without the menu bar and the Dock - where a window can go.
+		Flip_Rect([screen visibleFrame], &info->wx, &info->wy, &info->ww, &info->wh);
+		info->scale   = (REBDEC)[screen backingScaleFactor];
+		info->primary = primary;
+		return TRUE;
+	}
+}
+
+// `localizedName` is macOS 10.15 and later; the SDK floor here is 10.13,
+// so it is asked for by selector. Before 10.15 there is no public API for
+// the name at all, so a display is called by its id.
+REBSER* Gui_Screen_Name(const REBYTE *key)
+{
+	@autoreleasepool {
+		NSScreen *screen;
+		NSString *name = nil;
+
+		if (!key || !(screen = Find_Screen(key, NULL))) return NULL;
+		if ([screen respondsToSelector:@selector(localizedName)])
+			name = [screen performSelector:@selector(localizedName)];
+		if (!name) name = [NSString stringWithFormat:@"Display %s", (const char*)key];
+		return From_NSString(name);
+	}
+}
+
+REBOOL Gui_Window_Screen(GUIWIN *win, REBYTE *key)
+{
+	@autoreleasepool {
+		NSScreen *screen;
+
+		if (!win || !win->handle || !key) return FALSE;
+		// The screen holding most of the window; nil while it is on none
+		// (hidden, or moved entirely off every display).
+		screen = [NSWINDOW_OF(win) screen];
+		if (!screen) return FALSE;
+		Display_Key(screen, key);
+		return TRUE;
 	}
 }
 
