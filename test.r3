@@ -730,6 +730,7 @@ float-grab: none  ;; where the `floating` button was grabbed
 held:      false  ;; the left button is down in a window
 last-scale: win/scale  ;; the main window's scale, to notice it change
 tracking:   false      ;; `track-mouse`, toggled from the View menu
+hovered:    none       ;; what the last `enter` was for, until its `leave`
 clicks: 0
 
 ;; ONE argument now: `poll-events` returns a block of event! values, so the
@@ -788,6 +789,36 @@ report: func [event /local type source position kind][
 				            " - client size still " position]
 			]
 			last-scale: win/scale
+		]
+	]
+
+	;; `enter` and `leave`: what the pointer is over. Every `enter` is for
+	;; something new, every `leave` for what was entered last, and every
+	;; `move` comes from what the pointer is over - so they pair up, and
+	;; the order is leave, enter, move.
+	;;
+	;; WATCH: the title bar names what the pointer is over - the widget, or
+	;; the window's background - and goes back to plain when it leaves the
+	;; window. That is all a tooltip needs to know.
+	switch type [
+		enter [
+			if hovered [note ajoin ["!! enter while still over " any [attempt [hovered/kind] hovered/type]]]
+			hovered: source
+			;; A screen (with `track-mouse`) belongs to no window.
+			if win == case [
+				source/type = 'GUI-WIDGET [source/window]
+				source/type = 'GUI-WINDOW [source]
+			][
+				win/title: ajoin ["Rebol GUI extension - over " any [kind "the window"]]
+			]
+		]
+		leave [
+			unless hovered == source [note "!! leave for something not entered"]
+			hovered: none
+			if source == win [win/title: "Rebol GUI extension"]
+		]
+		move [
+			unless hovered == source [note ajoin ["!! move from " any [kind source/type] " before its enter"]]
 		]
 	]
 

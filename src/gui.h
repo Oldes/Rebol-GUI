@@ -269,6 +269,12 @@ REBOOL  Gui_Window_Screen(GUIWIN *win, REBYTE *key);
 ***********************************************************************/
 REBOOL  Gui_Pointer_At(REBYTE *key, REBINT *x, REBINT *y, REBINT *mods, REBOOL *ours);
 
+// The pointer has left every window of ours with nothing to report where
+// it went (WM_MOUSELEAVE, mouseExited:) - queues `leave` for whatever it
+// was over. Not to be called during a press: the pressed control keeps
+// the pointer until the button is up.
+void    Gui_Pointer_Left(void);
+
 // Shared layer, called after every pump.
 void    Gui_Track_Pointer(void);
 REBOOL  Gui_Tracking_Pointer(void);

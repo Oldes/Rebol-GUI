@@ -65,17 +65,29 @@ static REBCNT Event_Dropped = 0; // reported once, by the next poll
 /***********************************************************************
 **  Appends an event, unless the queue is full.
 **
-**  Consecutive `move` events of the same window are collapsed onto the
+**  The source is a handle context - or, for an event about a screen,
+**  NULL with the screen's key: making a screen's handle allocates, which
+**  the pump must not do, so `poll-events` makes it later.
+**
+**  Consecutive `move` events of the same source are collapsed onto the
 **  last one: a fast mouse produces hundreds of them per second and only
 **  the newest position is of any use.
 ***********************************************************************/
-void Gui_Queue_Event(REBHOB *source, REBCNT type, REBINT x, REBINT y, REBINT value)
+static REBOOL Same_Source(const GUIEVT *evt, REBHOB *source, const REBYTE *screen)
+{
+	if (source) return evt->source == source;
+	return !evt->source && screen
+	    && strncmp((const char*)evt->screen, (const char*)screen, GUI_SCREEN_KEY) == 0;
+}
+
+static void Append_Event(REBHOB *source, const REBYTE *screen, REBCNT type,
+                         REBINT x, REBINT y, REBINT value)
 {
 	GUIEVT *evt;
 
 	if (type == EVT_MOVE && QUEUE_COUNT() > 0) {
 		evt = QUEUE_AT(QUEUE_COUNT() - 1);
-		if (evt->type == EVT_MOVE && evt->source == source && source) {
+		if (evt->type == EVT_MOVE && Same_Source(evt, source, screen)) {
 			evt->x = x;
 			evt->y = y;
 			evt->value = value;
@@ -95,7 +107,81 @@ void Gui_Queue_Event(REBHOB *source, REBCNT type, REBINT x, REBINT y, REBINT val
 	evt->x      = x;
 	evt->y      = y;
 	evt->value  = value;
+	if (!source && screen) strncpy((char*)evt->screen, (const char*)screen, GUI_SCREEN_KEY - 1);
 	Event_Head++;
+}
+
+
+/***********************************************************************
+**  `enter` and `leave`: what the pointer is over.
+**
+**  Worked out from the moves themselves, here, rather than asked of
+**  either platform: a `move` already names the deepest widget under the
+**  pointer (or the window, or with `track-mouse` the screen), so the
+**  thing the pointer is over changes exactly when a move arrives from a
+**  different source. That is when the old one gets `leave` and the new
+**  one `enter` - before the move itself, so a handler sees
+**  leave, enter, move in that order.
+**
+**  Each is positional like `move`: `enter` where the pointer came in,
+**  `leave` where it was last seen over the thing it left - each in that
+**  source's own coordinates (its window's client area, or its screen).
+**
+**  What the moves cannot show is the pointer leaving every window with
+**  nothing to report it next. The backends notice that (WM_MOUSELEAVE,
+**  mouseExited:) and call Gui_Pointer_Left().
+**
+**  During a press every move comes from the control that was pressed,
+**  wherever the pointer is - so nothing changes hands until the button
+**  is up, the same as with pointer capture in a browser.
+***********************************************************************/
+static struct {
+	REBHOB *hob;                     // what the pointer is over, or NULL
+	REBYTE  screen[GUI_SCREEN_KEY];  // ... or a screen, by key
+	REBINT  x, y;                    // where it was last seen over it
+} Hover;
+
+static REBOOL Hovering(void) { return Hover.hob || Hover.screen[0]; }
+
+static void Hover_To(REBHOB *source, const REBYTE *screen, REBINT x, REBINT y)
+{
+	REBOOL same = source
+		? (Hover.hob == source)
+		: (!Hover.hob && screen && Hover.screen[0]
+		   && strncmp((const char*)Hover.screen, (const char*)screen, GUI_SCREEN_KEY) == 0);
+
+	if (!same) {
+		if (Hovering())
+			Append_Event(Hover.hob, Hover.screen, EVT_LEAVE, Hover.x, Hover.y, 0);
+		Hover.hob = source;
+		Hover.screen[0] = 0;
+		if (!source && screen) strncpy((char*)Hover.screen, (const char*)screen, GUI_SCREEN_KEY - 1);
+		Append_Event(source, screen, EVT_ENTER, x, y, 0);
+	}
+	Hover.x = x;
+	Hover.y = y;
+}
+
+void Gui_Pointer_Left(void)
+{
+	if (!Hovering()) return;
+	Append_Event(Hover.hob, Hover.screen, EVT_LEAVE, Hover.x, Hover.y, 0);
+	Hover.hob = NULL;
+	Hover.screen[0] = 0;
+}
+
+// A handle going away takes its hover with it - it can report nothing,
+// and the next move reports `enter` on whatever is there instead.
+static void Forget_Hover(REBHOB *hob)
+{
+	if (hob && Hover.hob == hob) Hover.hob = NULL;
+}
+
+void Gui_Queue_Event(REBHOB *source, REBCNT type, REBINT x, REBINT y, REBINT value)
+{
+	if (!source) return;
+	if (type == EVT_MOVE) Hover_To(source, NULL, x, y);
+	Append_Event(source, NULL, type, x, y, value);
 }
 
 
@@ -126,32 +212,8 @@ REBOOL Gui_Tracking_Pointer(void) { return Track_Pointer; }
 
 static void Queue_Screen_Move(const REBYTE *key, REBINT x, REBINT y, REBINT mods)
 {
-	GUIEVT *evt;
-
-	// Collapsed like any other move: consecutive moves over one screen
-	// keep only the newest.
-	if (QUEUE_COUNT() > 0) {
-		evt = QUEUE_AT(QUEUE_COUNT() - 1);
-		if (evt->type == EVT_MOVE && !evt->source
-		    && strncmp((const char*)evt->screen, (const char*)key, GUI_SCREEN_KEY) == 0) {
-			evt->x = x;
-			evt->y = y;
-			evt->value = mods;
-			return;
-		}
-	}
-	if (QUEUE_COUNT() >= GUI_QUEUE_SIZE) {
-		Event_Dropped++;
-		return;
-	}
-	evt = &Event_Queue[Event_Head & GUI_QUEUE_MASK];
-	CLEARS(evt);
-	evt->type  = EVT_MOVE;
-	evt->x     = x;
-	evt->y     = y;
-	evt->value = mods;
-	strncpy((char*)evt->screen, (const char*)key, GUI_SCREEN_KEY - 1);
-	Event_Head++;
+	Hover_To(NULL, key, x, y);
+	Append_Event(NULL, key, EVT_MOVE, x, y, mods);
 }
 
 void Gui_Track_Pointer(void)
@@ -344,6 +406,7 @@ REBOOL Gui_Ring_Doorbell(void)
 static void Release_Handle(REBHOB *hob)
 {
 	if (!hob) return;
+	Forget_Hover(hob);
 	Purge_Events(hob);
 	hob->flags &= ~HANDLE_CONTEXT_LOCKED;
 }
@@ -3602,6 +3665,10 @@ COMMAND cmd_gui_track_mouse(RXIFRM *frm, void *ctx)
 
 	Track_Pointer = RXA_LOGIC(frm, 1) ? TRUE : FALSE;
 	Tracked_Key[0] = 0;   // report the current position at once
+
+	// Nothing will report the pointer leaving a screen any more, so it
+	// is left now rather than whenever it next reaches a window.
+	if (!Track_Pointer && !Hover.hob && Hover.screen[0]) Gui_Pointer_Left();
 
 	RXA_LOGIC(frm, 1) = was ? 1 : 0;
 	RXA_TYPE(frm, 1)  = RXT_LOGIC;

@@ -1008,7 +1008,8 @@ static GUIWIDGET *Widget_At_Point(GUIWIN *win, NSView *root, NSPoint inRoot)
 
 // A tracking area is what makes mouseMoved: fire; NSTrackingActiveAlways is
 // chosen so that movement is reported even when the window is not key,
-// matching WM_MOUSEMOVE on Windows.
+// matching WM_MOUSEMOVE on Windows. Entered/exited as well, for `leave`
+// when the pointer goes out of the window - see mouseExited: below.
 - (void)updateTrackingAreas
 {
 	if (tracking) {
@@ -1017,7 +1018,8 @@ static GUIWIDGET *Widget_At_Point(GUIWIN *win, NSView *root, NSPoint inRoot)
 	}
 	tracking = [[NSTrackingArea alloc]
 		initWithRect:[self bounds]
-		     options:(NSTrackingMouseMoved | NSTrackingActiveAlways | NSTrackingInVisibleRect)
+		     options:(NSTrackingMouseMoved | NSTrackingMouseEnteredAndExited
+		              | NSTrackingActiveAlways | NSTrackingInVisibleRect)
 		       owner:self
 		    userInfo:nil];
 	[self addTrackingArea:tracking];
@@ -1061,6 +1063,21 @@ static GUIWIDGET *Widget_At_Point(GUIWIN *win, NSView *root, NSPoint inRoot)
 - (void)mouseDragged:(NSEvent*)evt      { [self queue:EVT_MOVE from:evt extra:0]; }
 - (void)rightMouseDragged:(NSEvent*)evt { [self queue:EVT_MOVE from:evt extra:0]; }
 - (void)otherMouseDragged:(NSEvent*)evt { [self queue:EVT_MOVE from:evt extra:0]; }
+
+// The pointer went out of the window. `enter` and `leave` are otherwise
+// worked out from the moves (see Hover_To() in gui-commands.c); this is
+// the one change a move cannot report, because the next move - if any -
+// comes from something this program does not own. Only the content view
+// has a tracking area, so moving onto a widget is not an exit.
+//
+// Not during a press: the view the button went down in keeps the pointer
+// until it is up, and reports the drag wherever it goes.
+- (void)mouseEntered:(NSEvent*)evt { }
+- (void)mouseExited:(NSEvent*)evt
+{
+	if ([NSEvent pressedMouseButtons] != 0) return;
+	Gui_Pointer_Left();
+}
 
 //-- buttons ------------------------------------------------------------------
 

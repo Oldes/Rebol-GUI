@@ -709,6 +709,44 @@ static void Queue_Widget_Mouse(GUIWIDGET *wid, REBCNT type, LPARAM lp, REBINT ex
 }
 
 
+/***********************************************************************
+**  Noticing that the pointer has left.
+**
+**  `enter` and `leave` are worked out in the shared layer from the
+**  moves themselves - see Hover_To() in gui-commands.c. The one thing a
+**  move cannot tell it is that the pointer went somewhere this program
+**  hears nothing from, and that takes WM_MOUSELEAVE, which Windows only
+**  sends to a window which asked for it: TrackMouseEvent, renewed on
+**  every move (it is one-shot).
+**
+**  It is also sent when the pointer merely moves onto a CHILD of the
+**  window, or back from one - the same window as far as the pointer is
+**  concerned. The next move reports that, so a leave which still finds
+**  the pointer over the same top-level window is ignored.
+***********************************************************************/
+static void Track_Leave(HWND hwnd)
+{
+	TRACKMOUSEEVENT t;
+	t.cbSize      = sizeof(t);
+	t.dwFlags     = TME_LEAVE;
+	t.hwndTrack   = hwnd;
+	t.dwHoverTime = 0;
+	TrackMouseEvent(&t);
+}
+
+static void Mouse_Left(HWND hwnd)
+{
+	POINT p;
+	HWND  under;
+
+	if (GetCapture()) return;  // a press in progress keeps the pointer
+	if (GetCursorPos(&p) && (under = WindowFromPoint(p)) != NULL
+	    && GetAncestor(under, GA_ROOT) == GetAncestor(hwnd, GA_ROOT))
+		return;
+	Gui_Pointer_Left();
+}
+
+
 //== window procedure =========================================================
 
 /***********************************************************************
@@ -812,7 +850,12 @@ static LRESULT CALLBACK Gui_Window_Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
 	switch (msg) {
 
 	case WM_MOUSEMOVE:
+		Track_Leave(hwnd);
 		Queue_Mouse(win, EVT_MOVE, lp, 0);
+		return 0;
+
+	case WM_MOUSELEAVE:
+		Mouse_Left(hwnd);
 		return 0;
 
 	case WM_LBUTTONDBLCLK:
@@ -2859,7 +2902,13 @@ static LRESULT CALLBACK Nav_Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 	// a control is pressed it holds the capture, so its moves keep coming
 	// wherever the pointer goes - which is what lets a program drag the
 	// control, or anything else, with it.
-	if (msg == WM_MOUSEMOVE && wid) Queue_Widget_Mouse(wid, EVT_MOVE, lp, 0);
+	if (msg == WM_MOUSEMOVE && wid) {
+		Track_Leave(hwnd);
+		Queue_Widget_Mouse(wid, EVT_MOVE, lp, 0);
+	}
+	// Handed on afterwards as well: a themed control tracks the pointer
+	// itself, for its hot look, and needs the same message.
+	if (msg == WM_MOUSELEAVE && wid) Mouse_Left(hwnd);
 
 	if (Gui_Handle_Key(hwnd, msg, wp, lp)) return 0;
 

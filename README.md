@@ -1,5 +1,3 @@
-[![Rebol-GUI](https://github.com/Siskin-framework/Rebol-GUI/actions/workflows/build.yml/badge.svg)](https://github.com/Siskin-framework/Rebol-GUI/actions/workflows/build.yml)
-
 # Rebol/GUI extension
 
 A minimal windowing extension for [Rebol3](https://github.com/Oldes/Rebol3),
@@ -85,7 +83,7 @@ Each event is an `event!`:
 
 | field    | type            | meaning                                              |
 |----------|-----------------|------------------------------------------------------|
-| `type`   | `word!`         | `move` `down` `up` `alt-down` `alt-up` `aux-down` `aux-up` `scroll-line` `close` `resize` `click` `change` `focus` `unfocus` `menu-select` `drop-file` `drop-text` |
+| `type`   | `word!`         | `move` `enter` `leave` `down` `up` `alt-down` `alt-up` `aux-down` `aux-up` `scroll-line` `close` `resize` `click` `change` `focus` `unfocus` `menu-select` `drop-file` `drop-text` |
 | `source` | `handle!`       | the window, or the widget the event is about - for `move`, the one under the pointer; `evt/source/window` gets back to the window |
 | `offset` | `pair!`         | the window's client coordinates, whatever the source; the new client size for `resize` |
 | `flags`  | `block!`        | `shift` `control` `alt` `double`, where they apply   |
@@ -114,6 +112,20 @@ see-through: over one, the source is whatever holds it.
 
 While a button is held, moves keep coming from wherever the press started,
 even outside the window.
+
+`enter` and `leave` say what the pointer is over, from the same moves: when a
+`move` comes from a different source than the last one, the old source gets
+`leave` and the new one `enter` - in that order, before the move. `enter` has
+the position the pointer came in at, `leave` the last one it was seen at, each
+in that source's own coordinates. Leaving the window altogether reports `leave`
+too. During a press, nothing changes hands until the button is up.
+
+```rebol
+switch evt/type [
+    enter [if evt/source == save-btn [show-tip "Saves the file"]]
+    leave [if evt/source == save-btn [hide-tip]]
+]
+```
 
 Outside this program's windows nothing is reported, unless asked for:
 

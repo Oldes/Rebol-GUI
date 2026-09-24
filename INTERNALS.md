@@ -266,3 +266,19 @@ The pump must not allocate, so the event carries the screen's key
 handle via `Screen_Handle`, the same one `screens` returns. Modifiers come from
 `GetAsyncKeyState`, since `GetKeyState` is stale while another program has the
 focus.
+
+## `enter` and `leave`
+
+Worked out in the shared layer (`Hover_To` in `gui-commands.c`), not asked of
+either platform: every `move` already names the deepest source under the
+pointer, so the hovered thing changes exactly when a move arrives from another
+source. `Hover` remembers the source (a handle, or a screen key) and its last
+position; `leave` for it and `enter` for the new one are queued before the move.
+
+The backends only report the pointer leaving every window of ours:
+`WM_MOUSELEAVE` (asked for with `TrackMouseEvent` on every move, in the window
+procedure and `Nav_Proc`; ignored while the pointer is still over the same
+top-level window, which is what a move onto a child looks like) and
+`mouseExited:` on the content view's tracking area. Both skip presses in
+progress. A handle going away forgets its hover (`Forget_Hover` in
+`Release_Handle`); turning `track-mouse` off leaves a hovered screen.
