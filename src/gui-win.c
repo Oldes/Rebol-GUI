@@ -5025,32 +5025,14 @@ void Gui_Widget_Set_Value(GUIWIDGET *wid, REBDEC value)
 	}
 
 	/*******************************************************************
-	**  A themed progress bar does not jump to a new position - it
-	**  SLIDES there, over a couple of hundred milliseconds, and a
-	**  program setting it faster than that (a slider driving a meter,
-	**  say) is left watching the bar trail behind by a visible margin.
-	**  The classic look has no animation, which is why this only shows
-	**  up once the v6 common controls are asked for.
-	**
-	**  The animation only plays when the position INCREASES. Going one
-	**  step past and stepping back therefore lands exactly on the value
-	**  with no animation left to play. The range is widened for a
-	**  moment when the value is already at the top, so that there is a
-	**  step to go past.
+	**  Set as is, so a themed progress bar SLIDES to the new position
+	**  over a couple of hundred milliseconds, the way Windows' own do.
+	**  That is the control's own animation, and it has two limits: it
+	**  plays only when the position increases (a decrease jumps), and
+	**  not in a window drawn by `dark-controls?`, which paints the bar
+	**  itself at its final position.
 	*******************************************************************/
-	{
-		HWND hwnd = HWND_OF_WID(wid);
-
-		if (pos >= RANGE_STEPS) {
-			SendMessageW(hwnd, PBM_SETRANGE32, 0, (LPARAM)(RANGE_STEPS + 1));
-			SendMessageW(hwnd, PBM_SETPOS, (WPARAM)(pos + 1), 0);
-			SendMessageW(hwnd, PBM_SETPOS, (WPARAM)pos, 0);
-			SendMessageW(hwnd, PBM_SETRANGE32, 0, (LPARAM)RANGE_STEPS);
-		} else {
-			SendMessageW(hwnd, PBM_SETPOS, (WPARAM)(pos + 1), 0);
-			SendMessageW(hwnd, PBM_SETPOS, (WPARAM)pos, 0);
-		}
-	}
+	SendMessageW(HWND_OF_WID(wid), PBM_SETPOS, (WPARAM)pos, 0);
 }
 
 

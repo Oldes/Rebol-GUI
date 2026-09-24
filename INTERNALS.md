@@ -154,8 +154,9 @@ Cocoa flips offsets against the menu-bar screen; the content view answers
   (not auto). On macOS AppKit clears siblings sharing an action, so the button's
   action is detached for each state write. Redundant `BM_SETCHECK` is skipped
   because it restarts the theme fade.
-- **Progress:** `PBM_SETPOS` animates increases, so the backend steps one past
-  and back.
+- **Progress:** `PBM_SETPOS` is sent as is, so a themed bar slides to a higher
+  value (the control's own animation). Decreases jump, and `dark-controls?`
+  windows paint the bar themselves at its final position, with no animation.
 - **Slider:** Windows works in 1/1000 steps and flips vertical trackbars. On
   macOS `NSSliderCell`'s tracking is a modal loop that starves the pump, so
   `RebolGuiSlider` tracks the mouse itself and calls the cell's

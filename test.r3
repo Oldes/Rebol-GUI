@@ -67,7 +67,7 @@ print ["dark?:   " win/dark?]
 print ["dark-controls? by default:" win/dark-controls?]
 win/dark-controls?: true
 print ["and on:                   " win/dark-controls?]
-
+win/dark-controls?: false
 ;; every accessor which can be read can also be written, except id and open?
 win/title: "Rebol GUI extension - move the mouse"
 print ["title:   " mold win/title]
