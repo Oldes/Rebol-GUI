@@ -274,6 +274,7 @@ static void Apply_Button_Color(GUIWIDGET *wid);
 @interface RebolGuiSlider : NSSlider
 {
 	GUIWIDGET *context;
+	NSPoint    last;      // previous point of a drag, for the cell's hooks
 }
 - (void)setContext:(GUIWIDGET*)ctx;
 - (void)moved:(id)sender;
@@ -506,6 +507,94 @@ static void Apply_Button_Color(GUIWIDGET *wid);
 	Gui_Queue_Event(context->hob, EVT_CHANGE,
 	                (REBINT)frame.origin.x, (REBINT)frame.origin.y,
 	                Modifier_Bits([NSEvent modifierFlags]));
+}
+
+
+/***********************************************************************
+**  The drag is tracked HERE rather than by NSSliderCell.
+**
+**  -[NSSliderCell trackMouse:...] runs a MODAL LOOP: it takes every
+**  mouse event itself until the button comes up. Gui_Pump is inside
+**  [NSApp sendEvent:] for the whole of that, so nothing drains the
+**  event queue, and a whole drag's worth of `change` events arrive in
+**  one batch at the end. Win32's trackbar captures the mouse instead
+**  and posts its notifications through the ordinary loop, so Rebol runs
+**  between drag steps - which is the behaviour to match.
+**
+**  Not calling super means the events arrive as ordinary mouseDragged:
+**  messages, one per pump, and a handler sees the slider move.
+**
+**  The knob's pressed look is normally set by that same loop, through
+**  three NSCell hooks it calls as the drag goes on: startTrackingAt:,
+**  continueTracking:at: and stopTracking:at:mouseIsUp:. They are called
+**  here instead, one per event, so the cell sets whatever state it uses
+**  for that look - which on current macOS is NOT the cell's highlighted
+**  flag alone. The value is still worked out by -trackTo: AFTER each
+**  hook, so the drag behaves the same whatever the hooks do.
+**
+**  The value is worked out rather than asked for: the point is in this
+**  view's own coordinates, which are NOT flipped whatever the content
+**  view does, so y grows upward and a vertical slider's minimum is at
+**  the bottom - the same end the Windows backend reports as 0%.
+***********************************************************************/
+- (void)trackTo:(NSEvent*)evt
+{
+	NSPoint p    = [self convertPoint:[evt locationInWindow] fromView:nil];
+	NSRect  box  = [self bounds];
+	CGFloat knob = [[self cell] knobThickness];
+	CGFloat span, at;
+	double  value;
+
+	if ([self isVertical]) {
+		span = box.size.height - knob;
+		at   = p.y - (knob / 2.0);
+	} else {
+		span = box.size.width - knob;
+		at   = p.x - (knob / 2.0);
+	}
+
+	value = (span > 0.0) ? (double)(at / span) : 0.0;
+	if (value < 0.0) value = 0.0;
+	else if (value > 1.0) value = 1.0;
+
+	if (value == [self doubleValue]) return;  // no movement, no event
+
+	[self setDoubleValue:value];
+	[self moved:self];
+}
+
+- (void)mouseDown:(NSEvent*)evt
+{
+	NSPoint p = [self convertPoint:[evt locationInWindow] fromView:nil];
+
+	[[self cell] setHighlighted:YES];
+	[[self cell] startTrackingAt:p inView:self];
+	last = p;
+
+	[self trackTo:evt];
+	[self setNeedsDisplay:YES];
+}
+
+- (void)mouseDragged:(NSEvent*)evt
+{
+	NSPoint p = [self convertPoint:[evt locationInWindow] fromView:nil];
+
+	[[self cell] continueTracking:last at:p inView:self];
+	last = p;
+
+	[self trackTo:evt];
+	[self setNeedsDisplay:YES];
+}
+
+- (void)mouseUp:(NSEvent*)evt
+{
+	NSPoint p = [self convertPoint:[evt locationInWindow] fromView:nil];
+
+	[self trackTo:evt];
+
+	[[self cell] stopTracking:last at:p inView:self mouseIsUp:YES];
+	[[self cell] setHighlighted:NO];
+	[self setNeedsDisplay:YES];
 }
 
 @end
@@ -2585,6 +2674,8 @@ REBOOL Gui_Create_Range_Control(GUIWIDGET *wid, GUIWIN *owner,
 			// A vertical NSSlider already has its minimum at the bottom.
 			if (h > w) [slider setVertical:YES];
 			// Reports while it is dragged, not only when it is let go.
+			// This covers the keyboard and any programmatic action; the
+			// MOUSE is tracked by the subclass - see -trackTo: for why.
 			[slider setContinuous:YES];
 
 			[slider setContext:wid];
