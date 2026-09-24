@@ -168,10 +168,11 @@ static DEVICE_CMD Poll_Gui(REBREQ *dr) {
 	// Nothing to pump with no window open: an extension which was
 	// imported and never used must not wake the window system on every
 	// WAIT the program makes.
-	if (!Gui_Windows_Open()) return DR_DONE;
+	if (!Gui_Windows_Open() && !Gui_Tracking_Pointer()) return DR_DONE;
 
 	Gui_Dev_Pumps++;
 	Gui_Dev_Msgs += Gui_Pump();
+	Gui_Track_Pointer();
 
 	if (Gui_Ring_Doorbell()) Signal_Gui();
 

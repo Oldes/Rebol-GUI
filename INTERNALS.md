@@ -249,3 +249,20 @@ would give the EDID friendly name more reliably.
 macOS flips `frame` / `visibleFrame` against the menu-bar screen with
 `Screen_Height()`, as window offsets are, and asks `localizedName` by selector
 because the SDK floor is 10.13.
+
+## Tracking the mouse outside (`track-mouse`)
+
+No OS reports pointer movement to a program that does not own the window under
+it, so after every pump `Gui_Track_Pointer` asks `Gui_Pointer_At` where the
+pointer is (`GetCursorPos` / `[NSEvent mouseLocation]`). It skips points over
+one of our windows (the topmost window under the point: `WindowFromPoint` + root
+class name / `windowNumberAtPoint:` + `windowWithWindowNumber:`) and presses in
+progress (`GetCapture` / pressed buttons while active), and queues a move only
+when the position or screen changed. The device poll keeps running with no
+window open while tracking is on.
+
+The pump must not allocate, so the event carries the screen's key
+(`GUIEVT.screen`) with a NULL source; `poll-events` turns it into the screen
+handle via `Screen_Handle`, the same one `screens` returns. Modifiers come from
+`GetAsyncKeyState`, since `GetKeyState` is stale while another program has the
+focus.

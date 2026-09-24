@@ -669,6 +669,8 @@ win/menu: [
 		---
 		"Big text"      big
 		"Normal text"   normal
+		---
+		"Track the mouse outside" track
 	]
 	"Help" ["About" about]
 ]
@@ -727,6 +729,7 @@ pressed:   none   ;; the control between its `down` and its `up`
 float-grab: none  ;; where the `floating` button was grabbed
 held:      false  ;; the left button is down in a window
 last-scale: win/scale  ;; the main window's scale, to notice it change
+tracking:   false      ;; `track-mouse`, toggled from the View menu
 clicks: 0
 
 ;; ONE argument now: `poll-events` returns a block of event! values, so the
@@ -751,17 +754,26 @@ report: func [event /local type source position kind][
 	;; and may leave both.)
 	switch type [down [held: true] up [held: false]]
 	if all [type = 'move  not held] [
-		either source/type = 'GUI-WINDOW [
-			unless within? position 0x0 source/size [
-				note ajoin ["!! move outside its window: " position]
+		case [
+			source/type = 'GUI-SCREEN [
+				;; `track-mouse` (View menu): a move outside every window
+				;; of ours, measured from that screen's own corner.
+				unless within? position 0x0 source/size [
+					note ajoin ["!! move outside its screen: " position]
+				]
 			]
-		][
+			source/type = 'GUI-WINDOW [
+				unless within? position 0x0 source/size [
+					note ajoin ["!! move outside its window: " position]
+				]
+			]
+			true [
 			if kind = 'text [note "!! move from a label - labels are see-through"]
 			unless within? position source/at source/size [
 				note ajoin ["!! move on " kind " not over it: " position
 				            " (it is at " source/at ")"]
 			]
-		]
+		]]
 	]
 
 	;; WATCH (Windows, two monitors with different scale settings): drag the
@@ -895,6 +907,14 @@ report: func [event /local type source position kind][
 			;; label grow down over the field's top edge and back - the
 			;; interactive version of the repaint check above.
 			big       [label/font-size: 20   label/size: 220x0]
+			;; WATCH: with this on, moving the mouse OUTSIDE every window
+			;; logs `move` events whose source is a screen; back over a
+			;; window they come from the window again, never both.
+			track     [
+				tracking: not tracking
+				track-mouse tracking
+				note ajoin ["tracking the mouse outside: " tracking]
+			]
 			normal    [label/font-size: none label/size: 220x0]
 			about     [label/text: "Rebol/GUI extension"]
 		]
@@ -963,6 +983,7 @@ report: func [event /local type source position kind][
 			;; coordinates like everything else - `at` turns them into
 			;; a position on the picture.
 			source == canvas [ajoin ["on the image at " position - canvas/at]]
+			source/type = 'GUI-SCREEN [ajoin ["on screen " mold source/name " at " position]]
 			type = 'menu-select [ajoin ["item: " event/code]]
 			;; the drop handle molds as what it holds
 			find [drop-file drop-text] type [ajoin ["dropped " mold source]]
@@ -976,6 +997,7 @@ report: func [event /local type source position kind][
 ;; window has been closed. This is the whole event model - there is no
 ;; system/ports/event involvement at all.
 do-events win :report
+track-mouse false   ;; nothing left to report to
 
 print ["^/window closed - open?:" win/open?]
 print ["what was typed: " mold attempt [name/text] "(none - the control is gone)"]

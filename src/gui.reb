@@ -10,7 +10,7 @@ REBOL [
 		open-window close-window show-window hide-window
 		add-button add-image add-text add-field add-area
 		add-check add-radio add-slider add-progress add-drop-down add-panel
-		remove-widget redraw set-focus screens
+		remove-widget redraw set-focus screens track-mouse
 		gui-device gui-device-polls gui-device-events
 		gui-device-pumps gui-device-messages
 		poll-events do-events
@@ -524,6 +524,11 @@ commands: [
 
 	screens: [
 		"Returns a block of the connected screens, the primary one first"
+	]
+
+	track-mouse: [
+		{Reports `move` over the screens outside this program's windows, with the screen as the source; returns whether it was on}
+		on [logic!]
 	]
 ]
 

@@ -75,7 +75,7 @@ void Gui_Queue_Event(REBHOB *source, REBCNT type, REBINT x, REBINT y, REBINT val
 
 	if (type == EVT_MOVE && QUEUE_COUNT() > 0) {
 		evt = QUEUE_AT(QUEUE_COUNT() - 1);
-		if (evt->type == EVT_MOVE && evt->source == source) {
+		if (evt->type == EVT_MOVE && evt->source == source && source) {
 			evt->x = x;
 			evt->y = y;
 			evt->value = value;
@@ -96,6 +96,86 @@ void Gui_Queue_Event(REBHOB *source, REBCNT type, REBINT x, REBINT y, REBINT val
 	evt->y      = y;
 	evt->value  = value;
 	Event_Head++;
+}
+
+
+/***********************************************************************
+**  `track-mouse`: moves over the screens, outside this program.
+**
+**  Nothing in the OS reports those to a program which does not own the
+**  window under the pointer, so the pointer is ASKED for, after every
+**  pump - which is already running on every WAIT. A position that has
+**  not changed queues nothing, so an idle pointer costs one system call
+**  per poll and no events.
+**
+**  Moves over this program's own windows are left to the windows, which
+**  report them with the widget under the pointer as the source; the
+**  tracker only covers everywhere else. Forgetting the last position
+**  while the pointer is over a window is what makes leaving one report
+**  at once, even at the point it went in.
+**
+**  The source is the screen, and the position is within that screen,
+**  from its top-left corner - so `evt/offset + evt/source/offset` is on
+**  the desktop, in the space window offsets use.
+***********************************************************************/
+static REBOOL Track_Pointer = FALSE;
+static REBINT Tracked_X = 0, Tracked_Y = 0;
+static REBYTE Tracked_Key[GUI_SCREEN_KEY];
+
+REBOOL Gui_Tracking_Pointer(void) { return Track_Pointer; }
+
+static void Queue_Screen_Move(const REBYTE *key, REBINT x, REBINT y, REBINT mods)
+{
+	GUIEVT *evt;
+
+	// Collapsed like any other move: consecutive moves over one screen
+	// keep only the newest.
+	if (QUEUE_COUNT() > 0) {
+		evt = QUEUE_AT(QUEUE_COUNT() - 1);
+		if (evt->type == EVT_MOVE && !evt->source
+		    && strncmp((const char*)evt->screen, (const char*)key, GUI_SCREEN_KEY) == 0) {
+			evt->x = x;
+			evt->y = y;
+			evt->value = mods;
+			return;
+		}
+	}
+	if (QUEUE_COUNT() >= GUI_QUEUE_SIZE) {
+		Event_Dropped++;
+		return;
+	}
+	evt = &Event_Queue[Event_Head & GUI_QUEUE_MASK];
+	CLEARS(evt);
+	evt->type  = EVT_MOVE;
+	evt->x     = x;
+	evt->y     = y;
+	evt->value = mods;
+	strncpy((char*)evt->screen, (const char*)key, GUI_SCREEN_KEY - 1);
+	Event_Head++;
+}
+
+void Gui_Track_Pointer(void)
+{
+	REBYTE key[GUI_SCREEN_KEY];
+	REBINT x = 0, y = 0, mods = 0;
+	REBOOL ours = FALSE;
+
+	if (!Track_Pointer) return;
+	CLEARS(&key);
+	if (!Gui_Pointer_At(key, &x, &y, &mods, &ours) || !key[0]) return;
+
+	if (ours) {
+		Tracked_Key[0] = 0;
+		return;
+	}
+	if (x == Tracked_X && y == Tracked_Y
+	    && strncmp((const char*)key, (const char*)Tracked_Key, GUI_SCREEN_KEY) == 0)
+		return;
+
+	Tracked_X = x;
+	Tracked_Y = y;
+	memcpy(Tracked_Key, key, GUI_SCREEN_KEY);
+	Queue_Screen_Move(key, x, y, mods);
 }
 
 
@@ -1640,7 +1720,7 @@ COMMAND cmd_gui_set_focus(RXIFRM *frm, void *ctx)
 COMMAND cmd_gui_poll_events(RXIFRM *frm, void *ctx)
 {
 	REBSER *blk;
-	REBCNT  count, n;
+	REBCNT  count, n, at = 0;
 	RXIARG  val;
 	REBEVT  ev;
 
@@ -1653,6 +1733,7 @@ COMMAND cmd_gui_poll_events(RXIFRM *frm, void *ctx)
 	**  one sleep serve both queues - see Poll_Gui() in gui.c.
 	*******************************************************************/
 	Gui_Pump();
+	Gui_Track_Pointer();
 
 	if (Event_Dropped) {
 		printf("GUI: dropped %u events (queue full)\n", Event_Dropped);
@@ -1678,6 +1759,12 @@ COMMAND cmd_gui_poll_events(RXIFRM *frm, void *ctx)
 		// event still queued keeps its window or widget alive.
 		ev.model = EVM_HANDLE;
 		ev.hob   = evt->source;
+
+		// A move over a screen names it by key - see GUIEVT.screen. The
+		// handle is made here, where allocating is allowed; it is the
+		// same handle `screens` gives for that display.
+		if (!ev.hob && evt->screen[0]) ev.hob = Screen_Handle(evt->screen);
+		if (!ev.hob) continue;
 
 		switch (evt->type) {
 		case EVT_SCROLL_LINE:
@@ -1722,7 +1809,7 @@ COMMAND cmd_gui_poll_events(RXIFRM *frm, void *ctx)
 		// the union member so that this does not depend on its spelling.
 		CLEARS(&val);
 		COPY_MEM(&val, &ev, sizeof(ev));
-		RL_SET_VALUE(blk, n, val, RXT_EVENT);
+		RL_SET_VALUE(blk, at++, val, RXT_EVENT);
 	}
 
 	RL_PROTECT_GC(blk, 0);
@@ -3499,4 +3586,24 @@ int GuiScreen_mold(REBHOB *hob, REBSER *str)
 		APPEND_STRING(str, "%s", "gone");
 	}
 	return len;
+}
+
+
+/***********************************************************************
+**  track-mouse on [logic!]
+**
+**  Turns reporting of moves outside this program's windows on or off,
+**  and returns whether it was on. Off by default: with it on, every
+**  movement anywhere on the desktop wakes WAIT.
+***********************************************************************/
+COMMAND cmd_gui_track_mouse(RXIFRM *frm, void *ctx)
+{
+	REBOOL was = Track_Pointer;
+
+	Track_Pointer = RXA_LOGIC(frm, 1) ? TRUE : FALSE;
+	Tracked_Key[0] = 0;   // report the current position at once
+
+	RXA_LOGIC(frm, 1) = was ? 1 : 0;
+	RXA_TYPE(frm, 1)  = RXT_LOGIC;
+	return RXR_VALUE;
 }

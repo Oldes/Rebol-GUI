@@ -115,6 +115,18 @@ see-through: over one, the source is whatever holds it.
 While a button is held, moves keep coming from wherever the press started,
 even outside the window.
 
+Outside this program's windows nothing is reported, unless asked for:
+
+```rebol
+track-mouse true     ;; returns whether it was on
+```
+
+Moves over the rest of the desktop then arrive with a **screen** handle as
+`source`, and `offset` measured from that screen's top-left corner, so
+`evt/offset + evt/source/offset` is in the space window offsets use. Over one of
+this program's windows the window reports them as usual, never both. It is off
+by default: with it on, any mouse movement anywhere on the desktop wakes `wait`.
+
 To get a position relative to a widget, subtract its `at` - where its top-left
 corner is in the window, however deeply it is nested. A window's `at` is
 `0x0`, so this works whatever the source:
@@ -802,6 +814,10 @@ Gives a widget the keyboard focus; returns false if it cannot take it
 
 #### `screens`
 Returns a block of the connected screens, the primary one first
+
+#### `track-mouse` `:on`
+Reports `move` over the screens outside this program's windows, with the screen as the source; returns whether it was on
+* `on` `[logic!]`
 
 
 ## Used handles and its getters / setters

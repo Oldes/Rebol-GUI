@@ -46,26 +46,32 @@ int GuiScreen_mold(REBHOB *hob, REBSER *str);
 // Implemented in gui-commands.c so that the consumer owns the buffer.
 
 typedef struct Gui_Event {
-	REBHOB *source; // handle context which produced it: a window, or a widget
-	REBCNT  type;   // the core's EVT_* code, straight from reb-evtypes.h
-	REBINT  x, y;   // position in client coordinates
-	REBINT  value;  // modifier bits, or the wheel delta in lines
+    REBHOB *source; // handle context which produced it: a window, or a widget
+    REBCNT  type;   // the core's EVT_* code, straight from reb-evtypes.h
+    REBINT  x, y;   // position in client coordinates
+    REBINT  value;  // modifier bits, or the wheel delta in lines
 
-	// What was dropped, for EVT_DROP_FILE and EVT_DROP_TEXT; NULL for every
-	// other type. Plain C memory owned by the QUEUE: whoever drains or
-	// purges the event frees it, which is what lets the window procedure
-	// record a drop without allocating a Rebol series.
-	GUIDROPDATA *drop;
+    // What was dropped, for EVT_DROP_FILE and EVT_DROP_TEXT; NULL for every
+    // other type. Plain C memory owned by the QUEUE: whoever drains or
+    // purges the event frees it, which is what lets the window procedure
+    // record a drop without allocating a Rebol series.
+    GUIDROPDATA *drop;
+
+    // A `move` over a screen outside this program's windows has no handle
+    // yet: making one allocates, which the pump must not do. The screen is
+    // named by its key instead, `source` is NULL, and `poll-events` turns
+    // the key into the screen's handle. Empty for every other event.
+    REBYTE screen[GUI_SCREEN_KEY];
 } GUIEVT;
 
 // Modifier bits reported in GUIEVT.value. They are translated into the
 // event!'s own EVF_SHIFT / EVF_CONTROL / EVF_ALT / EVF_DOUBLE when the queue
 // is drained, which is what makes `evt/flags` a block of words.
 enum {
-	GUI_FLAG_SHIFT   = 1,
-	GUI_FLAG_CONTROL = 2,
-	GUI_FLAG_ALT     = 4,
-	GUI_FLAG_DOUBLE  = 8
+    GUI_FLAG_SHIFT   = 1,
+    GUI_FLAG_CONTROL = 2,
+    GUI_FLAG_ALT     = 4,
+    GUI_FLAG_DOUBLE  = 8
 };
 
 
@@ -133,7 +139,7 @@ REBCNT Gui_Event_Count(void);
 **  the children in every repaint to reach them again.
 ***********************************************************************/
 #define Kind_Is_Container(k) \
-	((k) == W_GUI_WIDGET_PANEL || (k) == W_GUI_WIDGET_IMAGE)
+    ((k) == W_GUI_WIDGET_PANEL || (k) == W_GUI_WIDGET_IMAGE)
 
 // Called by the backend once a native window has really gone away, however
 // that happened: drops the queued events which point at the handle context
@@ -251,6 +257,21 @@ REBCNT  Gui_Screen_Keys(REBYTE (*keys)[GUI_SCREEN_KEY], REBCNT max);
 REBOOL  Gui_Screen_Info(const REBYTE *key, GUISCREENINFO *info);
 REBSER* Gui_Screen_Name(const REBYTE *key);
 REBOOL  Gui_Window_Screen(GUIWIN *win, REBYTE *key);
+
+/***********************************************************************
+**  Where the pointer is, anywhere on the desktop - for `track-mouse`.
+**
+**  Fills the key of the screen it is on and the position within that
+**  screen (logical units from its top-left corner), with the modifier
+**  bits held. `ours` is TRUE when one of this program's windows is under
+**  the pointer, or has it captured for a press in progress: those
+**  moves are the window's to report, and the tracker leaves them alone.
+***********************************************************************/
+REBOOL  Gui_Pointer_At(REBYTE *key, REBINT *x, REBINT *y, REBINT *mods, REBOOL *ours);
+
+// Shared layer, called after every pump.
+void    Gui_Track_Pointer(void);
+REBOOL  Gui_Tracking_Pointer(void);
 
 // What a widget needs for the text it holds, in logical units - border,
 // padding and all. FALSE for a kind with no text, which has no natural

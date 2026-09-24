@@ -2236,6 +2236,53 @@ REBSER* Gui_Screen_Name(const REBYTE *key)
 	}
 }
 
+// Where the pointer is on the desktop, for `track-mouse`. See gui.h.
+REBOOL Gui_Pointer_At(REBYTE *key, REBINT *x, REBINT *y, REBINT *mods, REBOOL *ours)
+{
+	@autoreleasepool {
+		NSPoint    at = [NSEvent mouseLocation];   // global, Y up
+		NSArray   *screens = [NSScreen screens];
+		NSScreen  *screen = nil;
+		NSInteger  number;
+		NSUInteger n;
+		NSRect     frame;
+
+		*ours = FALSE;
+
+		// A press which started in one of our windows is still that
+		// window's while the button is held: the view the button went
+		// down in gets the drags, wherever the pointer goes.
+		if ([NSApp isActive] && [NSEvent pressedMouseButtons] != 0
+		    && [NSApp keyWindow] != nil) {
+			*ours = TRUE;
+			return TRUE;
+		}
+
+		// The TOPMOST window at that point, of any application; one of
+		// ours reports its own moves.
+		number = [NSWindow windowNumberAtPoint:at belowWindowWithWindowNumber:0];
+		if (number > 0 && [NSApp windowWithWindowNumber:number] != nil) {
+			*ours = TRUE;
+			return TRUE;
+		}
+
+		for (n = 0; n < [screens count]; n++) {
+			NSScreen *s = [screens objectAtIndex:n];
+			if (NSMouseInRect(at, [s frame], NO)) { screen = s; break; }
+		}
+		if (!screen && [screens count] > 0) screen = [screens objectAtIndex:0];
+		if (!screen) return FALSE;
+
+		Display_Key(screen, key);
+		frame = [screen frame];
+		// From the screen's top-left corner, Y down.
+		*x = (REBINT)floor(at.x - frame.origin.x);
+		*y = (REBINT)floor(frame.origin.y + frame.size.height - at.y);
+		*mods = Modifier_Bits([NSEvent modifierFlags]);
+		return TRUE;
+	}
+}
+
 REBOOL Gui_Window_Screen(GUIWIN *win, REBYTE *key)
 {
 	@autoreleasepool {

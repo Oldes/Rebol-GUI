@@ -3647,6 +3647,58 @@ REBSER* Gui_Screen_Name(const REBYTE *key)
 	return RL_ENCODE_UTF8_STRING((void*)name, (REBCNT)wcslen(name), TRUE, 0);
 }
 
+// Where the pointer is on the desktop, for `track-mouse`. See gui.h.
+REBOOL Gui_Pointer_At(REBYTE *key, REBINT *x, REBINT *y, REBINT *mods, REBOOL *ours)
+{
+	POINT          p;
+	HWND           under;
+	HMONITOR       mon;
+	MONITORINFOEXW mi;
+	int            dpi;
+
+	*ours = FALSE;
+	if (!GetCursorPos(&p)) return FALSE;
+
+	// A press in progress belongs to whatever this thread captured it for,
+	// which reports the drag itself - wherever the pointer goes.
+	if (GetCapture()) {
+		*ours = TRUE;
+		return TRUE;
+	}
+
+	// One of our windows is under it: its own moves cover this. Asked of
+	// the root, since the pointer is usually over one of its controls.
+	under = WindowFromPoint(p);
+	if (under) {
+		WCHAR cls[64];
+		HWND  root = GetAncestor(under, GA_ROOT);
+		if (root && GetClassNameW(root, cls, 64) && lstrcmpW(cls, Class_Name) == 0) {
+			*ours = TRUE;
+			return TRUE;
+		}
+	}
+
+	mon = MonitorFromPoint(p, MONITOR_DEFAULTTONEAREST);
+	ZeroMemory(&mi, sizeof(mi));
+	mi.cbSize = sizeof(mi);
+	if (!mon || !GetMonitorInfoW(mon, (MONITORINFO*)&mi)) return FALSE;
+	Monitor_Key(&mi, key);
+
+	// From the screen's own corner, in its own units - the same answer the
+	// screen's offset and size are given in.
+	dpi = Dpi_Of_Monitor(mon);
+	*x = Desk_To_Logical(p.x, mi.rcMonitor.left, dpi) - Desk_To_Logical(mi.rcMonitor.left, mi.rcMonitor.left, dpi);
+	*y = Desk_To_Logical(p.y, mi.rcMonitor.top,  dpi) - Desk_To_Logical(mi.rcMonitor.top,  mi.rcMonitor.top,  dpi);
+
+	// GetKeyState() is this thread's view of the keyboard, which is stale
+	// while another program has the focus - so the asynchronous one.
+	*mods = 0;
+	if (GetAsyncKeyState(VK_SHIFT)   & 0x8000) *mods |= GUI_FLAG_SHIFT;
+	if (GetAsyncKeyState(VK_CONTROL) & 0x8000) *mods |= GUI_FLAG_CONTROL;
+	if (GetAsyncKeyState(VK_MENU)    & 0x8000) *mods |= GUI_FLAG_ALT;
+	return TRUE;
+}
+
 REBOOL Gui_Window_Screen(GUIWIN *win, REBYTE *key)
 {
 	HMONITOR       mon;
