@@ -208,40 +208,43 @@ typedef struct Gui_Font_Cache {
 	HFONT  font;
 	int    size;    // points
 	REBCNT style;   // GUI_FONT_* bits
+	int    dpi;     // what it was made for
 	WCHAR  name[LF_FACESIZE];
 } FONTCACHE;
 
 static FONTCACHE *Font_Cache = NULL;
 
 /***********************************************************************
-**  Logical units.
+**  Logical units, and which DPI they are converted at.
 **
 **  Everything above this file speaks LOGICAL units - 96 to the inch,
 **  the same thing macOS calls a point - and this is where they become
 **  device pixels and back. `240x26` therefore describes the same
 **  physical size on a 96 DPI screen, on a 175% one, and on a Mac.
 **
-**  It has to be done here rather than left to the caller, because the
-**  process is DPI aware: Windows does not scale anything for us, and
-**  the shell's message font DOES come back already scaled for the
-**  display. Without this, a script's coordinates stay 96-DPI-sized
-**  while its text grows with the display - which is a label too small
-**  for its own font at 125%, and a text entry that clips its line at
-**  175%.
+**  The process is PER-MONITOR DPI aware where Windows can do it (10,
+**  version 1607 and later), so there is no single DPI any more: each
+**  window has the DPI of the monitor it is on, its controls share it,
+**  and it changes when the window is moved to a monitor with another
+**  scale setting - see WM_DPICHANGED in the window procedure. Every
+**  conversion therefore names the window (or the monitor) it is for.
 **
-**  One scale for the process, cached: PROCESS_SYSTEM_DPI_AWARE means
-**  the system DPI is what everything is drawn at, whichever monitor a
-**  window is on. Per-monitor awareness would make this per window, and
-**  would need WM_DPICHANGED as well.
+**  Where per-monitor awareness is not available, the process falls back
+**  to SYSTEM awareness and every window answers the system DPI, which
+**  is exactly the behaviour this file had before.
 ***********************************************************************/
-static int Gui_DPI = 96;
+static int    Gui_DPI = 96;         // the system DPI: the fallback everywhere
+static REBOOL Per_Monitor = FALSE;  // TRUE once per-monitor awareness is on
 
-// Points per inch on this display, which is also what turns a point size
-// into the pixel height a LOGFONT wants.
-static int Screen_DPI(void)
-{
-	return Gui_DPI;
-}
+// Late-bound: all of these are newer than the oldest Windows this runs on.
+typedef UINT    (WINAPI *GETDPIFORWINDOW_T)(HWND);
+typedef BOOL    (WINAPI *ADJUSTWINDOWRECTEXFORDPI_T)(LPRECT, DWORD, BOOL, DWORD, UINT);
+typedef int     (WINAPI *GETSYSTEMMETRICSFORDPI_T)(int, UINT);
+typedef HRESULT (WINAPI *GETDPIFORMONITOR_T)(HMONITOR, int, UINT*, UINT*);
+static GETDPIFORWINDOW_T          pGetDpiForWindow          = NULL;
+static ADJUSTWINDOWRECTEXFORDPI_T pAdjustWindowRectExForDpi = NULL;
+static GETSYSTEMMETRICSFORDPI_T   pGetSystemMetricsForDpi   = NULL;
+static GETDPIFORMONITOR_T         pGetDpiForMonitor         = NULL;
 
 static void Read_Screen_DPI(void)
 {
@@ -253,34 +256,99 @@ static void Read_Screen_DPI(void)
 	}
 }
 
-static REBINT To_Device(REBINT v)
+// The DPI a window - or any control in it - is drawn at right now.
+static int Dpi_Of(HWND hwnd)
 {
-	return (Gui_DPI == 96) ? v : (REBINT)MulDiv((int)v, Gui_DPI, 96);
+	if (Per_Monitor && hwnd) {
+		UINT dpi = pGetDpiForWindow(hwnd);
+		if (dpi > 0) return (int)dpi;
+	}
+	return Gui_DPI;
 }
 
-static REBINT To_Logical(REBINT v)
+// The DPI a monitor is set to. MDT_EFFECTIVE_DPI (0) is the one Windows
+// scales windows for, which is the one that matters here.
+static int Dpi_Of_Monitor(HMONITOR mon)
 {
-	return (Gui_DPI == 96) ? v : (REBINT)MulDiv((int)v, 96, Gui_DPI);
+	if (Per_Monitor && mon && pGetDpiForMonitor) {
+		UINT x = 0, y = 0;
+		if (SUCCEEDED(pGetDpiForMonitor(mon, 0, &x, &y)) && y > 0) return (int)y;
+	}
+	return Gui_DPI;
+}
+
+static REBINT To_Device(int dpi, REBINT v)
+{
+	return (dpi == 96) ? v : (REBINT)MulDiv((int)v, dpi, 96);
+}
+
+static REBINT To_Logical(int dpi, REBINT v)
+{
+	return (dpi == 96) ? v : (REBINT)MulDiv((int)v, 96, dpi);
 }
 
 // Whole boxes, which is how they nearly always travel.
-static void Box_To_Device(REBINT *x, REBINT *y, REBINT *w, REBINT *h)
+static void Box_To_Device(int dpi, REBINT *x, REBINT *y, REBINT *w, REBINT *h)
 {
-	if (Gui_DPI == 96) return;
-	if (x) *x = To_Device(*x);
-	if (y) *y = To_Device(*y);
-	if (w) *w = To_Device(*w);
-	if (h) *h = To_Device(*h);
+	if (dpi == 96) return;
+	if (x) *x = To_Device(dpi, *x);
+	if (y) *y = To_Device(dpi, *y);
+	if (w) *w = To_Device(dpi, *w);
+	if (h) *h = To_Device(dpi, *h);
 }
 
-static void Box_To_Logical(REBINT *x, REBINT *y, REBINT *w, REBINT *h)
+static void Box_To_Logical(int dpi, REBINT *x, REBINT *y, REBINT *w, REBINT *h)
 {
-	if (Gui_DPI == 96) return;
-	if (x) *x = To_Logical(*x);
-	if (y) *y = To_Logical(*y);
-	if (w) *w = To_Logical(*w);
-	if (h) *h = To_Logical(*h);
+	if (dpi == 96) return;
+	if (x) *x = To_Logical(dpi, *x);
+	if (y) *y = To_Logical(dpi, *y);
+	if (w) *w = To_Logical(dpi, *w);
+	if (h) *h = To_Logical(dpi, *h);
 }
+
+// A system metric at a given DPI. GetSystemMetrics() alone answers for the
+// system DPI, which is wrong for a window on any other monitor.
+static int Metric(int dpi, int index)
+{
+	if (pGetSystemMetricsForDpi) return pGetSystemMetricsForDpi(index, (UINT)dpi);
+	return MulDiv(GetSystemMetrics(index), dpi, Gui_DPI);
+}
+
+// The window rectangle for a client rectangle, with the frame sized for
+// the DPI the window will be at - which is not the system's on another
+// monitor, and a frame computed for the wrong one is off by pixels.
+static void Adjust_Rect(RECT *r, DWORD style, BOOL menu, DWORD exstyle, int dpi)
+{
+	if (pAdjustWindowRectExForDpi && pAdjustWindowRectExForDpi(r, style, menu, exstyle, (UINT)dpi))
+		return;
+	AdjustWindowRectEx(r, style, menu, exstyle);
+}
+
+// The DPI a window was last laid out at. WM_DPICHANGED arrives with
+// GetDpiForWindow() already answering the NEW value, so the old one - which
+// every child position and font was computed at - has to be remembered.
+static const WCHAR *Dpi_Prop = L"RebolGuiDpi";
+
+static void Remember_Dpi(HWND hwnd, int dpi)
+{
+	SetPropW(hwnd, Dpi_Prop, (HANDLE)(INT_PTR)dpi);
+}
+
+static int Remembered_Dpi(HWND hwnd)
+{
+	int dpi = (int)(INT_PTR)GetPropW(hwnd, Dpi_Prop);
+	return dpi > 0 ? dpi : Gui_DPI;
+}
+
+// Screen coordinates, both ways - defined with the screens further down,
+// because they are the same question as a screen's own position.
+static void Screen_To_Logical(LONG px, LONG py, REBINT *x, REBINT *y);
+static void Logical_To_Screen(REBINT x, REBINT y, LONG *px, LONG *py, HMONITOR *mon);
+static void Keep_Client_Size(HWND hwnd, int was_w, int was_h);
+
+#ifndef WM_DPICHANGED
+#define WM_DPICHANGED 0x02E0
+#endif
 
 static void Free_Font_Cache(void)
 {
@@ -296,7 +364,10 @@ static void Free_Font_Cache(void)
 
 // A NULL or empty name means the shell's message font family, and a size
 // of 0 its size - which is how `font: none` and `font-size: none` arrive.
-static HFONT Font_For(const WCHAR *name, int size, REBCNT style)
+//
+// Made for one DPI: the same 10 points is 13 pixels on one monitor and 20
+// on another, so the cache is keyed by DPI too.
+static HFONT Font_For(const WCHAR *name, int size, REBCNT style, int dpi)
 {
 	FONTCACHE *entry;
 	LOGFONTW   base, lf;
@@ -314,14 +385,18 @@ static HFONT Font_For(const WCHAR *name, int size, REBCNT style)
 		lstrcpynW(lf.lfFaceName, name, LF_FACESIZE);
 	}
 	if (size > 0) {
-		lf.lfHeight = -MulDiv(size, Screen_DPI(), 72);
+		lf.lfHeight = -MulDiv(size, dpi, 72);
+		lf.lfWidth  = 0;
+	} else if (dpi != Gui_DPI) {
+		// The shell's font comes back scaled for the SYSTEM DPI.
+		lf.lfHeight = MulDiv(lf.lfHeight, dpi, Gui_DPI);
 		lf.lfWidth  = 0;
 	}
 	lf.lfWeight = (style & GUI_FONT_BOLD) ? FW_BOLD : FW_NORMAL;
 	lf.lfItalic = (style & GUI_FONT_ITALIC) ? TRUE : FALSE;
 
 	for (entry = Font_Cache; entry; entry = entry->next) {
-		if (entry->size == size && entry->style == style
+		if (entry->size == size && entry->style == style && entry->dpi == dpi
 		    && lstrcmpW(entry->name, lf.lfFaceName) == 0)
 			return entry->font;
 	}
@@ -334,11 +409,23 @@ static HFONT Font_For(const WCHAR *name, int size, REBCNT style)
 	entry->font  = font;
 	entry->size  = size;
 	entry->style = style;
+	entry->dpi   = dpi;
 	lstrcpynW(entry->name, lf.lfFaceName, LF_FACESIZE);
 	entry->next  = Font_Cache;
 	Font_Cache   = entry;
 
 	return font;
+}
+
+// The shell's message font, at the DPI a control is drawn at. At the system
+// DPI that is the shared default itself; anywhere else it is a scaled copy
+// from the cache.
+static HFONT Default_Font_At(int dpi)
+{
+	HFONT font;
+	if (dpi == Gui_DPI) return Get_Default_Font();
+	font = Font_For(NULL, 0, 0, dpi);
+	return font ? font : Get_Default_Font();
 }
 
 
@@ -587,10 +674,13 @@ static REBINT Modifiers(void)
 // Queues a mouse event at the position carried by lParam.
 static void Queue_Mouse(GUIWIN *win, REBCNT type, LPARAM lp, REBINT extra)
 {
+	int dpi;
 	if (!win || !win->hob) return;
-	// Reported in logical units, like every other coordinate here.
+	// Reported in logical units, like every other coordinate here - at
+	// the DPI of the monitor the window is on.
+	dpi = Dpi_Of(HWND_OF(win));
 	Gui_Queue_Event(win->hob, type,
-	                To_Logical(GET_X_LPARAM(lp)), To_Logical(GET_Y_LPARAM(lp)),
+	                To_Logical(dpi, GET_X_LPARAM(lp)), To_Logical(dpi, GET_Y_LPARAM(lp)),
 	                Modifiers() | extra);
 }
 
@@ -606,18 +696,103 @@ static void Queue_Mouse(GUIWIN *win, REBCNT type, LPARAM lp, REBINT extra)
 static void Queue_Widget_Mouse(GUIWIDGET *wid, REBCNT type, LPARAM lp, REBINT extra)
 {
 	POINT p;
+	int   dpi;
 
 	if (!wid || !wid->hob || !wid->handle) return;
 	p.x = GET_X_LPARAM(lp);
 	p.y = GET_Y_LPARAM(lp);
 	if (wid->owner && wid->owner->handle)
 		MapWindowPoints(HWND_OF_WID(wid), HWND_OF(wid->owner), &p, 1);
-	Gui_Queue_Event(wid->hob, type, To_Logical(p.x), To_Logical(p.y),
+	dpi = Dpi_Of(HWND_OF_WID(wid));   // a control shares its window's DPI
+	Gui_Queue_Event(wid->hob, type, To_Logical(dpi, p.x), To_Logical(dpi, p.y),
 	                Modifiers() | extra);
 }
 
 
 //== window procedure =========================================================
+
+/***********************************************************************
+**  A window moved to a monitor with another scale.
+**
+**  WM_DPICHANGED arrives with the new DPI and a suggested window
+**  rectangle, and leaves everything else to the program: every control
+**  is still where it was in PIXELS, in a font made for the old DPI. So
+**  the window is rescaled here, the way a script would expect from a
+**  layout written in logical units - the same layout, at the new size:
+**
+**    - every widget's box (at any depth: the list is flat) is scaled
+**      from the old DPI to the new, in its parent's client area;
+**    - every font is remade at the new DPI, same point size;
+**    - the window keeps its logical CLIENT size, framed for the new DPI,
+**      at the top-left corner Windows suggested.
+**
+**  Children first, then the window: WM_SIZE from the window's own resize
+**  then reports a `resize` whose logical size has not changed.
+***********************************************************************/
+static void Rescale_Window(GUIWIN *win, HWND hwnd, int was, int now, const RECT *suggested)
+{
+	GUIWIDGET *wid;
+	RECT       client, r;
+	int        cw = 0, ch = 0;
+
+	if (was <= 0 || now <= 0) return;
+
+	if (was != now) {
+		for (wid = (GUIWIDGET*)win->widgets; wid; wid = (GUIWIDGET*)wid->next) {
+			HWND     child, parent;
+			HFONT    font;
+			LOGFONTW lf;
+
+			if (!wid->handle) continue;
+			child  = HWND_OF_WID(wid);
+			parent = GetParent(child);
+
+			if (parent && GetWindowRect(child, &r)) {
+				MapWindowPoints(NULL, parent, (POINT*)&r, 2);
+				SetWindowPos(child, NULL,
+				             MulDiv(r.left, now, was), MulDiv(r.top, now, was),
+				             MulDiv(r.right - r.left, now, was),
+				             MulDiv(r.bottom - r.top, now, was),
+				             SWP_NOZORDER | SWP_NOACTIVATE);
+			}
+
+			// Same face, same point size, same style - made for `now`.
+			font = (HFONT)SendMessageW(child, WM_GETFONT, 0, 0);
+			if (font && GetObjectW(font, sizeof(lf), &lf)) {
+				int    px    = lf.lfHeight < 0 ? -lf.lfHeight : lf.lfHeight;
+				int    pt    = MulDiv(px, 72, was);
+				REBCNT style = ((lf.lfWeight >= FW_SEMIBOLD) ? GUI_FONT_BOLD : 0)
+				             | (lf.lfItalic ? GUI_FONT_ITALIC : 0);
+				HFONT  next  = Font_For(lf.lfFaceName, pt, style, now);
+				if (next) SendMessageW(child, WM_SETFONT, (WPARAM)next, FALSE);
+			} else {
+				SendMessageW(child, WM_SETFONT, (WPARAM)Default_Font_At(now), FALSE);
+			}
+		}
+
+		if (GetClientRect(hwnd, &client)) {
+			cw = MulDiv(client.right - client.left, now, was);
+			ch = MulDiv(client.bottom - client.top, now, was);
+		}
+	} else if (GetClientRect(hwnd, &client)) {
+		cw = client.right - client.left;
+		ch = client.bottom - client.top;
+	}
+
+	r.left = 0; r.top = 0; r.right = cw; r.bottom = ch;
+	Adjust_Rect(&r, (DWORD)GetWindowLongPtrW(hwnd, GWL_STYLE), GetMenu(hwnd) != NULL,
+	            (DWORD)GetWindowLongPtrW(hwnd, GWL_EXSTYLE), now);
+	SetWindowPos(hwnd, NULL,
+	             suggested ? suggested->left : 0, suggested ? suggested->top : 0,
+	             r.right - r.left, r.bottom - r.top,
+	             SWP_NOZORDER | SWP_NOACTIVATE | (suggested ? 0 : SWP_NOMOVE));
+
+	// Measured, as everywhere else the frame changes: a menu bar can wrap
+	// differently at another size.
+	Keep_Client_Size(hwnd, cw, ch);
+	Remember_Dpi(hwnd, now);
+	RedrawWindow(hwnd, NULL, NULL, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_FRAME);
+}
 
 static LRESULT CALLBACK Gui_Window_Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
@@ -697,15 +872,19 @@ static LRESULT CALLBACK Gui_Window_Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
 
 		if (win->hob)
 			Gui_Queue_Event(win->hob, EVT_SCROLL_LINE,
-			                To_Logical(pt.x), To_Logical(pt.y),
+			                To_Logical(Dpi_Of(hwnd), pt.x), To_Logical(Dpi_Of(hwnd), pt.y),
 			                delta * (REBINT)lines);
 		return 0; }
+
+	case WM_DPICHANGED:
+		Rescale_Window(win, hwnd, Remembered_Dpi(hwnd), (int)HIWORD(wp), (const RECT*)lp);
+		return 0;
 
 	case WM_SIZE:
 		if (wp != SIZE_MINIMIZED && win->hob)
 			Gui_Queue_Event(win->hob, EVT_RESIZE,
-			                To_Logical((REBINT)LOWORD(lp)),
-			                To_Logical((REBINT)HIWORD(lp)), 0);
+			                To_Logical(Dpi_Of(hwnd), (REBINT)LOWORD(lp)),
+			                To_Logical(Dpi_Of(hwnd), (REBINT)HIWORD(lp)), 0);
 		return 0;
 
 	case WM_KEYDOWN:
@@ -772,7 +951,8 @@ static LRESULT CALLBACK Gui_Window_Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
 				                            (char*)utf8, (int)sizeof(utf8), NULL, NULL);
 				if (bytes > 0) Gui_Drop_Append(data, utf8, (REBCNT)bytes);
 			}
-			Gui_Queue_Drop(target, data, To_Logical(pt.x), To_Logical(pt.y));
+			Gui_Queue_Drop(target, data, To_Logical(Dpi_Of(hwnd), pt.x),
+			                             To_Logical(Dpi_Of(hwnd), pt.y));
 		}
 
 		DragFinish(hdrop);
@@ -1047,7 +1227,7 @@ static LRESULT CALLBACK Gui_Image_Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp
 // How far in from the left edge a framed panel's caption starts. The same
 // number is used on macOS, so the two look alike even though each measures
 // the text with its own font.
-#define PANEL_CAPTION_X To_Device(9)
+#define PANEL_CAPTION_X(dpi) To_Device((dpi), 9)
 
 /***********************************************************************
 **  Everything a panel draws, into a DC the caller owns.
@@ -1103,7 +1283,7 @@ static void Paint_Panel(HWND hwnd, HDC dc)
 	// `panel/font-size` and the rest work through the generic
 	// accessors, with no special case above this file.
 	font = (HFONT)SendMessageW(hwnd, WM_GETFONT, 0, 0);
-	if (!font) font = Get_Default_Font();
+	if (!font) font = Default_Font_At(Dpi_Of(hwnd));
 	if (font) old_font = (HFONT)SelectObject(dc, font);
 
 	if (caption_len > 0) {
@@ -1135,9 +1315,9 @@ static void Paint_Panel(HWND hwnd, HDC dc)
 		// span the caption occupies. The panel owns that colour - it
 		// filled the whole client area with it above - so this is exact
 		// rather than a guess at what shows through.
-		gap.left   = PANEL_CAPTION_X - To_Device(2);
+		gap.left   = PANEL_CAPTION_X(Dpi_Of(hwnd)) - To_Device(Dpi_Of(hwnd), 2);
 		gap.top    = rect.top;
-		gap.right  = gap.left + text_size.cx + To_Device(4);
+		gap.right  = gap.left + text_size.cx + To_Device(Dpi_Of(hwnd), 4);
 		gap.bottom = rect.top + text_size.cy;
 		if (gap.right > rect.right) gap.right = rect.right;
 		// A transparent panel has no colour to paint the line out with,
@@ -1152,7 +1332,7 @@ static void Paint_Panel(HWND hwnd, HDC dc)
 			      GUI_COLOR_G(wid->color),
 			      GUI_COLOR_B(wid->color))
 			: GetSysColor(COLOR_WINDOWTEXT));
-		TextOutW(dc, PANEL_CAPTION_X, rect.top, caption, caption_len);
+		TextOutW(dc, PANEL_CAPTION_X(Dpi_Of(hwnd)), rect.top, caption, caption_len);
 		FREE_MEM(caption);
 	}
 
@@ -1299,6 +1479,16 @@ static REBOOL Register_Class(void)
 typedef HRESULT (WINAPI *SETPROCESSDPIAWARENESS_T)(int);
 typedef BOOL    (WINAPI *SETPROCESSDPIAWARE_T)(void);
 
+// DPI_AWARENESS_CONTEXT is a HANDLE; declared here by value so that this
+// builds with SDK headers which predate it.
+typedef HANDLE  GUI_DPI_CONTEXT;
+#define GUI_DPI_CONTEXT_PER_MONITOR    ((GUI_DPI_CONTEXT)-3)
+#define GUI_DPI_CONTEXT_PER_MONITOR_V2 ((GUI_DPI_CONTEXT)-4)
+typedef BOOL            (WINAPI *SETPROCESSDPIAWARENESSCONTEXT_T)(GUI_DPI_CONTEXT);
+typedef GUI_DPI_CONTEXT (WINAPI *SETTHREADDPIAWARENESSCONTEXT_T)(GUI_DPI_CONTEXT);
+typedef GUI_DPI_CONTEXT (WINAPI *GETTHREADDPIAWARENESSCONTEXT_T)(void);
+typedef int             (WINAPI *GETAWARENESSFROMDPIAWARENESSCONTEXT_T)(GUI_DPI_CONTEXT);
+
 /***********************************************************************
 **  One-time process setup.
 **
@@ -1355,25 +1545,72 @@ void Gui_Init_Platform(void)
 		}
 	}
 
+	/*******************************************************************
+	**  DPI awareness: per monitor where Windows can, system otherwise.
+	**
+	**  PER_MONITOR_AWARE_V2 (Windows 10 1703+) is what makes each window
+	**  keep the DPI of its own monitor, and it also scales the title bar
+	**  and the themed parts of the common controls for us. Everything
+	**  else - positions, sizes, fonts - this file scales itself, which
+	**  is why nothing counts as per-monitor unless GetDpiForWindow() is
+	**  there to ask.
+	**
+	**  The THREAD context is set as well as the process one. A host whose
+	**  manifest already declared an awareness makes the process call fail
+	**  (it can be set once), but a window takes its awareness from the
+	**  thread that creates it - so this still gets per-monitor windows,
+	**  and coordinates asked for from this thread come back in the same
+	**  physical pixels those windows use.
+	**
+	**  user32 and shcore stay loaded: the late-bound calls below are used
+	**  for the life of the process, and both are loaded anyway.
+	*******************************************************************/
+	user32 = GetModuleHandleW(L"user32.dll");
 	shcore = LoadLibraryW(L"shcore.dll");
-	if (shcore) {
-		SETPROCESSDPIAWARENESS_T fn =
-			(SETPROCESSDPIAWARENESS_T)GetProcAddress(shcore, "SetProcessDpiAwareness");
+	if (user32) {
+		SETPROCESSDPIAWARENESSCONTEXT_T set_process =
+			(SETPROCESSDPIAWARENESSCONTEXT_T)GetProcAddress(user32, "SetProcessDpiAwarenessContext");
+		SETTHREADDPIAWARENESSCONTEXT_T set_thread =
+			(SETTHREADDPIAWARENESSCONTEXT_T)GetProcAddress(user32, "SetThreadDpiAwarenessContext");
+		GETTHREADDPIAWARENESSCONTEXT_T get_thread =
+			(GETTHREADDPIAWARENESSCONTEXT_T)GetProcAddress(user32, "GetThreadDpiAwarenessContext");
+		GETAWARENESSFROMDPIAWARENESSCONTEXT_T awareness_of =
+			(GETAWARENESSFROMDPIAWARENESSCONTEXT_T)GetProcAddress(user32, "GetAwarenessFromDpiAwarenessContext");
+
+		pGetDpiForWindow          = (GETDPIFORWINDOW_T)GetProcAddress(user32, "GetDpiForWindow");
+		pAdjustWindowRectExForDpi = (ADJUSTWINDOWRECTEXFORDPI_T)GetProcAddress(user32, "AdjustWindowRectExForDpi");
+		pGetSystemMetricsForDpi   = (GETSYSTEMMETRICSFORDPI_T)GetProcAddress(user32, "GetSystemMetricsForDpi");
+		if (shcore) pGetDpiForMonitor = (GETDPIFORMONITOR_T)GetProcAddress(shcore, "GetDpiForMonitor");
+
+		if (set_process && set_thread && get_thread && awareness_of
+		    && pGetDpiForWindow && pGetDpiForMonitor) {
+			if (!set_process(GUI_DPI_CONTEXT_PER_MONITOR_V2))
+				set_process(GUI_DPI_CONTEXT_PER_MONITOR);
+			if (!set_thread(GUI_DPI_CONTEXT_PER_MONITOR_V2))
+				set_thread(GUI_DPI_CONTEXT_PER_MONITOR);
+			// 2 is DPI_AWARENESS_PER_MONITOR_AWARE, whichever version.
+			Per_Monitor = (awareness_of(get_thread()) == 2) ? TRUE : FALSE;
+		}
+	}
+
+	if (!Per_Monitor) {
+		// Not available, or refused: system awareness, as before. The
+		// ForDpi calls are still used where they exist - at the system
+		// DPI they answer what the plain ones do.
+		SETPROCESSDPIAWARENESS_T fn = shcore
+			? (SETPROCESSDPIAWARENESS_T)GetProcAddress(shcore, "SetProcessDpiAwareness")
+			: NULL;
 		if (fn) {
 			fn(1); // PROCESS_SYSTEM_DPI_AWARE
-			FreeLibrary(shcore);
-			Read_Screen_DPI(); // AFTER declaring awareness - before it, the
-			return;            // system reports a polite 96 whatever it is
+		} else if (user32) {
+			SETPROCESSDPIAWARE_T old =
+				(SETPROCESSDPIAWARE_T)GetProcAddress(user32, "SetProcessDPIAware");
+			if (old) old();
 		}
-		FreeLibrary(shcore);
 	}
-	user32 = LoadLibraryW(L"user32.dll");
-	if (user32) {
-		SETPROCESSDPIAWARE_T fn =
-			(SETPROCESSDPIAWARE_T)GetProcAddress(user32, "SetProcessDPIAware");
-		if (fn) fn();
-		FreeLibrary(user32);
-	}
+
+	// AFTER declaring awareness - before it, the system reports a polite
+	// 96 whatever it really is.
 	Read_Screen_DPI();
 }
 
@@ -1418,6 +1655,8 @@ REBOOL Gui_Open_Window(GUIWIN *win, REBINT x, REBINT y, REBINT w, REBINT h,
 	WCHAR *wide;
 	DWORD style   = WINDOW_STYLE;
 	DWORD exstyle = WINDOW_EXSTYLE;
+	int   dpi;
+	REBINT want_w, want_h;
 
 	if (!Register_Class()) return FALSE;
 
@@ -1433,16 +1672,33 @@ REBOOL Gui_Open_Window(GUIWIN *win, REBINT x, REBINT y, REBINT w, REBINT h,
 		style &= ~WINDOW_RESIZE_BITS;
 	}
 
-	// Logical in, device out - see the note on Gui_DPI. The sentinel is
-	// not a coordinate and must not be scaled.
-	if (x != GUI_DEFAULT_POS) x = To_Device(x);
-	if (y != GUI_DEFAULT_POS) y = To_Device(y);
-	w = To_Device(w);
-	h = To_Device(h);
+	// Logical in, device out - see the note on logical units. The sentinel
+	// is not a coordinate and must not be scaled.
+	//
+	// The size is converted at the DPI of the monitor the window will open
+	// on, which is the one the position falls on - or the primary one, where
+	// CW_USEDEFAULT puts a new window.
+	if (x != GUI_DEFAULT_POS && y != GUI_DEFAULT_POS) {
+		LONG     px, py;
+		HMONITOR mon = NULL;
+		Logical_To_Screen(x, y, &px, &py, &mon);
+		x = (REBINT)px;
+		y = (REBINT)py;
+		dpi = Dpi_Of_Monitor(mon);
+	} else {
+		POINT origin = {0, 0};
+		if (x != GUI_DEFAULT_POS) x = To_Device(Gui_DPI, x);
+		if (y != GUI_DEFAULT_POS) y = To_Device(Gui_DPI, y);
+		dpi = Dpi_Of_Monitor(MonitorFromPoint(origin, MONITOR_DEFAULTTOPRIMARY));
+	}
+	want_w = w;
+	want_h = h;
+	w = To_Device(dpi, w);
+	h = To_Device(dpi, h);
 
 	// The requested size is the CLIENT size - grow it by the frame.
 	rect.left = 0; rect.top = 0; rect.right = w; rect.bottom = h;
-	AdjustWindowRectEx(&rect, style, FALSE, exstyle);
+	Adjust_Rect(&rect, style, FALSE, exstyle, dpi);
 
 	// A missing - or empty - title gets a neutral default rather than an
 	// empty title bar.
@@ -1466,6 +1722,19 @@ REBOOL Gui_Open_Window(GUIWIN *win, REBINT x, REBINT y, REBINT w, REBINT h,
 
 	win->handle = (void*)hwnd;
 	win->flags  = 0;
+
+	// Windows may have put it somewhere else than asked - CW_USEDEFAULT, a
+	// position off every monitor - and so at another DPI. The client size
+	// is what was promised, so it is made right at the DPI it really has.
+	if (Dpi_Of(hwnd) != dpi) {
+		dpi = Dpi_Of(hwnd);
+		rect.left = 0; rect.top = 0;
+		rect.right = To_Device(dpi, want_w); rect.bottom = To_Device(dpi, want_h);
+		Adjust_Rect(&rect, style, FALSE, exstyle, dpi);
+		SetWindowPos(hwnd, NULL, 0, 0, rect.right - rect.left, rect.bottom - rect.top,
+		             SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+	}
+	Remember_Dpi(hwnd, dpi);
 
 	// The three states live in one field, so /transparent is recorded as
 	// the same value `win/transparent?: true` would write - and applying
@@ -1703,7 +1972,10 @@ static HRESULT STDMETHODCALLTYPE Drop_Drop(IDropTarget *self, IDataObject *obj,
 	if (!(data = Drop_Payload_Of(obj, kind))) return S_OK;
 
 	target = Drop_Target_At(t->win, pt, &client);
-	Gui_Queue_Drop(target, data, To_Logical(client.x), To_Logical(client.y));
+	{
+		int dpi = Dpi_Of(HWND_OF(t->win));
+		Gui_Queue_Drop(target, data, To_Logical(dpi, client.x), To_Logical(dpi, client.y));
+	}
 
 	if (effect) *effect = DROPEFFECT_COPY;
 	return S_OK;
@@ -1970,9 +2242,11 @@ REBCNT Gui_Pump(void)
 REBOOL Gui_Get_Size(GUIWIN *win, REBINT *w, REBINT *h)
 {
 	RECT r;
+	int  dpi;
 	if (!win || !win->handle || !GetClientRect(HWND_OF(win), &r)) return FALSE;
-	*w = To_Logical(r.right - r.left);
-	*h = To_Logical(r.bottom - r.top);
+	dpi = Dpi_Of(HWND_OF(win));
+	*w = To_Logical(dpi, r.right - r.left);
+	*h = To_Logical(dpi, r.bottom - r.top);
 	return TRUE;
 }
 
@@ -1981,8 +2255,9 @@ REBOOL Gui_Get_Offset(GUIWIN *win, REBINT *x, REBINT *y)
 {
 	RECT r;
 	if (!win || !win->handle || !GetWindowRect(HWND_OF(win), &r)) return FALSE;
-	*x = To_Logical(r.left);
-	*y = To_Logical(r.top);
+	// A position on the desktop, which spans monitors - see the note on
+	// Screen_To_Logical() for how that is made logical.
+	Screen_To_Logical(r.left, r.top, x, y);
 	return TRUE;
 }
 
@@ -1990,11 +2265,13 @@ REBOOL Gui_Get_Offset(GUIWIN *win, REBINT *x, REBINT *y)
 REBOOL Gui_Set_Size(GUIWIN *win, REBINT w, REBINT h)
 {
 	RECT r;
+	int  dpi;
 	if (!win || !win->handle) return FALSE;
 
-	r.left = 0; r.top = 0; r.right = To_Device(w); r.bottom = To_Device(h);
-	AdjustWindowRectEx(&r, (DWORD)GetWindowLongPtrW(HWND_OF(win), GWL_STYLE),
-	                   FALSE, (DWORD)GetWindowLongPtrW(HWND_OF(win), GWL_EXSTYLE));
+	dpi = Dpi_Of(HWND_OF(win));
+	r.left = 0; r.top = 0; r.right = To_Device(dpi, w); r.bottom = To_Device(dpi, h);
+	Adjust_Rect(&r, (DWORD)GetWindowLongPtrW(HWND_OF(win), GWL_STYLE),
+	            FALSE, (DWORD)GetWindowLongPtrW(HWND_OF(win), GWL_EXSTYLE), dpi);
 
 	return SetWindowPos(HWND_OF(win), NULL, 0, 0,
 	                    r.right - r.left, r.bottom - r.top,
@@ -2004,8 +2281,12 @@ REBOOL Gui_Set_Size(GUIWIN *win, REBINT w, REBINT h)
 
 REBOOL Gui_Set_Offset(GUIWIN *win, REBINT x, REBINT y)
 {
+	LONG px, py;
 	if (!win || !win->handle) return FALSE;
-	return SetWindowPos(HWND_OF(win), NULL, To_Device(x), To_Device(y), 0, 0,
+	// Moving onto a monitor with another scale raises WM_DPICHANGED, which
+	// rescales the window there - its logical size is kept.
+	Logical_To_Screen(x, y, &px, &py, NULL);
+	return SetWindowPos(HWND_OF(win), NULL, (int)px, (int)py, 0, 0,
 	                    SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE) ? TRUE : FALSE;
 }
 
@@ -2503,7 +2784,8 @@ static void Release_Press(HWND hwnd, GUIWIDGET *wid)
 	GetCursorPos(&p);
 	// Window client coordinates, like every other mouse event.
 	ScreenToClient((wid->owner && wid->owner->handle) ? HWND_OF(wid->owner) : hwnd, &p);
-	Gui_Queue_Event(wid->hob, EVT_UP, To_Logical(p.x), To_Logical(p.y), Modifiers());
+	Gui_Queue_Event(wid->hob, EVT_UP, To_Logical(Dpi_Of(hwnd), p.x),
+	                To_Logical(Dpi_Of(hwnd), p.y), Modifiers());
 }
 
 static LRESULT CALLBACK Nav_Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
@@ -2773,8 +3055,9 @@ REBOOL Gui_Create_Panel(GUIWIDGET *wid, GUIWIN *owner,
 	HWND hwnd;
 
 	if (!wid || !owner || !owner->handle) return FALSE;
-	// The caller's coordinates are logical units - see the note on Gui_DPI.
-	Box_To_Device(&x, &y, &w, &h);
+	// The caller's coordinates are logical units, converted at the DPI of
+	// the window the control goes into - which it will share.
+	Box_To_Device(Dpi_Of(HWND_OF(owner)), &x, &y, &w, &h);
 	if (!Register_Panel_Class()) return FALSE;
 
 	// WS_CLIPCHILDREN keeps the panel from painting over what it holds.
@@ -2832,8 +3115,9 @@ REBOOL Gui_Create_Button_Control(GUIWIDGET *wid, GUIWIN *owner,
 
 	if (!wid || !owner || !owner->handle) return FALSE;
 	if (Starts_New_Group(wid, owner)) style |= WS_GROUP;
-	// The caller's coordinates are logical units - see the note on Gui_DPI.
-	Box_To_Device(&x, &y, &w, &h);
+	// The caller's coordinates are logical units, converted at the DPI of
+	// the window the control goes into - which it will share.
+	Box_To_Device(Dpi_Of(HWND_OF(owner)), &x, &y, &w, &h);
 
 	switch (wid->kind) {
 	case W_GUI_WIDGET_CHECK:
@@ -2867,7 +3151,7 @@ REBOOL Gui_Create_Button_Control(GUIWIDGET *wid, GUIWIN *owner,
 
 	// How the parent's WM_COMMAND finds its way back to the Rebol handle.
 	SetWindowLongPtrW(hwnd, GWLP_USERDATA, (LONG_PTR)wid);
-	SendMessageW(hwnd, WM_SETFONT, (WPARAM)Get_Default_Font(), TRUE);
+	SendMessageW(hwnd, WM_SETFONT, (WPARAM)Default_Font_At(Dpi_Of(hwnd)), TRUE);
 
 	wid->handle = (void*)hwnd;
 	Subclass_For_Nav(wid);
@@ -2893,8 +3177,9 @@ REBOOL Gui_Create_Text_Control(GUIWIDGET *wid, GUIWIN *owner,
 	DWORD  exstyle = 0;
 
 	if (!wid || !owner || !owner->handle) return FALSE;
-	// The caller's coordinates are logical units - see the note on Gui_DPI.
-	Box_To_Device(&x, &y, &w, &h);
+	// The caller's coordinates are logical units, converted at the DPI of
+	// the window the control goes into - which it will share.
+	Box_To_Device(Dpi_Of(HWND_OF(owner)), &x, &y, &w, &h);
 
 	switch (wid->kind) {
 	case W_GUI_WIDGET_TEXT:
@@ -2934,7 +3219,7 @@ REBOOL Gui_Create_Text_Control(GUIWIDGET *wid, GUIWIN *owner,
 	if (!hwnd) return FALSE;
 
 	SetWindowLongPtrW(hwnd, GWLP_USERDATA, (LONG_PTR)wid);
-	SendMessageW(hwnd, WM_SETFONT, (WPARAM)Get_Default_Font(), TRUE);
+	SendMessageW(hwnd, WM_SETFONT, (WPARAM)Default_Font_At(Dpi_Of(hwnd)), TRUE);
 
 	wid->handle = (void*)hwnd;
 	Subclass_For_Nav(wid);
@@ -2949,8 +3234,9 @@ REBOOL Gui_Create_Image(GUIWIDGET *wid, GUIWIN *owner,
 	HWND hwnd;
 
 	if (!wid || !owner || !owner->handle) return FALSE;
-	// The caller's coordinates are logical units - see the note on Gui_DPI.
-	Box_To_Device(&x, &y, &w, &h);
+	// The caller's coordinates are logical units, converted at the DPI of
+	// the window the control goes into - which it will share.
+	Box_To_Device(Dpi_Of(HWND_OF(owner)), &x, &y, &w, &h);
 	if (!Register_Image_Class()) return FALSE;
 
 	hwnd = CreateWindowExW(
@@ -3072,7 +3358,7 @@ REBOOL Gui_Widget_Get_Font(GUIWIDGET *wid, REBSER **name, REBINT *size,
 	// which is not this extension's default - so the default is what an
 	// unanswered question means here.
 	font = (HFONT)SendMessageW(hwnd, WM_GETFONT, 0, 0);
-	if (!font) font = Get_Default_Font();
+	if (!font) font = Default_Font_At(Dpi_Of(hwnd));
 	if (!font || !GetObjectW(font, sizeof(lf), &lf)) return FALSE;
 
 	if (name && lf.lfFaceName[0]) {
@@ -3083,7 +3369,7 @@ REBOOL Gui_Widget_Get_Font(GUIWIDGET *wid, REBSER **name, REBINT *size,
 		// lfHeight is negative for a character height, positive for a cell
 		// height; both are pixels, and points is what Rebol asked about.
 		int pixels = lf.lfHeight < 0 ? -lf.lfHeight : lf.lfHeight;
-		*size = (REBINT)MulDiv(pixels, 72, Screen_DPI());
+		*size = (REBINT)MulDiv(pixels, 72, Dpi_Of(hwnd));
 	}
 	if (style) {
 		if (lf.lfWeight >= FW_SEMIBOLD) *style |= GUI_FONT_BOLD;
@@ -3104,7 +3390,7 @@ REBOOL Gui_Widget_Set_Font(GUIWIDGET *wid, const REBYTE *utf8, REBCNT len,
 	hwnd = HWND_OF_WID(wid);
 
 	if (utf8 && len > 0) wide = To_Wide(utf8, len);
-	font = Font_For(wide, (int)size, style);
+	font = Font_For(wide, (int)size, style, Dpi_Of(hwnd));
 	if (wide) FREE_MEM(wide);
 	if (!font) return FALSE;
 
@@ -3135,9 +3421,9 @@ REBOOL Gui_Widget_Set_Color(GUIWIDGET *wid)
 
 REBDEC Gui_Get_Scale(GUIWIN *win)
 {
-	// One scale for the process - the window is not consulted, but it is in
-	// the signature because macOS answers per screen.
-	return (REBDEC)Gui_DPI / 96.0;
+	// The window's own: the DPI of the monitor it is on, when the process
+	// is per-monitor aware, and the system's otherwise.
+	return (REBDEC)Dpi_Of((win && win->handle) ? HWND_OF(win) : NULL) / 96.0;
 }
 
 
@@ -3148,20 +3434,31 @@ REBDEC Gui_Get_Scale(GUIWIN *win)
 // replaced whenever the display configuration changes, so it is never kept
 // - every question enumerates the monitors again and matches by name.
 //
-// Coordinates go through To_Logical() like everything else, so a screen's
-// offset is in the same space as a window's.
+// DESKTOP COORDINATES. A per-monitor aware process sees the desktop in
+// physical pixels, and two monitors at different scales have no common
+// logical unit - there is no single factor that turns the whole desktop
+// into points. So each monitor is made logical ON ITS OWN, and they are
+// pinned together at their top-left corners:
 //
-// THE SCALE IS THE SYSTEM'S. This process is PROCESS_SYSTEM_DPI_AWARE, so
-// Windows reports one DPI for all of it and bitmap-stretches a window shown
-// on a monitor set to anything else. Every screen therefore answers the
-// same scale until the extension becomes per-monitor aware - and so do the
-// positions, which are consistent with each other but in the system DPI's
-// units, not each monitor's own.
+//   - a monitor's OFFSET is its physical top-left corner, unscaled;
+//   - its SIZE, and any point on it measured from that corner, are
+//     divided by its own scale.
+//
+// A point then belongs to exactly one monitor in both directions: a
+// logical rectangle is never bigger than the physical one it came from,
+// so two monitors can leave a gap between them but can never overlap.
+// Within one monitor - which is where a window is placed, centred or
+// kept - everything is in the same logical units as the window's own
+// size. This is the rule Qt uses for the same reason.
+//
+// Under system awareness (the fallback) the whole desktop is scaled by
+// the one system DPI instead, which IS a single consistent space.
 
 #define MAX_MONITORS 16
 
 typedef struct {
 	MONITORINFOEXW info[MAX_MONITORS];
+	HMONITOR       mon[MAX_MONITORS];
 	int            count;
 } MONITOR_LIST;
 
@@ -3173,7 +3470,10 @@ static BOOL CALLBACK Collect_Monitor(HMONITOR mon, HDC dc, LPRECT rect, LPARAM l
 	if (list->count >= MAX_MONITORS) return FALSE;
 	ZeroMemory(&list->info[list->count], sizeof(MONITORINFOEXW));
 	list->info[list->count].cbSize = sizeof(MONITORINFOEXW);
-	if (GetMonitorInfoW(mon, (MONITORINFO*)&list->info[list->count])) list->count++;
+	if (GetMonitorInfoW(mon, (MONITORINFO*)&list->info[list->count])) {
+		list->mon[list->count] = mon;
+		list->count++;
+	}
 	return TRUE;
 }
 
@@ -3185,7 +3485,7 @@ static void Monitor_Key(const MONITORINFOEXW *mi, REBYTE *key)
 	key[GUI_SCREEN_KEY - 1] = 0;
 }
 
-static REBOOL Find_Monitor(const REBYTE *key, MONITORINFOEXW *out)
+static REBOOL Find_Monitor(const REBYTE *key, MONITORINFOEXW *out, HMONITOR *mon)
 {
 	MONITOR_LIST list;
 	REBYTE       k[GUI_SCREEN_KEY];
@@ -3197,10 +3497,88 @@ static REBOOL Find_Monitor(const REBYTE *key, MONITORINFOEXW *out)
 		Monitor_Key(&list.info[n], k);
 		if (strcmp((const char*)k, (const char*)key) == 0) {
 			*out = list.info[n];
+			if (mon) *mon = list.mon[n];
 			return TRUE;
 		}
 	}
 	return FALSE;
+}
+
+// One desktop coordinate, physical to logical, on a monitor whose physical
+// top-left corner is `origin` - see the note at the top of this section.
+static REBINT Desk_To_Logical(LONG v, LONG origin, int dpi)
+{
+	if (!Per_Monitor) return To_Logical(Gui_DPI, (REBINT)v);
+	return (REBINT)origin + To_Logical(dpi, (REBINT)(v - origin));
+}
+
+static LONG Desk_To_Device(REBINT v, LONG origin, int dpi)
+{
+	if (!Per_Monitor) return (LONG)To_Device(Gui_DPI, v);
+	return origin + (LONG)To_Device(dpi, v - (REBINT)origin);
+}
+
+static void Screen_To_Logical(LONG px, LONG py, REBINT *x, REBINT *y)
+{
+	POINT       pt;
+	HMONITOR    mon;
+	MONITORINFO mi;
+	int         dpi;
+
+	pt.x = px; pt.y = py;
+	mon = MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
+	ZeroMemory(&mi, sizeof(mi));
+	mi.cbSize = sizeof(mi);
+	if (!mon || !GetMonitorInfoW(mon, &mi)) {
+		*x = To_Logical(Gui_DPI, (REBINT)px);
+		*y = To_Logical(Gui_DPI, (REBINT)py);
+		return;
+	}
+	dpi = Dpi_Of_Monitor(mon);
+	*x = Desk_To_Logical(px, mi.rcMonitor.left, dpi);
+	*y = Desk_To_Logical(py, mi.rcMonitor.top,  dpi);
+}
+
+// The other way needs the monitor the LOGICAL point is on, which is not a
+// question Windows can answer - so each monitor's logical rectangle is
+// worked out and the point looked for in them. A point on none (in a gap,
+// or off every edge) goes to the nearest.
+static void Logical_To_Screen(REBINT x, REBINT y, LONG *px, LONG *py, HMONITOR *out)
+{
+	MONITOR_LIST list;
+	int          n, best = -1;
+	double       best_d = 0;
+
+	list.count = 0;
+	EnumDisplayMonitors(NULL, NULL, Collect_Monitor, (LPARAM)&list);
+
+	for (n = 0; n < list.count; n++) {
+		RECT  *r   = &list.info[n].rcMonitor;
+		int    dpi = Dpi_Of_Monitor(list.mon[n]);
+		REBINT lx  = Desk_To_Logical(r->left,  r->left, dpi);
+		REBINT ly  = Desk_To_Logical(r->top,   r->top,  dpi);
+		REBINT lr  = Desk_To_Logical(r->right, r->left, dpi);
+		REBINT lb  = Desk_To_Logical(r->bottom, r->top, dpi);
+		double dx  = (x < lx) ? lx - x : (x >= lr ? x - lr + 1 : 0);
+		double dy  = (y < ly) ? ly - y : (y >= lb ? y - lb + 1 : 0);
+		double d   = dx * dx + dy * dy;
+		if (best < 0 || d < best_d) { best = n; best_d = d; }
+		if (d == 0) break;
+	}
+
+	if (best < 0) {
+		*px = (LONG)To_Device(Gui_DPI, x);
+		*py = (LONG)To_Device(Gui_DPI, y);
+		if (out) *out = NULL;
+		return;
+	}
+	{
+		RECT *r   = &list.info[best].rcMonitor;
+		int   dpi = Dpi_Of_Monitor(list.mon[best]);
+		*px = Desk_To_Device(x, r->left, dpi);
+		*py = Desk_To_Device(y, r->top,  dpi);
+		if (out) *out = list.mon[best];
+	}
 }
 
 REBCNT Gui_Screen_Keys(REBYTE (*keys)[GUI_SCREEN_KEY], REBCNT max)
@@ -3227,18 +3605,24 @@ REBCNT Gui_Screen_Keys(REBYTE (*keys)[GUI_SCREEN_KEY], REBCNT max)
 REBOOL Gui_Screen_Info(const REBYTE *key, GUISCREENINFO *info)
 {
 	MONITORINFOEXW mi;
+	HMONITOR       mon = NULL;
+	RECT          *m, *k;
+	int            dpi;
 
-	if (!key || !info || !Find_Monitor(key, &mi)) return FALSE;
+	if (!key || !info || !Find_Monitor(key, &mi, &mon)) return FALSE;
 
-	info->x  = To_Logical(mi.rcMonitor.left);
-	info->y  = To_Logical(mi.rcMonitor.top);
-	info->w  = To_Logical(mi.rcMonitor.right - mi.rcMonitor.left);
-	info->h  = To_Logical(mi.rcMonitor.bottom - mi.rcMonitor.top);
-	info->wx = To_Logical(mi.rcWork.left);
-	info->wy = To_Logical(mi.rcWork.top);
-	info->ww = To_Logical(mi.rcWork.right - mi.rcWork.left);
-	info->wh = To_Logical(mi.rcWork.bottom - mi.rcWork.top);
-	info->scale   = (REBDEC)Gui_DPI / 96.0;   // see the note above
+	dpi = Dpi_Of_Monitor(mon);
+	m = &mi.rcMonitor;
+	k = &mi.rcWork;
+	info->x  = Desk_To_Logical(m->left, m->left, dpi);
+	info->y  = Desk_To_Logical(m->top,  m->top,  dpi);
+	info->w  = Desk_To_Logical(m->right,  m->left, dpi) - info->x;
+	info->h  = Desk_To_Logical(m->bottom, m->top,  dpi) - info->y;
+	info->wx = Desk_To_Logical(k->left, m->left, dpi);
+	info->wy = Desk_To_Logical(k->top,  m->top,  dpi);
+	info->ww = Desk_To_Logical(k->right,  m->left, dpi) - info->wx;
+	info->wh = Desk_To_Logical(k->bottom, m->top,  dpi) - info->wy;
+	info->scale   = (REBDEC)dpi / 96.0;
 	info->primary = (mi.dwFlags & MONITORINFOF_PRIMARY) ? TRUE : FALSE;
 	return TRUE;
 }
@@ -3253,7 +3637,7 @@ REBSER* Gui_Screen_Name(const REBYTE *key)
 	DISPLAY_DEVICEW dd;
 	const WCHAR    *name;
 
-	if (!key || !Find_Monitor(key, &mi)) return NULL;
+	if (!key || !Find_Monitor(key, &mi, NULL)) return NULL;
 
 	ZeroMemory(&dd, sizeof(dd));
 	dd.cb = sizeof(dd);
@@ -3304,6 +3688,7 @@ REBOOL Gui_Widget_Natural_Size(GUIWIDGET *wid, REBINT *w, REBINT *h)
 	WCHAR  *caption = NULL;
 	REBINT  pad_x = 0, pad_y = 0;
 	REBINT  lines = 1;
+	int     dpi;
 
 	if (!wid || !wid->handle) return FALSE;
 	hwnd = HWND_OF_WID(wid);
@@ -3312,7 +3697,7 @@ REBOOL Gui_Widget_Natural_Size(GUIWIDGET *wid, REBINT *w, REBINT *h)
 	if (!dc) return FALSE;
 
 	font = (HFONT)SendMessageW(hwnd, WM_GETFONT, 0, 0);
-	if (!font) font = Get_Default_Font();
+	if (!font) font = Default_Font_At(Dpi_Of(hwnd));
 	if (font) old = (HFONT)SelectObject(dc, font);
 
 	GetTextMetricsW(dc, &tm);
@@ -3330,18 +3715,19 @@ REBOOL Gui_Widget_Natural_Size(GUIWIDGET *wid, REBINT *w, REBINT *h)
 	if (old) SelectObject(dc, old);
 	ReleaseDC(hwnd, dc);
 
+	dpi = Dpi_Of(hwnd);
 	switch (wid->kind) {
 	case W_GUI_WIDGET_BUTTON:
-		pad_x = To_Device(24); pad_y = To_Device(12);
+		pad_x = To_Device(dpi, 24); pad_y = To_Device(dpi, 12);
 		break;
 	case W_GUI_WIDGET_CHECK:
 	case W_GUI_WIDGET_RADIO:
 		// The box or the dot, and the gap after it.
-		pad_x = GetSystemMetrics(SM_CXMENUCHECK) + To_Device(8);
-		pad_y = To_Device(6);
+		pad_x = Metric(dpi, SM_CXMENUCHECK) + To_Device(dpi, 8);
+		pad_y = To_Device(dpi, 6);
 		break;
 	case W_GUI_WIDGET_TEXT:
-		pad_y = To_Device(4);
+		pad_y = To_Device(dpi, 4);
 		break;
 	case W_GUI_WIDGET_AREA:
 		// One line is not a useful multi-line box; four is the smallest
@@ -3351,8 +3737,8 @@ REBOOL Gui_Widget_Natural_Size(GUIWIDGET *wid, REBINT *w, REBINT *h)
 	case W_GUI_WIDGET_FIELD:
 	case W_GUI_WIDGET_DROP_DOWN:
 		// The sunken border, plus the padding the control keeps inside it.
-		pad_x = 2 * GetSystemMetrics(SM_CXEDGE) + To_Device(8);
-		pad_y = 2 * GetSystemMetrics(SM_CYEDGE) + To_Device(8);
+		pad_x = 2 * Metric(dpi, SM_CXEDGE) + To_Device(dpi, 8);
+		pad_y = 2 * Metric(dpi, SM_CYEDGE) + To_Device(dpi, 8);
 		// An entry's width should not be the width of whatever happens to
 		// be in it - an empty one would come out a few pixels wide. About
 		// twenty characters is what a dialog uses when it has no better
@@ -3363,7 +3749,7 @@ REBOOL Gui_Widget_Natural_Size(GUIWIDGET *wid, REBINT *w, REBINT *h)
 		return FALSE; // no text, so no natural size to give
 	}
 
-	if (w) *w = To_Logical((REBINT)text.cx + pad_x);
+	if (w) *w = To_Logical(dpi, (REBINT)text.cx + pad_x);
 
 	// tmHeight is ascent plus descent and NOTHING else: tmExternalLeading,
 	// the gap the font asks for between its lines, is not in it. A line box
@@ -3371,7 +3757,7 @@ REBOOL Gui_Widget_Natural_Size(GUIWIDGET *wid, REBINT *w, REBINT *h)
 	// for a single line it is a pixel or two of slack in the only direction
 	// that matters, since a static draws from the top and anything short
 	// clips the descenders.
-	if (h) *h = To_Logical((REBINT)(tm.tmHeight + tm.tmExternalLeading) * lines
+	if (h) *h = To_Logical(dpi, (REBINT)(tm.tmHeight + tm.tmExternalLeading) * lines
 	                       + pad_y);
 	return TRUE;
 }
@@ -3399,8 +3785,8 @@ REBOOL Gui_Widget_Get_Box(GUIWIDGET *wid, REBINT *x, REBINT *y, REBINT *w, REBIN
 		*y = pt.y;
 		*w = r.right - r.left;
 		*h = (REBINT)SendMessageW(hwnd, CB_GETITEMHEIGHT, (WPARAM)-1, 0)
-		   + 2 * GetSystemMetrics(SM_CYEDGE);
-		Box_To_Logical(x, y, w, h);
+		   + 2 * Metric(Dpi_Of(hwnd), SM_CYEDGE);
+		Box_To_Logical(Dpi_Of(hwnd), x, y, w, h);
 		return TRUE;
 	}
 
@@ -3417,7 +3803,7 @@ REBOOL Gui_Widget_Get_Box(GUIWIDGET *wid, REBINT *x, REBINT *y, REBINT *w, REBIN
 	*y = pt.y;
 	*w = r.right - r.left;
 	*h = r.bottom - r.top;
-	Box_To_Logical(x, y, w, h);
+	Box_To_Logical(Dpi_Of(hwnd), x, y, w, h);
 	return TRUE;
 }
 
@@ -3430,7 +3816,7 @@ REBOOL Gui_Widget_Set_Box(GUIWIDGET *wid, REBINT x, REBINT y, REBINT w, REBINT h
 	if (!wid || !wid->handle) return FALSE;
 	hwnd = HWND_OF_WID(wid);
 
-	Box_To_Device(&x, &y, &w, &h);
+	Box_To_Device(Dpi_Of(hwnd), &x, &y, &w, &h);
 	// ... and the same room has to be added back when it is moved. It is a
 	// device-pixel constant, so it is added AFTER the conversion.
 	if (wid->kind == W_GUI_WIDGET_DROP_DOWN) h += DROP_LIST_ROOM;
@@ -3482,8 +3868,9 @@ REBOOL Gui_Create_Range_Control(GUIWIDGET *wid, GUIWIN *owner,
 	DWORD style = WS_CHILD | WS_VISIBLE | WS_GROUP;
 
 	if (!wid || !owner || !owner->handle) return FALSE;
-	// The caller's coordinates are logical units - see the note on Gui_DPI.
-	Box_To_Device(&x, &y, &w, &h);
+	// The caller's coordinates are logical units, converted at the DPI of
+	// the window the control goes into - which it will share.
+	Box_To_Device(Dpi_Of(HWND_OF(owner)), &x, &y, &w, &h);
 
 	if (wid->kind == W_GUI_WIDGET_SLIDER) {
 		class_name = TRACKBAR_CLASSW;
@@ -3601,8 +3988,9 @@ REBOOL Gui_Create_Drop_Down(GUIWIDGET *wid, GUIWIN *owner,
 	HWND hwnd;
 
 	if (!wid || !owner || !owner->handle) return FALSE;
-	// The caller's coordinates are logical units - see the note on Gui_DPI.
-	Box_To_Device(&x, &y, &w, &h);
+	// The caller's coordinates are logical units, converted at the DPI of
+	// the window the control goes into - which it will share.
+	Box_To_Device(Dpi_Of(HWND_OF(owner)), &x, &y, &w, &h);
 
 	hwnd = CreateWindowExW(
 		0, L"COMBOBOX", L"",
@@ -3616,7 +4004,7 @@ REBOOL Gui_Create_Drop_Down(GUIWIDGET *wid, GUIWIN *owner,
 	if (!hwnd) return FALSE;
 
 	SetWindowLongPtrW(hwnd, GWLP_USERDATA, (LONG_PTR)wid);
-	SendMessageW(hwnd, WM_SETFONT, (WPARAM)Get_Default_Font(), TRUE);
+	SendMessageW(hwnd, WM_SETFONT, (WPARAM)Default_Font_At(Dpi_Of(hwnd)), TRUE);
 
 	wid->handle = (void*)hwnd;
 	Subclass_For_Nav(wid);

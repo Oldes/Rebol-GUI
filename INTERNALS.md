@@ -91,11 +91,30 @@ panel or empty image widget once hid every widget created before it.
 
 ## Coordinates and DPI
 
-Windows runs `PROCESS_SYSTEM_DPI_AWARE`. `SPI_GETNONCLIENTMETRICS` returns the
-message font already scaled for the display, so the backend converts between
-logical and device units at its boundary, events included. AppKit works in
-points and converts nothing. Per-monitor awareness would need
-`WM_DPICHANGED`.
+Windows runs `PER_MONITOR_AWARE_V2` where available (Windows 10 1703+), set for
+the process and, in case a host manifest already fixed that, for the thread
+that creates the windows. `Per_Monitor` is only true when the thread really is
+per-monitor aware and `GetDpiForWindow` exists; otherwise the fallback is
+`PROCESS_SYSTEM_DPI_AWARE` and every DPI below is `Gui_DPI`, the system DPI.
+
+- Every conversion takes a DPI: `Dpi_Of(hwnd)` for anything in a window
+  (controls share their window's), `Dpi_Of_Monitor` for the desktop.
+  `Metric()` and `Adjust_Rect()` use the `ForDpi` calls.
+- Fonts are cached per DPI. The shell's message font from
+  `SPI_GETNONCLIENTMETRICS` is scaled for the system DPI, so `Font_For` rescales
+  it; `Default_Font_At(dpi)` replaces the single default font.
+- `WM_DPICHANGED` runs `Rescale_Window`: every widget's box is scaled old->new
+  in its parent, every font remade at the same point size, and the window keeps
+  its logical client size at Windows' suggested position. The old DPI is kept in
+  a window property (`RebolGuiDpi`), because `GetDpiForWindow` already answers
+  the new one when the message arrives.
+- Desktop coordinates (window offsets, screens) have no common logical unit
+  across monitors of different scale. Each monitor keeps its physical top-left
+  corner and is scaled from there (`Desk_To_Logical`); `Logical_To_Screen` finds
+  the monitor whose logical rectangle holds the point. Rectangles can only
+  shrink, so they never overlap. Qt uses the same rule.
+
+AppKit works in points and converts nothing.
 
 Cocoa flips offsets against the menu-bar screen; the content view answers
 `isFlipped`. A slider's own coordinates are not flipped.
@@ -222,10 +241,8 @@ handle is never stale, and reads `none` once its display is gone.
 display always comes back as the same handle and `==` works. The table holds
 no reference: a collected handle's free callback removes itself.
 
-Windows positions go through `To_Logical`, so they share the window-offset
-space, and `scale` is `Gui_DPI / 96` for every screen - correct only while the
-process is system-DPI aware. Making it per monitor needs
-`PER_MONITOR_AWARE_V2` and `WM_DPICHANGED` (step 2). The name comes from
+Windows positions use the per-monitor rule above, so they share the
+window-offset space, and `scale` is the monitor's own DPI. The name comes from
 `EnumDisplayDevices` on the monitor under the output; `QueryDisplayConfig`
 would give the EDID friendly name more reliably.
 

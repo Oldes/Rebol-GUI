@@ -392,7 +392,7 @@ handles: [
 		offset   pair!     none  "Top-left corner, in the same space as a window's offset"
 		work-size   pair!  none  "Size of the part windows should use - without the taskbar, the Dock or the menu bar"
 		work-offset pair!  none  "Top-left corner of that part"
-		scale    decimal!  none  "Device pixels per unit of size; on Windows the system scale, the same for every screen"
+		scale    decimal!  none  "Device pixels per unit of size - what a window on this screen reports as its own scale"
 		primary? logic!    none  "Whether this is the primary screen - the one with the menu bar on macOS"
 	]
 ]

@@ -219,8 +219,8 @@ REBOOL  Gui_Set_Offset(GUIWIN *win, REBINT x, REBINT y);
 **
 **  A backend converts at its own boundary: the Cocoa one has nothing to
 **  do, because AppKit already works in points; the Win32 one multiplies
-**  by the system DPI on the way in and divides on the way out, INCLUDING
-**  the coordinates it puts into events. Nothing above gui.h knows the
+**  by the DPI of the window's monitor on the way in and divides on the
+**  way out, INCLUDING the coordinates it puts into events. Nothing above gui.h knows the
 **  difference.
 **
 **  Pixels appear in exactly one place: an image widget's own pixels,
@@ -238,7 +238,9 @@ REBDEC  Gui_Get_Scale(GUIWIN *win);
 **  interface reads a key; it is only stored and handed back.
 **
 **  Coordinates are logical units in the same space as Gui_Get_Offset(),
-**  so a window's offset and a screen's can be compared directly.
+**  so a window's offset and a screen's can be compared directly. With
+**  screens at different scales that space is pieced together per screen
+**  - see the note on desktop coordinates in gui-win.c.
 **
 **  Gui_Screen_Keys() fills up to `max` keys, PRIMARY FIRST, and returns
 **  how many displays there are. Gui_Screen_Info() answers FALSE once the

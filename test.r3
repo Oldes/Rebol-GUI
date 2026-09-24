@@ -584,8 +584,9 @@ print ["the work area is inside:      " did all [
 	home/work-size/y <= home/size/y
 ]]
 
-;; On macOS a window's scale IS its screen's. On Windows every screen
-;; reports the system scale for now - the process is system-DPI aware.
+;; A window's scale IS its screen's - on Windows too, where the process is
+;; per-monitor DPI aware (Windows 10 1703 and later; older systems report
+;; the system scale for every screen).
 print ["and so is the window's scale: " win/scale = home/scale]
 
 ;; A word this extension does not know still reaches the core's own answer.
@@ -725,6 +726,7 @@ last-move: 0x0
 pressed:   none   ;; the control between its `down` and its `up`
 float-grab: none  ;; where the `floating` button was grabbed
 held:      false  ;; the left button is down in a window
+last-scale: win/scale  ;; the main window's scale, to notice it change
 clicks: 0
 
 ;; ONE argument now: `poll-events` returns a block of event! values, so the
@@ -759,6 +761,21 @@ report: func [event /local type source position kind][
 				note ajoin ["!! move on " kind " not over it: " position
 				            " (it is at " source/at ")"]
 			]
+		]
+	]
+
+	;; WATCH (Windows, two monitors with different scale settings): drag the
+	;; main window from one to the other. It must arrive the same size in
+	;; logical units - the `resize` it reports keeps the numbers - with every
+	;; widget in place and its text at the new monitor's sharpness, and
+	;; `scale` changing to the new monitor's.
+	if all [type = 'resize  source == win] [
+		unless last-scale = win/scale [
+			if last-scale [
+				note ajoin ["scale " last-scale " -> " win/scale " on " win/screen/name
+				            " - client size still " position]
+			]
+			last-scale: win/scale
 		]
 	]
 

@@ -212,11 +212,15 @@ describes the display as it is now; one whose display was unplugged reads
 `none` for everything. The same display is always the same handle, so use `==`
 to ask whether two screens are the same one.
 
-On Windows, `scale` is currently the system scale, the same for every screen:
-a window moved to a monitor with a different scale setting is stretched by
-Windows rather than redrawn. `name` is what the display settings show, which on
-some systems is only "Generic PnP Monitor". On macOS before 10.15 a display is
-named by its id.
+Each screen has its own `scale`. When screens have different scales there is
+no single unit that covers the whole desktop, so each screen is measured in
+its own: its `offset` is where it starts, and everything on it is in logical
+units from there. Two screens can have a gap between them, but never overlap.
+Within one screen - which is where a window is placed - everything matches the
+window's own size.
+
+On Windows, `name` is what the display settings show, which on some systems is
+only "Generic PnP Monitor". On macOS before 10.15 a display is named by its id.
 
 ## Widgets
 
@@ -338,13 +342,23 @@ lbl/size: 220x0          ;; keep the width, measure the height
 lbl/size: 0x0            ;; measure both
 ```
 
-**`win/scale`** is device pixels per unit (`1.0`, `1.75`, `2.0` on Retina).
-Its main use is rendering an image at full resolution:
+**`win/scale`** is device pixels per unit (`1.0`, `1.75`, `2.0` on Retina) of
+the screen the window is on. Its main use is rendering an image at full
+resolution:
 
 ```rebol
 pic:    make image! to pair! 240x160 * win/scale
 canvas: add-image/size win pic 20x70 240x160
 ```
+
+Moving a window to a screen with another scale keeps its logical size, and
+widget positions and text sizes with it, so the layout is unchanged. Only
+`scale` changes: the window reports a `resize` (with the same size), which is
+the moment to render its images again at the new scale.
+
+On Windows this needs Windows 10 version 1703 or later. On older versions
+every window uses the system scale, and Windows stretches a window shown on a
+monitor with another setting.
 
 ### Text and colour
 
@@ -871,7 +885,7 @@ Returns a block of the connected screens, the primary one first
 /offset           pair!               none                          "Top-left corner, in the same space as a window's offset"
 /work-size        pair!               none                          "Size of the part windows should use - without the taskbar, the Dock or the menu bar"
 /work-offset      pair!               none                          "Top-left corner of that part"
-/scale            decimal!            none                          "Device pixels per unit of size; on Windows the system scale, the same for every screen"
+/scale            decimal!            none                          "Device pixels per unit of size - what a window on this screen reports as its own scale"
 /primary?         logic!              none                          "Whether this is the primary screen - the one with the menu bar on macOS"
 ```
 
