@@ -754,6 +754,13 @@ note-dark/color: 225.228.235
 print ["window background:" mold tinted/background]
 print ["and a widget on it is transparent:" note-dark/transparent?]
 
+;; `/secure` masks what is typed. The script still reads the real text.
+;;
+;; WATCH: dots in the "Dark window", not "hunter2"; copying out is refused.
+secret: add-field/secure tinted "hunter2" 12x44 230x0
+print ["secure?" secret/secure? "text:" mold secret/text "(expected true ^"hunter2^")"]
+print ["an ordinary field is not:" name/secure? " a button has none:" mold counter/secure?]
+
 ;; And one which is SEE-THROUGH: the client area is dropped by the compositor
 ;; and only the widgets are left on screen.
 ;;

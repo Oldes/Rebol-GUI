@@ -78,6 +78,7 @@
 #define RebolGuiView      GUI_CLASS(View)
 #define RebolGuiButton    GUI_CLASS(Button)
 #define RebolGuiTextField GUI_CLASS(TextField)
+#define RebolGuiSecureField GUI_CLASS(SecureField)
 #define RebolGuiTextView  GUI_CLASS(TextView)
 #define RebolGuiImageView GUI_CLASS(ImageView)
 #define RebolGuiSlider    GUI_CLASS(Slider)
@@ -224,6 +225,17 @@ static void Apply_Button_Color(GUIWIDGET *wid);
 // switches; each is its own delegate, so that editing reports back without
 // a separate object to keep alive.
 @interface RebolGuiTextField : NSTextField <NSTextFieldDelegate>
+{
+	GUIWIDGET *context;
+}
+- (void)setContext:(GUIWIDGET*)ctx;
+@end
+
+// A `/secure` field. It has to BE an NSSecureTextField: the secure cell
+// refuses to run - it throws on the first click - unless its field
+// editor's delegate is one. The body is the same as the plain field's,
+// shared through TEXT_FIELD_BODY below.
+@interface RebolGuiSecureField : NSSecureTextField <NSTextFieldDelegate>
 {
 	GUIWIDGET *context;
 }
@@ -522,35 +534,46 @@ static void Queue_Press(NSView *view, GUIWIDGET *ctx, REBCNT type, NSEvent *evt,
 @end
 
 
-@implementation RebolGuiTextField
-
-- (void)setContext:(GUIWIDGET*)ctx { context = ctx; }
-
-// A notification has no cursor position, so - as with a button - the
-// position slot carries the control's own offset.
-- (void)queue:(REBCNT)type
-{
-	NSRect frame;
-	if (!context || !context->hob) return;
-	frame = [self frame];
-	Gui_Queue_Event(context->hob, type,
-	                (REBINT)frame.origin.x, (REBINT)frame.origin.y,
-	                Modifier_Bits([NSEvent modifierFlags]));
-}
-
-// ENTER, reported as a `click` - the same word a button uses, because it
-// is the same thing: the control was activated rather than merely edited.
-// Sending the action is also what stops AppKit beeping at an Enter with
-// nowhere to go, which is Win32's complaint too.
-- (void)accepted:(id)sender { [self queue:EVT_CLICK]; }
-
-// These fire for USER edits only - setStringValue: does not call them, so
-// unlike Win32's EN_CHANGE there is nothing to suppress when Rebol writes
-// to the control.
-- (void)controlTextDidChange:(NSNotification*)note       { [self queue:EVT_CHANGE]; }
-- (void)controlTextDidBeginEditing:(NSNotification*)note { [self queue:EVT_FOCUS]; }
+/***********************************************************************
+**  Everything a field does, for both field classes.
+**
+**  `queue:` - a notification has no cursor position, so, as with a
+**  button, the position slot carries the control's own offset.
+**
+**  `accepted:` - ENTER, reported as a `click`: the same word a button
+**  uses, because it is the same thing - the control was activated rather
+**  than merely edited. Sending the action is also what stops AppKit
+**  beeping at an Enter with nowhere to go, which is Win32's complaint too.
+**
+**  The three controlText... methods fire for USER edits only -
+**  setStringValue: does not call them, so unlike Win32's EN_CHANGE there
+**  is nothing to suppress when Rebol writes to the control.
+**
+**  No comments inside the macro: a line comment ending in the backslash
+**  would swallow the line after it.
+***********************************************************************/
+#define TEXT_FIELD_BODY \
+- (void)setContext:(GUIWIDGET*)ctx { context = ctx; } \
+- (void)queue:(REBCNT)type \
+{ \
+	NSRect frame; \
+	if (!context || !context->hob) return; \
+	frame = [self frame]; \
+	Gui_Queue_Event(context->hob, type, \
+	                (REBINT)frame.origin.x, (REBINT)frame.origin.y, \
+	                Modifier_Bits([NSEvent modifierFlags])); \
+} \
+- (void)accepted:(id)sender { [self queue:EVT_CLICK]; } \
+- (void)controlTextDidChange:(NSNotification*)note       { [self queue:EVT_CHANGE]; } \
+- (void)controlTextDidBeginEditing:(NSNotification*)note { [self queue:EVT_FOCUS]; } \
 - (void)controlTextDidEndEditing:(NSNotification*)note   { [self queue:EVT_UNFOCUS]; }
 
+@implementation RebolGuiTextField
+TEXT_FIELD_BODY
+@end
+
+@implementation RebolGuiSecureField
+TEXT_FIELD_BODY
 @end
 
 
@@ -2174,7 +2197,13 @@ REBOOL Gui_Create_Text_Control(GUIWIDGET *wid, GUIWIN *owner,
 		}
 
 		{
-			RebolGuiTextField *field = [[RebolGuiTextField alloc] initWithFrame:rect];
+			// `/secure` is its own class - see RebolGuiSecureField. Typed as
+			// the plain one below, since everything this file calls on a
+			// field is NSTextField's, which both inherit.
+			RebolGuiTextField *field =
+				(wid->kind == W_GUI_WIDGET_FIELD && (wid->state & GUI_TEXT_SECURE))
+				? (RebolGuiTextField*)[[RebolGuiSecureField alloc] initWithFrame:rect]
+				: [[RebolGuiTextField alloc] initWithFrame:rect];
 			if (!field) return FALSE;
 
 			[field setStringValue:value];

@@ -209,6 +209,15 @@ Cocoa flips offsets against the menu-bar screen; the content view answers
   parent. `scroll` on a list works in rows (`LB_GETTOPINDEX`), not from the
   scroll bar. On macOS, `setHasVerticalScroller:` is toggled and
   `scrollWheel:` is passed to the scroll view's next responder.
+- **`/secure` field:** `GUI_TEXT_SECURE` (state bit 2) is set before the
+  control is created. Windows adds `ES_PASSWORD`. macOS creates a
+  `RebolGuiSecureField`, a subclass of `NSSecureTextField`. Giving the plain
+  field an `NSSecureTextFieldCell` does not work: the cell throws on the
+  first click unless its field editor's delegate is an `NSSecureTextField`.
+  Both field classes share their methods through the `TEXT_FIELD_BODY`
+  macro. The secure field editor masks the text, refuses copy and cut, and
+  turns on secure keyboard input. This cannot be changed after creation, so
+  `secure?` is read-only.
 - **`/flat` and `edge` on an entry or a list:** these read the native control
   back rather than a state bit, because `state` bit 1 already means read-only
   on a field and fixed on a list. On Windows this is `WS_EX_CLIENTEDGE`

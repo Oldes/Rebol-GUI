@@ -4199,6 +4199,11 @@ REBOOL Gui_Create_Text_Control(GUIWIDGET *wid, GUIWIN *owner,
 		class_name = L"EDIT";
 		style   |= WS_TABSTOP | ES_LEFT | ES_AUTOHSCROLL;
 		exstyle |= WS_EX_CLIENTEDGE;
+		// `/secure`. With visual styles the mask is the theme's dot; the
+		// control itself refuses WM_COPY and WM_CUT, and hands its text to
+		// no other process - WM_GETTEXT from this one still works, which
+		// is what `text` reads.
+		if (wid->state & GUI_TEXT_SECURE) style |= ES_PASSWORD;
 		break;
 
 	case W_GUI_WIDGET_AREA:

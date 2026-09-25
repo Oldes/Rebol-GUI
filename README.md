@@ -553,6 +553,16 @@ trees/index: 4            ;; picks and scrolls it into view, without a `change`
 `items` and `index` work as for a drop-down. `change` is reported only when
 the user picks. A zero size gives about twenty characters by six rows.
 
+A field made with `/secure` masks what is typed, for a password, and refuses
+to copy it out. `text` still reads and writes the real contents. `secure?`
+reads it back. It is fixed at creation, because on macOS a masked field is a
+different kind of control.
+
+```rebol
+pass: add-field/secure win "" 20x60 200x0
+pass/secure?              ;; true
+```
+
 A field, an area and a text-list can be made without their border with
 `/flat`. `edge` reads it back, and can turn it on or off at any time:
 
@@ -832,6 +842,7 @@ Creates a one-line text entry inside a window and returns its handle
 * `offset` `[pair!]` Position inside the client area
 * `size` `[pair!]`
 * `/flat` Without the border - a plain box of text
+* `/secure` Masks what is typed, for a password; copying out of it is refused
 
 #### `add-area` `:parent` `:text` `:offset` `:size`
 Creates a multi-line text entry inside a window and returns its handle
@@ -1021,6 +1032,7 @@ Creates a list of strings in a fixed box, which scrolls when they do not fit, an
 /parent           handle!             none                          "Whatever holds it - a window, or a panel; none once gone"
 /window           handle!             none                          "The window it ends up in, however deeply nested"
 /scrollable?      logic!              logic!                        "Whether the user can scroll a text-list - off hides its scroll bar and ignores the wheel, while `scroll` and `index` still move it; none for other kinds"
+/secure?          logic!              none                          "Whether a field masks what is typed - made with `/secure`; none for other kinds"
 ```
 
 #### __SCREEN__ - GUI screen handle - one display; every read asks the platform again

@@ -2213,6 +2213,9 @@ static int Add_Text_Control(RXIFRM *frm, REBCNT kind)
 	wid->kind  = kind; // read by the backend to pick the native control
 	wid->owner  = win;
 	wid->parent = panel; // read by the backend to pick the native parent
+	// `/secure` is decided before the control exists: on macOS a masked
+	// field is a different cell, not a property of an ordinary one.
+	if (kind == W_GUI_WIDGET_FIELD && RXA_REF(frm, 6)) wid->state |= GUI_TEXT_SECURE;
 
 	if (!Gui_Create_Text_Control(wid, win, x, y, w, h, text, text_len)) {
 		wid->owner  = NULL;
@@ -3076,6 +3079,12 @@ int GuiWidget_get_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 		*type = RXT_PERCENT;
 		arg->dec64 = (double)at;
 		break; }
+
+	case W_GUI_ARG_SECUREQ:
+		if (wid->kind != W_GUI_WIDGET_FIELD) { *type = RXT_NONE; break; }
+		*type = RXT_LOGIC;
+		arg->int32a = (wid->state & GUI_TEXT_SECURE) ? 1 : 0;
+		break;
 
 	case W_GUI_ARG_SCROLLABLEQ:
 		if (wid->kind != W_GUI_WIDGET_TEXT_LIST) { *type = RXT_NONE; break; }

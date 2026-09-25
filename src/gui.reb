@@ -198,6 +198,7 @@ typedef struct Gui_Widget_Context {
 
 // wid->state of a field or an area
 #define GUI_TEXT_READ_ONLY 1
+#define GUI_TEXT_SECURE    2   // a field made with `/secure`; fixed for its life
 
 // wid->state of a text-list: `scrollable?` is off - no scroll bar, and the
 // wheel does not move it; `index` and `scroll` still do
@@ -400,6 +401,7 @@ handles: [
 		parent   handle!   none      "Whatever holds it - a window, or a panel; none once gone"
 		window   handle!   none      "The window it ends up in, however deeply nested"
 		scrollable? logic! logic!    "Whether the user can scroll a text-list - off hides its scroll bar and ignores the wheel, while `scroll` and `index` still move it; none for other kinds"
+		secure?  logic!    none      "Whether a field masks what is typed - made with `/secure`; none for other kinds"
 	]
 	screen: [
 		"GUI screen handle - one display; every read asks the platform again"
@@ -465,6 +467,7 @@ commands: [
 		offset [pair!]   "Position inside the client area"
 		size   [pair!]
 		/flat "Without the border - a plain box of text"
+		/secure "Masks what is typed, for a password; copying out of it is refused"
 	]
 	add-area: [
 		"Creates a multi-line text entry inside a window and returns its handle"
