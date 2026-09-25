@@ -199,6 +199,7 @@ static void Apply_Button_Color(GUIWIDGET *wid);
 // GUIWIN, theirs take a GUIWIDGET, and a selector sent to `id` must have one
 // unambiguous signature across every class which declares it.
 - (void)setWindowContext:(GUIWIN*)ctx;
+- (GUIWIN*)windowContext;
 // Menu items target the window's content view: it is the one object which
 // already knows the GUIWIN, and it lives exactly as long as the window.
 - (void)menuPicked:(id)sender;
@@ -1278,11 +1279,28 @@ static GUIWIDGET *Widget_At_Point(GUIWIN *win, NSView *root, NSPoint inRoot)
 @implementation RebolGuiView
 
 - (void)setWindowContext:(GUIWIN*)ctx { context = ctx; }
+- (GUIWIN*)windowContext { return context; }
 
 // Top-left origin, Y growing down - the same convention as the rest of the
 // extension, so no per-event flipping is needed inside the window.
 - (BOOL)isFlipped          { return YES; }
 - (BOOL)acceptsFirstResponder { return YES; }
+
+/***********************************************************************
+**  A key nothing wanted.
+**
+**  Every key no view handles travels up the responder chain to here -
+**  the content view is the first responder when nothing else is, and the
+**  last stop for a key a focused button or list passes on. NSResponder's
+**  own answer is NSBeep. In a window with `keys?` the key WAS wanted: it
+**  has already been reported by the key monitor, so it ends here quietly.
+**  Without `keys?` the beep stays, as in any other Mac app.
+***********************************************************************/
+- (void)keyDown:(NSEvent*)evt
+{
+	if (context && (context->flags & GUIW_KEYS)) return;
+	[super keyDown:evt];
+}
 
 // Clicking an inactive window should deliver the click, not just raise it.
 - (BOOL)acceptsFirstMouse:(NSEvent*)evt { return YES; }
@@ -1593,6 +1611,8 @@ void Gui_Quit_Platform(void)
 }
 
 
+static void Install_Key_Monitor(void);   // see `keys?` below
+
 REBOOL Gui_Open_Window(GUIWIN *win, REBINT x, REBINT y, REBINT w, REBINT h,
                        const REBYTE *title, REBCNT title_len, REBCNT flags)
 {
@@ -1656,6 +1676,7 @@ REBOOL Gui_Open_Window(GUIWIN *win, REBINT x, REBINT y, REBINT w, REBINT h,
 			win->background = GUI_BG_CLEAR;
 			Gui_Window_Set_Background(win);
 		}
+		Install_Key_Monitor();
 		return TRUE;
 	}
 }
@@ -3215,6 +3236,136 @@ void Gui_Widget_Set_Background(GUIWIDGET *wid)
 **  a label, a progress indicator - which is exactly the answer wanted,
 **  so it is passed straight through.
 ***********************************************************************/
+static NSView *Focus_Target(GUIWIDGET *wid);
+
+/***********************************************************************
+**  `keys?` on macOS: one local event monitor for the whole program.
+**
+**  AppKit calls it with every key down, key up and modifier change
+**  BEFORE any window or view sees the event, whichever of them has the
+**  focus - a field, a list, the content view - so nothing has to be
+**  subclassed for it. The event goes on unchanged: reporting a key does
+**  not take it.
+**
+**  A printable key is its character with Shift applied and the other
+**  modifiers not (charactersIgnoringModifiers), so Ctrl+A and Option+E
+**  are #"a" and #"e" with the modifier in the flags - the same as the
+**  Windows backend. The function keys arrive as AppKit's private-use
+**  characters and become named keys; Shift, Control, Option and Caps
+**  Lock arrive as modifier changes. Command has no named key and no
+**  flag in the core's event, so it is reported for nothing.
+***********************************************************************/
+static REBCNT Named_Key_Of(unichar c)
+{
+	if (c >= NSF1FunctionKey && c <= NSF12FunctionKey)
+		return EVK_F1 + (REBCNT)(c - NSF1FunctionKey);
+	switch (c) {
+	case NSUpArrowFunctionKey:    return EVK_UP;
+	case NSDownArrowFunctionKey:  return EVK_DOWN;
+	case NSLeftArrowFunctionKey:  return EVK_LEFT;
+	case NSRightArrowFunctionKey: return EVK_RIGHT;
+	case NSPageUpFunctionKey:     return EVK_PAGE_UP;
+	case NSPageDownFunctionKey:   return EVK_PAGE_DOWN;
+	case NSHomeFunctionKey:       return EVK_HOME;
+	case NSEndFunctionKey:        return EVK_END;
+	case NSBeginFunctionKey:      return EVK_BEGIN;
+	case NSInsertFunctionKey:
+	case NSHelpFunctionKey:       return EVK_INSERT;  // where Insert is on a PC keyboard
+	case NSDeleteFunctionKey:     return EVK_DELETE;  // forward delete
+	case NSPauseFunctionKey:      return EVK_PAUSE;
+	case 0x1B:                    return EVK_ESCAPE;
+	case 0x7F:                    return EVK_BACKSPACE;
+	case 0x19:                    return EVK_BACKTAB;
+	}
+	return 0;
+}
+
+// The widget holding the focus in `win`, if any. A field being edited has
+// the window's shared field editor as its first responder, whose delegate
+// is the field.
+static GUIWIDGET *Focused_Widget(GUIWIN *win, NSWindow *window)
+{
+	id r = [window firstResponder];
+	GUIWIDGET *wid;
+
+	if ([r isKindOfClass:[NSTextView class]] && [(NSTextView*)r isFieldEditor])
+		r = [(NSTextView*)r delegate];
+	if (![r isKindOfClass:[NSView class]]) return NULL;
+	for (wid = (GUIWIDGET*)win->widgets; wid; wid = (GUIWIDGET*)wid->next) {
+		NSView *view = (NSView*)wid->handle;
+		if (!view) continue;
+		if (r == view || r == Focus_Target(wid) || [(NSView*)r isDescendantOf:view])
+			return wid;
+	}
+	return NULL;
+}
+
+static void Report_Key_Event(NSEvent *evt)
+{
+	NSWindow  *window = [evt window];
+	id         view   = [window contentView];
+	GUIWIN    *win;
+	GUIWIDGET *wid;
+	REBHOB    *source;
+	REBINT     mods;
+	REBCNT     named = 0;
+	REBU32     code  = 0;
+	BOOL       up    = NO;
+
+	if (![view respondsToSelector:@selector(windowContext)]) return;
+	win = [view windowContext];
+	if (!win || !win->hob || !(win->flags & GUIW_KEYS)) return;
+
+	wid    = Focused_Widget(win, window);
+	source = (wid && wid->hob) ? wid->hob : win->hob;
+	mods   = Modifier_Bits([evt modifierFlags]);
+
+	if ([evt type] == NSEventTypeFlagsChanged) {
+		NSEventModifierFlags f = [evt modifierFlags];
+		switch ([evt keyCode]) {
+		case 56: case 60: named = EVK_SHIFT;   up = !(f & NSEventModifierFlagShift);    break;
+		case 59: case 62: named = EVK_CONTROL; up = !(f & NSEventModifierFlagControl);  break;
+		case 58: case 61: named = EVK_ALT;     up = !(f & NSEventModifierFlagOption);   break;
+		case 57:          named = EVK_CAPITAL; up = !(f & NSEventModifierFlagCapsLock); break;
+		default: return;
+		}
+		Gui_Queue_Key(source, up ? EVT_NAMED_KEY_UP : EVT_NAMED_KEY, named, mods);
+		return;
+	}
+
+	up = ([evt type] == NSEventTypeKeyUp);
+	{	NSString *chars = [evt charactersIgnoringModifiers];
+		unichar   c;
+		if ([chars length] == 0) return;   // a dead key
+		c = [chars characterAtIndex:0];
+		named = Named_Key_Of(c);
+		if (named) {
+			Gui_Queue_Key(source, up ? EVT_NAMED_KEY_UP : EVT_NAMED_KEY, named, mods);
+			return;
+		}
+		if (c == 0x03) c = '\r';         // keypad Enter, as Return
+		if (c >= 0xF700 && c <= 0xF8FF) return;   // another function key
+		code = c;
+		if (c >= 0xD800 && c <= 0xDBFF && [chars length] > 1) {
+			unichar lo = [chars characterAtIndex:1];
+			code = 0x10000 + (((REBU32)c - 0xD800) << 10) + ((REBU32)lo - 0xDC00);
+		}
+	}
+	Gui_Queue_Key(source, up ? EVT_KEY_UP : EVT_KEY, code, mods);
+}
+
+static void Install_Key_Monitor(void)
+{
+	static id monitor = nil;
+	if (monitor) return;
+	monitor = [[NSEvent addLocalMonitorForEventsMatchingMask:
+			(NSEventMaskKeyDown | NSEventMaskKeyUp | NSEventMaskFlagsChanged)
+		handler:^NSEvent *(NSEvent *evt) {
+			Report_Key_Event(evt);
+			return evt;   // observed, never taken
+		}] retain];
+}
+
 static NSView *Focus_Target(GUIWIDGET *wid)
 {
 	if (!wid || !wid->handle) return nil;

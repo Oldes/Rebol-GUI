@@ -80,6 +80,23 @@ enum {
 void   Gui_Queue_Event(REBHOB *source, REBCNT type, REBINT x, REBINT y, REBINT value);
 
 /***********************************************************************
+**  A key, for a window with `keys?` (GUIW_KEYS) - the backends check
+**  the flag, this only queues.
+**
+**  `type` is EVT_KEY / EVT_KEY_UP with `code` a Unicode codepoint, or
+**  EVT_NAMED_KEY / EVT_NAMED_KEY_UP with `code` an EVK_* value - which
+**  is the 1-based position in system/catalog/event-keys that the core's
+**  event! reads it back from. `mods` is GUI_FLAG_* bits.
+**
+**  The character is the key's own, with Shift applied and Control NOT:
+**  Ctrl+A is #"a" with `control` in the flags, not #"^A".
+**
+**  `source` is the focused widget, or the window when nothing in it is.
+**  Observing only: the key still goes wherever it was going.
+***********************************************************************/
+void   Gui_Queue_Key(REBHOB *source, REBCNT type, REBU32 code, REBINT mods);
+
+/***********************************************************************
 **  Queues a drop on `target` - a window or a widget handle.
 **
 **  `data` is a payload the BACKEND allocated with Gui_Drop_Payload(),

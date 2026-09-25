@@ -145,6 +145,23 @@ Cocoa flips offsets against the menu-bar screen; the content view answers
 - **Transparent window:** macOS uses a non-opaque `NSWindow`. Win32 uses
   `WS_EX_LAYERED` with a magenta colour key, because `UpdateLayeredWindow`
   alpha does not composite child windows.
+- **`keys?`:** `GUIW_KEYS`, checked by the backends for every key. The
+  shared layer has `Gui_Queue_Key`, with the code in `GUIEVT.x`, drained as
+  `EVF_HAS_CODE` with `data` = code. The core's `event!` reads a codepoint
+  for `EVT_KEY`/`EVT_KEY_UP`, and for the named types a 1-based position in
+  `system/catalog/event-keys`, which is the `EVK_*` value. Windows reports in
+  `Gui_Handle_Key`, which every control's `Nav_Proc` and the window
+  procedure call (the window also routes `WM_KEYUP`/`WM_SYSKEYUP` to it).
+  It is skipped inside `IsDialogMessage` re-entry, and a repeat of the same
+  message (msg, wParam, lParam, time) is dropped. Named keys come from the
+  VK code; other keys go through `ToUnicode` flag 4 with Control removed
+  from the key state unless Alt is down (AltGr). macOS uses one
+  `addLocalMonitorForEventsMatchingMask` (key down, key up, flags changed),
+  installed with the first window. It returns the event unchanged,
+  resolves the window through the content view's `windowContext`, and the
+  source through the first responder (field editor → its delegate).
+  Named keys come from AppKit's function-key characters; modifiers come
+  from `keyCode` in `FlagsChanged`.
 - **Tall push buttons on macOS:** `NSBezelStyleRounded` draws at one fixed
   height whatever the frame, so a taller box showed a standard button at
   its bottom. `RebolGuiButton` overrides `setFrame:`/`setFrameSize:` to use

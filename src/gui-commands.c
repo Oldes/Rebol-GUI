@@ -184,6 +184,14 @@ void Gui_Queue_Event(REBHOB *source, REBCNT type, REBINT x, REBINT y, REBINT val
 	Append_Event(source, NULL, type, x, y, value);
 }
 
+// The code rides in `x`: a key event has no position, and the drain
+// knows these types by their EVT_* code.
+void Gui_Queue_Key(REBHOB *source, REBCNT type, REBU32 code, REBINT mods)
+{
+	if (!source || !code) return;
+	Append_Event(source, NULL, type, (REBINT)code, 0, mods);
+}
+
 
 /***********************************************************************
 **  `track-mouse`: moves over the screens, outside this program.
@@ -1932,6 +1940,16 @@ COMMAND cmd_gui_poll_events(RXIFRM *frm, void *ctx)
 		if (!ev.hob) continue;
 
 		switch (evt->type) {
+		case EVT_KEY:
+		case EVT_KEY_UP:
+		case EVT_NAMED_KEY:
+		case EVT_NAMED_KEY_UP:
+			// The codepoint, or the EVK_* number - the event's type tells
+			// the core which, so `evt/key` reads a char! or a word.
+			ev.flags = (1 << EVF_HAS_CODE) | Event_Modifier_Bits(evt->value);
+			ev.data  = (u32)evt->x;
+			break;
+
 		case EVT_SCROLL_LINE:
 			// The signed number of lines. There is no room for a position
 			// as well - see the note above.
@@ -2613,6 +2631,11 @@ int GuiWindow_get_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 		arg->int32a = (win->flags & GUIW_DARK_CONTROLS) ? 1 : 0;
 		break;
 
+	case W_GUI_ARG_KEYSQ:
+		*type = RXT_LOGIC;
+		arg->int32a = (win->flags & GUIW_KEYS) ? 1 : 0;
+		break;
+
 	// Asked of the platform each time rather than taken from GUIW_DARK,
 	// which is only what was last REPORTED.
 	case W_GUI_ARG_DARKQ:
@@ -2787,6 +2810,14 @@ int GuiWindow_set_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 		if (arg->int32a) win->flags |=  GUIW_DARK_CONTROLS;
 		else             win->flags &= ~(REBCNT)GUIW_DARK_CONTROLS;
 		Gui_Window_Dark_Controls(win, arg->int32a ? TRUE : FALSE);
+		break;
+
+	// Only a flag: the backends look at it for every key, so there is
+	// nothing to install or remove here.
+	case W_GUI_ARG_KEYSQ:
+		if (*type != RXT_LOGIC) return PE_BAD_SET_TYPE;
+		if (arg->int32a) win->flags |=  GUIW_KEYS;
+		else             win->flags &= ~(REBCNT)GUIW_KEYS;
 		break;
 
 	case W_GUI_ARG_TITLE: {

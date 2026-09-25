@@ -185,7 +185,8 @@ typedef struct Gui_Widget_Context {
 #define GUIW_ACCEPTS_DROP  2
 #define GUIW_DARK          4   // the appearance last reported - see Gui_Theme_Changed()
 #define GUIW_DARK_CONTROLS 8   // `dark-controls?`: defaults follow the dark appearance
-#define GUIW_BORDER          16  // `border?`: without a title bar, still a thin outline and a shadow
+#define GUIW_BORDER        16  // `border?`: without a title bar, still a thin outline and a shadow
+#define GUIW_KEYS          32  // `keys?`: every key pressed in the window is reported
 
 // Passed to Gui_Open_Window(). Everything a window's frame can be is
 // decided at creation and changeable afterwards through `resizable?` and
@@ -351,6 +352,7 @@ handles: [
 		screen   handle!   none      "The screen most of the window is on"
 		dark?    logic!    none      "Whether the system shows it in the dark appearance; a `theme-change` event reports when this changes"
 		dark-controls? logic! logic! "Whether its controls and default colours follow the dark appearance on Windows (macOS always does); off by default"
+		keys?      logic!  logic!    "Whether every key pressed in it is reported as `key`/`key-up` (a char!) or `named-key`/`named-key-up` (a word); off by default"
 		resizable? logic!  logic!    "Whether the user can resize it"
 		title?     logic!  logic!    "Whether it has a title bar and a frame; without one the user cannot move or close it"
 		border?    logic!  logic!    "Whether it has a thin outline and a shadow; always true while it has a title bar, and remembered across `title?` changes"

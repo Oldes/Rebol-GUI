@@ -1827,6 +1827,8 @@ static LRESULT CALLBACK Gui_Window_Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
 
 	case WM_KEYDOWN:
 	case WM_SYSKEYDOWN:
+	case WM_KEYUP:        // for `keys?` only - Gui_Handle_Key takes none
+	case WM_SYSKEYUP:
 	case WM_SYSCHAR:
 		// The window itself has the focus when nothing inside it does -
 		// a menu accelerator has to work there too.
@@ -3686,6 +3688,100 @@ static void Paint_Parent_Background(HWND hwnd, HDC dc)
 ***********************************************************************/
 static REBOOL In_Dialog_Message = FALSE;
 
+/***********************************************************************
+**  `keys?`: reporting a key, before anything else is done with it.
+**
+**  Named keys come from the virtual-key code. Everything else is asked
+**  of the keyboard layout with ToUnicode, so it is the character the
+**  key makes - with Shift and AltGr applied, but with Control taken out
+**  of the state first: Ctrl+A is reported as #"a" with `control` in the
+**  flags, not as the control character ^A. Flag 4 (Windows 10 1607 and
+**  later) keeps ToUnicode from disturbing a pending dead key; a dead key
+**  itself makes no character and reports nothing.
+**
+**  The same message can arrive here twice - IsDialogMessage sends a key
+**  a control wants back to it, and a key the fallback pump did not take
+**  is dispatched to the control afterwards - so the last one reported is
+**  remembered and a repeat of it skipped. An auto-repeated key is a new
+**  message with its own time, and is reported.
+***********************************************************************/
+static REBCNT Named_Key_Of(WPARAM vk)
+{
+	if (vk >= VK_F1 && vk <= VK_F12) return EVK_F1 + (REBCNT)(vk - VK_F1);
+	switch (vk) {
+	case VK_PRIOR:   return EVK_PAGE_UP;
+	case VK_NEXT:    return EVK_PAGE_DOWN;
+	case VK_END:     return EVK_END;
+	case VK_HOME:    return EVK_HOME;
+	case VK_LEFT:    return EVK_LEFT;
+	case VK_UP:      return EVK_UP;
+	case VK_RIGHT:   return EVK_RIGHT;
+	case VK_DOWN:    return EVK_DOWN;
+	case VK_INSERT:  return EVK_INSERT;
+	case VK_DELETE:  return EVK_DELETE;
+	case VK_ESCAPE:  return EVK_ESCAPE;
+	case VK_SHIFT: case VK_LSHIFT: case VK_RSHIFT:       return EVK_SHIFT;
+	case VK_CONTROL: case VK_LCONTROL: case VK_RCONTROL: return EVK_CONTROL;
+	case VK_MENU: case VK_LMENU: case VK_RMENU:          return EVK_ALT;
+	case VK_PAUSE:   return EVK_PAUSE;
+	case VK_CAPITAL: return EVK_CAPITAL;
+	case VK_BACK:    return EVK_BACKSPACE;
+	case VK_CLEAR:   return EVK_BEGIN;   // keypad 5 without Num Lock
+	case VK_TAB:     return (GetKeyState(VK_SHIFT) & 0x8000) ? EVK_BACKTAB : 0;
+	}
+	return 0;
+}
+
+static void Report_Key(HWND hwnd, GUIWIN *win, UINT msg, WPARAM wp, LPARAM lp)
+{
+	static UINT   last_msg = 0;
+	static WPARAM last_wp  = 0;
+	static LPARAM last_lp  = 0;
+	static LONG   last_time = 0;
+	REBOOL  up;
+	REBCNT  named;
+	REBU32  code = 0;
+	REBHOB *source;
+	GUIWIDGET *w;
+	LONG    now;
+
+	if (!win || !win->hob || !(win->flags & GUIW_KEYS)) return;
+	if (msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN) up = FALSE;
+	else if (msg == WM_KEYUP || msg == WM_SYSKEYUP) up = TRUE;
+	else return;
+
+	now = GetMessageTime();
+	if (msg == last_msg && wp == last_wp && lp == last_lp && now == last_time) return;
+	last_msg = msg; last_wp = wp; last_lp = lp; last_time = now;
+
+	// The widget it went to, or the window when nothing inside has focus.
+	source = win->hob;
+	for (w = (GUIWIDGET*)win->widgets; w; w = (GUIWIDGET*)w->next)
+		if ((HWND)w->handle == hwnd) { if (w->hob) source = w->hob; break; }
+
+	named = Named_Key_Of(wp);
+	if (named) {
+		Gui_Queue_Key(source, up ? EVT_NAMED_KEY_UP : EVT_NAMED_KEY, named, Modifiers());
+		return;
+	}
+
+	{	BYTE  state[256];
+		WCHAR buf[4];
+		int   n;
+		if (!GetKeyboardState(state)) return;
+		// Control out - unless Alt is down too, which is AltGr and part of
+		// the character on many layouts.
+		if (!(state[VK_MENU] & 0x80)) {
+			state[VK_CONTROL] = state[VK_LCONTROL] = state[VK_RCONTROL] = 0;
+		}
+		n = ToUnicode((UINT)wp, (UINT)((lp >> 16) & 0xFF), state, buf, 4, 4);
+		if (n == 1) code = buf[0];
+		else if (n == 2 && buf[0] >= 0xD800 && buf[0] <= 0xDBFF)
+			code = 0x10000 + (((REBU32)buf[0] - 0xD800) << 10) + ((REBU32)buf[1] - 0xDC00);
+	}
+	if (code) Gui_Queue_Key(source, up ? EVT_KEY_UP : EVT_KEY, code, Modifiers());
+}
+
 static REBOOL Gui_Handle_Key(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
 	HWND    root = GetAncestor(hwnd, GA_ROOT);
@@ -3694,6 +3790,7 @@ static REBOOL Gui_Handle_Key(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 	REBOOL  taken;
 
 	if (!win || !win->handle) return FALSE;
+	if (!In_Dialog_Message) Report_Key(hwnd, win, msg, wp, lp);
 	if (msg != WM_KEYDOWN && msg != WM_SYSKEYDOWN && msg != WM_SYSCHAR)
 		return FALSE;
 

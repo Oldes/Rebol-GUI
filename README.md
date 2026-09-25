@@ -18,7 +18,7 @@ in [INTERNALS.md](INTERNALS.md).
 ## What it is not (yet)
 
 - no DRAW dialect, no compositor - just the image widget
-- no keyboard events, beyond menu shortcuts and the platform's own navigation
+- keyboard events only per window, with `keys?`, and observed rather than taken
 - no checkable menu items, and no popup (context) menus
 - fourteen native controls: button, image, text, field, area, check, radio,
   toggle, slider, progress, drop-down, text-list, date-field, panel
@@ -758,6 +758,30 @@ widgets; Space presses a focused button or check; `&` in a label marks a
 mnemonic. On Windows the arrow keys also move within a radio group; on macOS
 they do not.
 
+## Keys
+
+```rebol
+win/keys?: true           ;; off by default
+```
+
+With `keys?` on, every key pressed in the window is reported, whichever
+widget has the focus. That widget is the event's `source`, or the window
+when nothing in it is focused.
+
+| `type` | `key` |
+|---|---|
+| `key`, `key-up` | a `char!`: `#"a"`, `#"A"`, `#"^M"` for Enter, `#"^-"` for Tab |
+| `named-key`, `named-key-up` | a word from `system/catalog/event-keys`: `left`, `f1`, `escape`, `backspace`, `shift`... |
+
+The character has Shift applied but not Control or Option/Alt: Ctrl+A is
+`#"a"` with `control` in `flags`. On Windows, AltGr characters come through
+as typed. A dead key reports nothing until it makes a character. Command on
+macOS has no key and no flag, and is not reported. Held keys repeat.
+
+Keys are only observed: the widget still gets them, and a handler cannot
+stop that, because events reach Rebol after the platform has already handled
+the key.
+
 ## Dropped files
 
 Off until enabled per window:
@@ -1019,6 +1043,7 @@ Creates an entry for a date, and optionally a time of day, and returns its handl
 /screen           handle!             none                          "The screen most of the window is on"
 /dark?            logic!              none                          "Whether the system shows it in the dark appearance; a `theme-change` event reports when this changes"
 /dark-controls?   logic!              logic!                        "Whether its controls and default colours follow the dark appearance on Windows (macOS always does); off by default"
+/keys?            logic!              logic!                        "Whether every key pressed in it is reported as `key`/`key-up` (a char!) or `named-key`/`named-key-up` (a word); off by default"
 /resizable?       logic!              logic!                        "Whether the user can resize it"
 /title?           logic!              logic!                        "Whether it has a title bar and a frame; without one the user cannot move or close it"
 /border?          logic!              logic!                        "Whether it has a thin outline and a shadow; always true while it has a title bar, and remembered across `title?` changes"

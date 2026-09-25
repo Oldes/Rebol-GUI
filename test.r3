@@ -68,6 +68,14 @@ win/dark-controls?: true
 print ["and on:                   " win/dark-controls?]
 win/dark-controls?: false ;; turn it off again
 
+;; `keys?` reports every key pressed in the window - whichever widget has the
+;; focus, which is the event's source - without taking it from that widget.
+;; `key` carries a char!, `named-key` a word; both have a `-up` pair.
+;;
+;; WATCH: keys typed in the main window appear in the log area.
+print ["keys? by default:" win/keys?]
+win/keys?: true
+
 ;; every accessor which can be read can also be written, except id and open?
 win/title: "Rebol GUI extension - move the mouse"
 print ["title:   " mold win/title]
@@ -1044,6 +1052,13 @@ report: func [event /local type source position kind][
 			move [if float-grab [ghost/offset: ghost/offset + position - float-grab]]
 			up   [float-grab: none]
 		]
+	]
+
+	;; Key downs only - the ups would double the log.
+	if find [key named-key] type [
+		note ajoin [type ": " mold event/key
+			either event/flags [join " " mold event/flags][""]
+			" in " any [kind 'window]]
 	]
 
 	if type == 'change [
