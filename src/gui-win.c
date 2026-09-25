@@ -3725,6 +3725,40 @@ static LRESULT CALLBACK Nav_Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 	GUIWIDGET *wid  = (GUIWIDGET*)GetWindowLongPtrW(hwnd, GWLP_USERDATA);
 	WNDPROC    base = (wid && wid->wndproc) ? (WNDPROC)wid->wndproc : NULL;
 
+	/*******************************************************************
+	**  A text-list with `scrollable?` off.
+	**
+	**  The list box keeps its own copy of the style it was created
+	**  with, and calls SetScrollInfo whenever its items or its size
+	**  change - which puts WS_VSCROLL back on the window however often
+	**  it is taken off. So the bit is left alone, and hidden only from
+	**  the three non-client messages that act on it: without it, the
+	**  frame is calculated, painted and hit-tested as if there were no
+	**  scroll bar, and the client area takes its room. Nothing is
+	**  recreated, and the list box goes on scrolling itself for
+	**  LB_SETTOPINDEX and for a pick made with the keyboard.
+	**
+	**  The wheel goes to DefWindowProc rather than the list box, which
+	**  hands it on to the parent - as for any control that does not
+	**  scroll.
+	*******************************************************************/
+	if (wid && wid->kind == W_GUI_WIDGET_TEXT_LIST && (wid->state & GUI_LIST_FIXED)) {
+		LONG_PTR style;
+		LRESULT  r;
+
+		if (msg == WM_MOUSEWHEEL) return DefWindowProcW(hwnd, msg, wp, lp);
+		if (msg == WM_NCCALCSIZE || msg == WM_NCPAINT || msg == WM_NCHITTEST) {
+			style = GetWindowLongPtrW(hwnd, GWL_STYLE);
+			if (style & WS_VSCROLL) {
+				SetWindowLongPtrW(hwnd, GWL_STYLE, style & ~WS_VSCROLL);
+				r = Nav_Proc(hwnd, msg, wp, lp); // the bit is off: no loop
+				SetWindowLongPtrW(hwnd, GWL_STYLE,
+					GetWindowLongPtrW(hwnd, GWL_STYLE) | WS_VSCROLL);
+				return r;
+			}
+		}
+	}
+
 	if (Is_Pressable(wid)) switch (msg) {
 	case WM_LBUTTONDOWN:
 	case WM_LBUTTONDBLCLK:
@@ -5284,12 +5318,72 @@ static REBOOL Scroll_Span_Of(HWND hwnd, SCROLLINFO *si, REBINT *span)
 }
 
 
+/***********************************************************************
+**  A text-list scrolls by whole rows, and is asked by them - not by its
+**  scroll bar, which is not there when `scrollable?` is off. The rows
+**  that fit are the client height over the row height, and the span is
+**  the rest.
+***********************************************************************/
+static REBINT List_Span_Of(HWND hwnd)
+{
+	RECT    r;
+	LRESULT count = SendMessageW(hwnd, LB_GETCOUNT, 0, 0);
+	LRESULT row   = SendMessageW(hwnd, LB_GETITEMHEIGHT, 0, 0);
+	REBINT  fit;
+
+	if (count <= 0 || row <= 0 || !GetClientRect(hwnd, &r)) return 0;
+	fit = (REBINT)((r.bottom - r.top) / row);
+	if (fit < 1) fit = 1;
+	return (REBINT)count - fit;
+}
+
+
+void Gui_Widget_Set_Scrollable(GUIWIDGET *wid, REBOOL on)
+{
+	if (!wid || !wid->handle) return;
+	// Nav_Proc reads the flag; the frame only has to be worked out again,
+	// with or without the scroll bar's room. SWP_DRAWFRAME repaints it.
+	SetWindowPos(HWND_OF_WID(wid), NULL, 0, 0, 0, 0,
+	             SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE
+	             | SWP_FRAMECHANGED | SWP_DRAWFRAME);
+	InvalidateRect(HWND_OF_WID(wid), NULL, TRUE);
+}
+
+
+void Gui_Widget_Scroll_To_Item(GUIWIDGET *wid, REBINT n)
+{
+	HWND    hwnd;
+	RECT    r;
+	LRESULT top, row;
+	REBINT  fit;
+
+	if (!wid || !wid->handle) return;
+	hwnd = HWND_OF_WID(wid);
+	top  = SendMessageW(hwnd, LB_GETTOPINDEX, 0, 0);
+	row  = SendMessageW(hwnd, LB_GETITEMHEIGHT, 0, 0);
+	if (top < 0 || row <= 0 || !GetClientRect(hwnd, &r)) return;
+	fit = (REBINT)((r.bottom - r.top) / row);
+	if (fit < 1) fit = 1;
+
+	// Above the view: it becomes the top row. Below: the bottom one.
+	if (n < (REBINT)top)
+		SendMessageW(hwnd, LB_SETTOPINDEX, (WPARAM)n, 0);
+	else if (n >= (REBINT)top + fit)
+		SendMessageW(hwnd, LB_SETTOPINDEX, (WPARAM)(n - fit + 1), 0);
+}
+
+
 REBDEC Gui_Widget_Get_Scroll(GUIWIDGET *wid)
 {
 	SCROLLINFO si;
 	REBINT     span = 0;
 
 	if (!wid || !wid->handle) return -1.0;
+	if (wid->kind == W_GUI_WIDGET_TEXT_LIST) {
+		span = List_Span_Of(HWND_OF_WID(wid));
+		if (span <= 0) return 0.0;
+		return (REBDEC)SendMessageW(HWND_OF_WID(wid), LB_GETTOPINDEX, 0, 0) / (REBDEC)span;
+	}
 	if (!Scroll_Span_Of(HWND_OF_WID(wid), &si, &span)) return -1.0;
 
 	// Everything fits, so it is at the top and cannot be anywhere else.
@@ -5306,6 +5400,13 @@ REBOOL Gui_Widget_Set_Scroll(GUIWIDGET *wid, REBDEC where)
 
 	if (!wid || !wid->handle) return FALSE;
 	hwnd = HWND_OF_WID(wid);
+	if (wid->kind == W_GUI_WIDGET_TEXT_LIST) {
+		span = List_Span_Of(hwnd);
+		if (span <= 0) return TRUE;
+		// Clamped by the list box itself, so the end is always the end.
+		SendMessageW(hwnd, LB_SETTOPINDEX, (WPARAM)(REBINT)((REBDEC)span * where + 0.5), 0);
+		return TRUE;
+	}
 	if (!Scroll_Span_Of(hwnd, &si, &span)) return FALSE;
 	if (span <= 0) return TRUE; // nothing to scroll, and that is not a failure
 

@@ -199,6 +199,10 @@ typedef struct Gui_Widget_Context {
 // wid->state of a field or an area
 #define GUI_TEXT_READ_ONLY 1
 
+// wid->state of a text-list: `scrollable?` is off - no scroll bar, and the
+// wheel does not move it; `index` and `scroll` still do
+#define GUI_LIST_FIXED 1
+
 // wid->color. The top byte is the "has one" flag, which is why a colour of
 // 0.0.0 is still distinguishable from no colour at all.
 #define GUI_COLOR_SET        0xFF000000
@@ -389,12 +393,13 @@ handles: [
 		children  block!   none      "Widgets a container holds, in the order they were added; none for a kind which cannot hold any"
 		read-only? logic!  logic!    "Whether a field or an area refuses to be edited while staying selectable; none for other kinds"
 		focused?  logic!   none      "Whether it currently has the keyboard focus"
-		scroll    percent!  [percent! decimal! word!] "How far an area is scrolled; set a percent, or one of top, bottom and end; none for kinds which do not scroll"
+		scroll    percent!  [percent! decimal! word! integer!] "How far an area or a text-list is scrolled; set a percent, or one of top, bottom and end; an integer brings that text-list item into view; none for kinds which do not scroll"
 		group    integer!  none      "Which radio group it belongs to; 0 for everything else"
 		enabled? logic!    logic!    "Whether the control responds to the user"
 		tip      string!   [string! none!] "Text the platform shows when the pointer rests on it; none for no tip"
 		parent   handle!   none      "Whatever holds it - a window, or a panel; none once gone"
 		window   handle!   none      "The window it ends up in, however deeply nested"
+		scrollable? logic! logic!    "Whether the user can scroll a text-list - off hides its scroll bar and ignores the wheel, while `scroll` and `index` still move it; none for other kinds"
 	]
 	screen: [
 		"GUI screen handle - one display; every read asks the platform again"

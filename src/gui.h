@@ -624,6 +624,18 @@ REBOOL  Gui_Widget_Set_Read_Only(GUIWIDGET *wid, REBOOL on);
 REBDEC  Gui_Widget_Get_Scroll(GUIWIDGET *wid);
 REBOOL  Gui_Widget_Set_Scroll(GUIWIDGET *wid, REBDEC where);
 
+// A text-list's `scrollable?`. The caller has already updated
+// GUI_LIST_FIXED in `wid->state`, which the backend may read from then on;
+// this only has to bring the native control in line - hide or show the
+// scroll bar. Whatever scrolls it from code must keep working either way.
+void    Gui_Widget_Set_Scrollable(GUIWIDGET *wid, REBOOL on);
+
+// Brings a text-list's item `n` (0-based, already clamped to the list by
+// the caller) into view, scrolling as little as it takes: not at all when
+// it is visible, and otherwise so that it sits at the nearer edge. The
+// selection is not touched.
+void    Gui_Widget_Scroll_To_Item(GUIWIDGET *wid, REBINT n);
+
 
 // Gui_Init() is declared in gen-gui.h - the generated `_init` handler calls
 // it, and every extension is required to define one.

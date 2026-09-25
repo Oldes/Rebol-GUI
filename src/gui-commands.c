@@ -1174,10 +1174,10 @@ static REBOOL Kind_Has_Enabled(REBCNT kind)
 #define Kind_Has_Read_Only(kind) \
 	((kind) == W_GUI_WIDGET_FIELD || (kind) == W_GUI_WIDGET_AREA)
 
-// Which kinds scroll, and can be asked where they are. Only an area for
-// now: a drop-down's list scrolls but is not addressable, and nothing
-// else here has a scrollbar at all.
-#define Kind_Scrolls(kind) ((kind) == W_GUI_WIDGET_AREA)
+// Which kinds scroll, and can be asked where they are. A drop-down's list
+// scrolls too, but is not addressable.
+#define Kind_Scrolls(kind) \
+	((kind) == W_GUI_WIDGET_AREA || (kind) == W_GUI_WIDGET_TEXT_LIST)
 
 static const char* Kind_Name(REBCNT kind)
 {
@@ -3060,6 +3060,12 @@ int GuiWidget_get_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 		arg->dec64 = (double)at;
 		break; }
 
+	case W_GUI_ARG_SCROLLABLEQ:
+		if (wid->kind != W_GUI_WIDGET_TEXT_LIST) { *type = RXT_NONE; break; }
+		*type = RXT_LOGIC;
+		arg->int32a = (wid->state & GUI_LIST_FIXED) ? 0 : 1;
+		break;
+
 	case W_GUI_ARG_SIZE:
 		if (!Gui_Widget_Get_Box(wid, &x, &y, &w, &h)) { *type = RXT_NONE; break; }
 		arg->pair.x = (float)w;
@@ -3409,6 +3415,17 @@ int GuiWidget_set_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 			case W_GUI_SCROLL_END:    where = 1.0; break;
 			default: return PE_BAD_SET;
 			}
+		} else if (*type == RXT_INTEGER && wid->kind == W_GUI_WIDGET_TEXT_LIST) {
+			// An item, 1-based like `index`, brought into view without
+			// being picked. Clamped like a percent: 0 or less is the first
+			// item, past the end is the last.
+			REBCNT count = Gui_Widget_Count_Items(wid);
+			i64    n     = arg->int64;
+			if (count == 0) break;
+			if (n < 1) n = 1;
+			if (n > (i64)count) n = (i64)count;
+			Gui_Widget_Scroll_To_Item(wid, (REBINT)(n - 1));
+			break;
 		} else if (*type == RXT_PERCENT || *type == RXT_DECIMAL) {
 			where = (REBDEC)arg->dec64;
 			if (where < 0.0) where = 0.0;
@@ -3419,6 +3436,14 @@ int GuiWidget_set_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 
 		Gui_Widget_Set_Scroll(wid, where);
 		break; }
+
+	case W_GUI_ARG_SCROLLABLEQ:
+		if (wid->kind != W_GUI_WIDGET_TEXT_LIST) return PE_BAD_SET;
+		if (*type != RXT_LOGIC) return PE_BAD_SET_TYPE;
+		if (arg->int32a) wid->state &= ~GUI_LIST_FIXED;
+		else             wid->state |=  GUI_LIST_FIXED;
+		Gui_Widget_Set_Scrollable(wid, arg->int32a ? TRUE : FALSE);
+		break;
 
 	case W_GUI_ARG_ENABLEDQ:
 		if (!Kind_Has_Enabled(wid->kind)) return PE_BAD_SET;

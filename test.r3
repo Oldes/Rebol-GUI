@@ -61,13 +61,13 @@ print ["dark?:   " win/dark?]
 ;; Off by default: on Windows only the title bar follows the appearance. With
 ;; it on, the controls and every colour left at `none` follow as well.
 ;;
-;; WATCH (Windows, dark system): the main window is dark inside too - dark
-;; buttons, fields, drop-down and fill. The other windows are light inside
-;; with a dark title bar. Toggle it from the View menu.
+;; WATCH (Windows, dark system): every window starts light inside, with a
+;; dark title bar. Turn the main window's controls dark from the View menu.
 print ["dark-controls? by default:" win/dark-controls?]
 win/dark-controls?: true
 print ["and on:                   " win/dark-controls?]
 win/dark-controls?: false ;; turn it off again
+
 ;; every accessor which can be read can also be written, except id and open?
 win/title: "Rebol GUI extension - move the mouse"
 print ["title:   " mold win/title]
@@ -444,6 +444,30 @@ trees/index: 7            ;; the last one - scrolled into view
 print ["last picked:" mold trees/text]
 trees/index: 0            ;; zero, or anything out of range, picks nothing
 print ["cleared:" mold trees/text]
+
+;; `scroll` works as for an area, a fraction of the way down.
+trees/scroll: 'top
+print ["scrolled to the top:" trees/scroll "(expected 0%)"]
+trees/scroll: 'end
+print ["and to the end:     " trees/scroll "(expected 100%)"]
+
+;; An integer brings that item into view without picking it, scrolling as
+;; little as it takes; out of range is clamped.
+trees/scroll: 1
+print ["item 1 in view:     " trees/scroll "(expected 0%)" "index:" trees/index "(expected 0)"]
+trees/scroll: 100
+print ["past the end:       " trees/scroll "(expected 100%)"]
+print ["an area takes no integer:" error? try [log/scroll: 1]]
+
+;; `scrollable?` off takes the scroll bar and the wheel away from the user;
+;; code still scrolls it.
+print ["scrollable? by default:" trees/scrollable?]
+trees/scrollable?: false
+print ["and off:               " trees/scrollable?]
+trees/scroll: 'top
+print ["still scrolled by code:" trees/scroll "(expected 0%)"]
+trees/scrollable?: true
+print ["not a list's accessor: " mold picker/scrollable? "(expected none)"]
 
 ;; `/index` picks one at creation, as for a drop-down; a zero size asks the
 ;; list for its natural one. This one is removed straight away.

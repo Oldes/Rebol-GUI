@@ -200,6 +200,20 @@ Cocoa flips offsets against the menu-bar screen; the content view answers
   its own data source, holds the strings in an `NSMutableArray`, and
   suppresses `change` while the script sets the selection. `setFont:` is
   overridden to set the column cell's font and the row height.
+- **`scrollable?` off:** the list box keeps its creation style and calls
+  `SetScrollInfo` whenever its items or size change, which sets `WS_VSCROLL`
+  again. So the bit stays, and `Nav_Proc` clears it only around
+  `WM_NCCALCSIZE`, `WM_NCPAINT` and `WM_NCHITTEST`. The frame then has no
+  scroll bar, the control is not recreated, and `LB_SETTOPINDEX` still
+  scrolls. `WM_MOUSEWHEEL` goes to `DefWindowProc`, which passes it to the
+  parent. `scroll` on a list works in rows (`LB_GETTOPINDEX`), not from the
+  scroll bar. On macOS, `setHasVerticalScroller:` is toggled and
+  `scrollWheel:` is passed to the scroll view's next responder.
+- **Integer `scroll` on a text-list:** the shared layer clamps it to the
+  items and calls `Gui_Widget_Scroll_To_Item` 0-based. Windows compares it
+  with `LB_GETTOPINDEX` and the rows that fit, then sets the top index only
+  when the item is outside the view. macOS uses `scrollRowToVisible:`, which
+  already works that way.
 - **Image widget:** the pixel pointer and size are read at every paint. BGRA
   is a 32-bit `BI_RGB` DIB and
   `kCGImageAlphaNoneSkipFirst | kCGBitmapByteOrder32Little`. `RXIARG`'s image

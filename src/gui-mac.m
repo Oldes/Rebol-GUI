@@ -708,6 +708,18 @@ static void Queue_Press(NSView *view, GUIWIDGET *ctx, REBCNT type, NSEvent *evt,
 - (void)setContext:(GUIWIDGET*)ctx { context = ctx; }
 - (void)setQuiet:(BOOL)on { quiet = on; }
 
+// With `scrollable?` off, the wheel goes past the list to whatever holds
+// its scroll view - as for a control which does not scroll - rather than
+// to the scroll view itself.
+- (void)scrollWheel:(NSEvent*)evt
+{
+	if (context && (context->state & GUI_LIST_FIXED)) {
+		[[[self enclosingScrollView] nextResponder] scrollWheel:evt];
+		return;
+	}
+	[super scrollWheel:evt];
+}
+
 - (NSMutableArray*)items
 {
 	if (!items) items = [[NSMutableArray alloc] init];
@@ -3575,7 +3587,8 @@ static REBOOL Scroll_Metrics_Of(GUIWIDGET *wid, NSScrollView **sv,
 	NSClipView *clip;
 	NSView     *doc;
 
-	if (!wid || !wid->handle || wid->kind != W_GUI_WIDGET_AREA) return FALSE;
+	if (!wid || !wid->handle) return FALSE;
+	if (wid->kind != W_GUI_WIDGET_AREA && wid->kind != W_GUI_WIDGET_TEXT_LIST) return FALSE;
 
 	*sv  = (NSScrollView*)wid->handle;
 	clip = [*sv contentView];
@@ -3585,6 +3598,29 @@ static REBOOL Scroll_Metrics_Of(GUIWIDGET *wid, NSScrollView **sv,
 	*span = [doc frame].size.height - [clip bounds].size.height;
 	*at   = [clip bounds].origin.y;
 	return TRUE;
+}
+
+
+// The scroll view keeps scrolling from code either way; only the bar and
+// the wheel (see -[RebolGuiList scrollWheel:]) go.
+void Gui_Widget_Set_Scrollable(GUIWIDGET *wid, REBOOL on)
+{
+	@autoreleasepool {
+		if (!wid || !wid->handle || wid->kind != W_GUI_WIDGET_TEXT_LIST) return;
+		[(NSScrollView*)wid->handle setHasVerticalScroller:(on ? YES : NO)];
+		Display_Pending = TRUE;
+	}
+}
+
+
+// scrollRowToVisible: already scrolls as little as it takes.
+void Gui_Widget_Scroll_To_Item(GUIWIDGET *wid, REBINT n)
+{
+	@autoreleasepool {
+		RebolGuiList *list = List_View_Of(wid);
+		if (!list || n < 0 || n >= [list numberOfRows]) return;
+		[list scrollRowToVisible:(NSInteger)n];
+	}
 }
 
 
@@ -3614,6 +3650,12 @@ REBOOL Gui_Widget_Set_Scroll(GUIWIDGET *wid, REBDEC where)
 		// laid out yet, and scrollRangeToVisible: forces that first. A
 		// computed fraction has no such guarantee to offer, so it uses
 		// whatever the layout currently says.
+		if (where >= 1.0 && wid->kind == W_GUI_WIDGET_TEXT_LIST) {
+			RebolGuiList *list = List_View_Of(wid);
+			if ([list numberOfRows] > 0)
+				[list scrollRowToVisible:[list numberOfRows] - 1];
+			return TRUE;
+		}
 		if (where >= 1.0) {
 			NSTextView *text = Text_View_Of(wid);
 			[text scrollRangeToVisible:
