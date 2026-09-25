@@ -381,7 +381,7 @@ handles: [
 		kind     word!     none      "What the control is: button, image, text, field, area, check, radio, toggle, slider, progress, drop-down, text-list or panel"
 		value    percent!  [percent! decimal!] "Position of a slider or a progress bar; none for other kinds"
 		state    logic!    logic!    "Whether a check, a radio or a toggle is on; none for other kinds"
-		edge     logic!    logic!    "Whether a panel draws a frame around itself; none for other kinds"
+		edge     logic!    logic!    "Whether a panel draws a frame around itself, or a field, an area or a text-list its border; none for other kinds"
 		;; Typography. Every kind which has `text` has these; the rest answer none.
 		font      string!  [string! none!] "Font family; none puts it back to the system font"
 		font-size integer! [integer! none!] "Point size; none puts it back to the system size"
@@ -464,6 +464,7 @@ commands: [
 		text   [string!] "Initial contents"
 		offset [pair!]   "Position inside the client area"
 		size   [pair!]
+		/flat "Without the border - a plain box of text"
 	]
 	add-area: [
 		"Creates a multi-line text entry inside a window and returns its handle"
@@ -471,6 +472,7 @@ commands: [
 		text   [string!] "Initial contents"
 		offset [pair!]   "Position inside the client area"
 		size   [pair!]
+		/flat "Without the border - a plain box of text"
 	]
 	add-check: [
 		"Creates a checkbox inside a window and returns its handle"
@@ -563,6 +565,7 @@ commands: [
 		offset [pair!]   "Position inside the client area"
 		size   [pair!]
 		/index n [integer!] "Item picked to start with, 1-based (default: none)"
+		/flat "Without the border"
 	]
 ]
 

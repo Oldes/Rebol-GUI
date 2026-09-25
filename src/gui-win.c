@@ -4866,8 +4866,13 @@ REBOOL Gui_Widget_Natural_Size(GUIWIDGET *wid, REBINT *w, REBINT *h)
 	case W_GUI_WIDGET_FIELD:
 	case W_GUI_WIDGET_DROP_DOWN:
 		// The sunken border, plus the padding the control keeps inside it.
-		pad_x = 2 * Metric(dpi, SM_CXEDGE) + To_Device(dpi, 8);
-		pad_y = 2 * Metric(dpi, SM_CYEDGE) + To_Device(dpi, 8);
+		pad_x = To_Device(dpi, 8);
+		pad_y = To_Device(dpi, 8);
+		// The border, unless it was taken off with `/flat` or `edge`.
+		if (GetWindowLongPtrW(hwnd, GWL_EXSTYLE) & WS_EX_CLIENTEDGE) {
+			pad_x += 2 * Metric(dpi, SM_CXEDGE);
+			pad_y += 2 * Metric(dpi, SM_CYEDGE);
+		}
 		// An entry's width should not be the width of whatever happens to
 		// be in it - an empty one would come out a few pixels wide. About
 		// twenty characters is what a dialog uses when it has no better
@@ -5347,6 +5352,37 @@ void Gui_Widget_Set_Scrollable(GUIWIDGET *wid, REBOOL on)
 	             SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE
 	             | SWP_FRAMECHANGED | SWP_DRAWFRAME);
 	InvalidateRect(HWND_OF_WID(wid), NULL, TRUE);
+}
+
+
+/***********************************************************************
+**  The border is WS_EX_CLIENTEDGE: a frame style, so taking it off is
+**  SWP_FRAMECHANGED and the window keeps its rectangle - the client area
+**  grows into the room. The dark edge (Paint_Dark_Edge) already checks
+**  the bit, so a flat control in a dark window gets no ring either.
+***********************************************************************/
+REBOOL Gui_Widget_Get_Edge(GUIWIDGET *wid)
+{
+	if (!wid || !wid->handle) return FALSE;
+	return (GetWindowLongPtrW(HWND_OF_WID(wid), GWL_EXSTYLE) & WS_EX_CLIENTEDGE)
+		? TRUE : FALSE;
+}
+
+
+void Gui_Widget_Set_Edge(GUIWIDGET *wid, REBOOL on)
+{
+	HWND     hwnd;
+	LONG_PTR ex;
+
+	if (!wid || !wid->handle) return;
+	hwnd = HWND_OF_WID(wid);
+	ex   = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+	ex   = on ? (ex | WS_EX_CLIENTEDGE) : (ex & ~(LONG_PTR)WS_EX_CLIENTEDGE);
+	SetWindowLongPtrW(hwnd, GWL_EXSTYLE, ex);
+	SetWindowPos(hwnd, NULL, 0, 0, 0, 0,
+	             SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE
+	             | SWP_FRAMECHANGED | SWP_DRAWFRAME);
+	InvalidateRect(hwnd, NULL, TRUE);
 }
 
 

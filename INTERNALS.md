@@ -209,6 +209,14 @@ Cocoa flips offsets against the menu-bar screen; the content view answers
   parent. `scroll` on a list works in rows (`LB_GETTOPINDEX`), not from the
   scroll bar. On macOS, `setHasVerticalScroller:` is toggled and
   `scrollWheel:` is passed to the scroll view's next responder.
+- **`/flat` and `edge` on an entry or a list:** these read the native control
+  back rather than a state bit, because `state` bit 1 already means read-only
+  on a field and fixed on a list. On Windows this is `WS_EX_CLIENTEDGE`
+  toggled with `SWP_FRAMECHANGED`; natural size and `Paint_Dark_Edge` both
+  check the bit. On macOS a field's bezel is switched off with
+  `setDrawsBackground:YES` so `background` still shows, and an area's or a
+  list's scroll view uses `NSNoBorder`. `/flat` is applied before
+  `Attach_Widget`, so a natural size leaves no room for a missing border.
 - **Integer `scroll` on a text-list:** the shared layer clamps it to the
   items and calls `Gui_Widget_Scroll_To_Item` 0-based. Windows compares it
   with `LB_GETTOPINDEX` and the rows that fit, then sets the top index only

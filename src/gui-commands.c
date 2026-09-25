@@ -809,6 +809,12 @@ static REBOOL Kind_Has_Text(REBCNT kind)
 	     || kind == W_GUI_WIDGET_TEXT_LIST) ? TRUE : FALSE;
 }
 
+// Which kinds have a native border that `edge` and `/flat` switch off. A
+// panel's frame is `edge` too, but drawn by the extension itself.
+#define Kind_Has_Border(kind) \
+	((kind) == W_GUI_WIDGET_FIELD || (kind) == W_GUI_WIDGET_AREA \
+	 || (kind) == W_GUI_WIDGET_TEXT_LIST)
+
 // Which kinds hold a list of strings, and pick one of them by `index`.
 #define Kind_Has_Items(kind) \
 	((kind) == W_GUI_WIDGET_DROP_DOWN || (kind) == W_GUI_WIDGET_TEXT_LIST)
@@ -2214,6 +2220,9 @@ static int Add_Text_Control(RXIFRM *frm, REBCNT kind)
 		RL_FREE_HANDLE_CONTEXT(hob);
 		RETURN_ERROR(ERR_NO_WIDGET);
 	}
+	// `/flat` - before Attach_Widget, so a natural size leaves no room for
+	// a border that is not there. A label has no such refinement.
+	if (Kind_Has_Border(kind) && RXA_REF(frm, 5)) Gui_Widget_Set_Edge(wid, FALSE);
 
 	Attach_Widget(wid, win, req_w, req_h);
 
@@ -2316,6 +2325,9 @@ static int Add_List_Control(RXIFRM *frm, REBCNT kind)
 		RL_FREE_HANDLE_CONTEXT(hob);
 		RETURN_ERROR(ERR_NO_WIDGET);
 	}
+
+	// `/flat` is the text-list's alone; a drop-down has no refinement 7.
+	if (kind == W_GUI_WIDGET_TEXT_LIST && RXA_REF(frm, 7)) Gui_Widget_Set_Edge(wid, FALSE);
 
 	Block_To_Items(wid, RXA_SERIES(frm, 2));
 	// Nothing is picked unless asked for - a list which starts blank is a
@@ -2930,7 +2942,12 @@ int GuiWidget_get_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 		break;
 
 	case W_GUI_ARG_EDGE:
-		// Only a panel has a frame to draw, so only a panel answers.
+		// A panel's frame, or the border of an entry or a list.
+		if (Kind_Has_Border(wid->kind)) {
+			*type = RXT_LOGIC;
+			arg->int32a = Gui_Widget_Get_Edge(wid) ? 1 : 0;
+			break;
+		}
 		if (wid->kind != W_GUI_WIDGET_PANEL) { *type = RXT_NONE; break; }
 		*type = RXT_LOGIC;
 		arg->int32a = ((wid->state & GUI_PANEL_EDGE) != 0);
@@ -3377,6 +3394,11 @@ int GuiWidget_set_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 		// The backends read this flag at paint time, so turning a frame on
 		// or off is a repaint and never a rebuild of the control - which is
 		// also why nothing the panel holds moves.
+		if (Kind_Has_Border(wid->kind)) {
+			if (*type != RXT_LOGIC) return PE_BAD_SET_TYPE;
+			Gui_Widget_Set_Edge(wid, arg->int32a ? TRUE : FALSE);
+			break;
+		}
 		if (wid->kind != W_GUI_WIDGET_PANEL) return PE_BAD_SET;
 		if (*type != RXT_LOGIC) return PE_BAD_SET_TYPE;
 		if (arg->int32a) wid->state |=  GUI_PANEL_EDGE;

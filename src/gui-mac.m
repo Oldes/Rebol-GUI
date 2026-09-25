@@ -3613,6 +3613,42 @@ void Gui_Widget_Set_Scrollable(GUIWIDGET *wid, REBOOL on)
 }
 
 
+/***********************************************************************
+**  The border: a field's bezel, or the scroll view's border for an area
+**  and a text-list. A field without its bezel stops drawing its
+**  background with it, so it is asked to go on drawing one - otherwise
+**  `background` would have nothing to show.
+***********************************************************************/
+REBOOL Gui_Widget_Get_Edge(GUIWIDGET *wid)
+{
+	@autoreleasepool {
+		if (!wid || !wid->handle) return FALSE;
+		if (wid->kind == W_GUI_WIDGET_FIELD)
+			return [(NSTextField*)wid->handle isBezeled] ? TRUE : FALSE;
+		return ([(NSScrollView*)wid->handle borderType] != NSNoBorder) ? TRUE : FALSE;
+	}
+}
+
+
+void Gui_Widget_Set_Edge(GUIWIDGET *wid, REBOOL on)
+{
+	@autoreleasepool {
+		if (!wid || !wid->handle) return;
+		if (wid->kind == W_GUI_WIDGET_FIELD) {
+			NSTextField *field = (NSTextField*)wid->handle;
+			[field setBezeled:(on ? YES : NO)];
+			if (on) [field setBezelStyle:NSTextFieldSquareBezel];
+			else    [field setBordered:NO];
+			[field setDrawsBackground:YES];
+		} else {
+			[(NSScrollView*)wid->handle setBorderType:(on ? NSBezelBorder : NSNoBorder)];
+		}
+		[NSVIEW_OF(wid) setNeedsDisplay:YES];
+		Display_Pending = TRUE;
+	}
+}
+
+
 // scrollRowToVisible: already scrolls as little as it takes.
 void Gui_Widget_Scroll_To_Item(GUIWIDGET *wid, REBINT n)
 {

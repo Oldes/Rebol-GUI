@@ -553,6 +553,17 @@ trees/index: 4            ;; picks and scrolls it into view, without a `change`
 `items` and `index` work as for a drop-down. `change` is reported only when
 the user picks. A zero size gives about twenty characters by six rows.
 
+A field, an area and a text-list can be made without their border with
+`/flat`. `edge` reads it back, and can turn it on or off at any time:
+
+```rebol
+plain: add-field/flat win "no border" 20x20 200x0
+plain/edge                ;; false
+plain/edge: true          ;; back to the platform's sunken edge
+```
+
+The box stays the same size either way, and the text gets the border's room.
+
 `scroll` works as for an area. Setting `scrollable?` to false hides the
 scroll bar and passes the wheel on to whatever holds the list. `scroll` and
 `index` still move it, and so does picking with the keyboard:
@@ -820,6 +831,7 @@ Creates a one-line text entry inside a window and returns its handle
 * `text` `[string!]` Initial contents
 * `offset` `[pair!]` Position inside the client area
 * `size` `[pair!]`
+* `/flat` Without the border - a plain box of text
 
 #### `add-area` `:parent` `:text` `:offset` `:size`
 Creates a multi-line text entry inside a window and returns its handle
@@ -827,6 +839,7 @@ Creates a multi-line text entry inside a window and returns its handle
 * `text` `[string!]` Initial contents
 * `offset` `[pair!]` Position inside the client area
 * `size` `[pair!]`
+* `/flat` Without the border - a plain box of text
 
 #### `add-check` `:parent` `:text` `:offset` `:size`
 Creates a checkbox inside a window and returns its handle
@@ -931,6 +944,7 @@ Creates a list of strings in a fixed box, which scrolls when they do not fit, an
 * `size` `[pair!]`
 * `/index`
 * `n` `[integer!]` Item picked to start with, 1-based (default: none)
+* `/flat` Without the border
 
 
 ## Used handles and its getters / setters
@@ -989,7 +1003,7 @@ Creates a list of strings in a fixed box, which scrolls when they do not fit, an
 /kind             word!               none                          "What the control is: button, image, text, field, area, check, radio, toggle, slider, progress, drop-down, text-list or panel"
 /value            percent!            [percent! decimal!]           "Position of a slider or a progress bar; none for other kinds"
 /state            logic!              logic!                        "Whether a check, a radio or a toggle is on; none for other kinds"
-/edge             logic!              logic!                        "Whether a panel draws a frame around itself; none for other kinds"
+/edge             logic!              logic!                        "Whether a panel draws a frame around itself, or a field, an area or a text-list its border; none for other kinds"
 /font             string!             [string! none!]               "Font family; none puts it back to the system font"
 /font-size        integer!            [integer! none!]              "Point size; none puts it back to the system size"
 /bold?            logic!              logic!                        "Whether the text is bold"

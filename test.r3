@@ -729,6 +729,20 @@ fixed: open-window/title/at/fixed 240x120 "Fixed size" 700x120
 print ["fixed window - resizable?" fixed/resizable? " border?" fixed/border?]
 print ["client size:" fixed/size]
 
+;; `/flat` makes an entry or a list without its border - a plain box of text.
+;; `edge` reads it back, and turns it on and off afterwards; the box stays
+;; where it is.
+;;
+;; WATCH: in the "Fixed size" window, a field and an area with no border.
+plain: add-field/flat fixed "a flat field" 10x10 220x0
+sheet: add-area/flat  fixed "a flat area^/with two lines" 10x44 220x66
+print ["flat field - edge?" plain/edge " area:" sheet/edge "(expected false false)"]
+print ["a normal field has one:" name/edge "(expected true)"]
+plain/edge: true
+print ["turned on: " plain/edge]
+plain/edge: false
+print ["and off:   " plain/edge]
+
 ;; A window can carry a colour of its own, which every widget on it then
 ;; resolves to - a transparent label on a dark window needs no colour of its
 ;; own, only a light text colour.
