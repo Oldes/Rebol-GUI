@@ -422,6 +422,13 @@ void    Gui_Widget_Set_Value(GUIWIDGET *wid, REBDEC value);
 REBOOL  Gui_Create_Drop_Down(GUIWIDGET *wid, GUIWIN *owner,
                              REBINT x, REBINT y, REBINT w, REBINT h);
 
+// A text-list: the same strings, shown as a list in a fixed box rather than
+// behind a button, with a vertical scroll bar only while they do not fit.
+// The item and index functions below serve both kinds; a backend tells
+// them apart by `wid->kind`.
+REBOOL  Gui_Create_Text_List(GUIWIDGET *wid, GUIWIN *owner,
+                             REBINT x, REBINT y, REBINT w, REBINT h);
+
 
 //-- panel --------------------------------------------------------------------
 // A container. Everything a panel holds is positioned inside IT rather than

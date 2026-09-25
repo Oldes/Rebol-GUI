@@ -805,8 +805,13 @@ static REBOOL Kind_Has_Text(REBCNT kind)
 	     // which simply keeps a string nothing draws
 	     || kind == W_GUI_WIDGET_PANEL
 	     // readable, but not writable - see the set path
-	     || kind == W_GUI_WIDGET_DROP_DOWN) ? TRUE : FALSE;
+	     || kind == W_GUI_WIDGET_DROP_DOWN
+	     || kind == W_GUI_WIDGET_TEXT_LIST) ? TRUE : FALSE;
 }
+
+// Which kinds hold a list of strings, and pick one of them by `index`.
+#define Kind_Has_Items(kind) \
+	((kind) == W_GUI_WIDGET_DROP_DOWN || (kind) == W_GUI_WIDGET_TEXT_LIST)
 
 // Which kinds are on or off.
 static REBOOL Kind_Has_State(REBCNT kind)
@@ -1187,6 +1192,7 @@ static const char* Kind_Name(REBCNT kind)
 	case W_GUI_WIDGET_SLIDER:   return "slider";
 	case W_GUI_WIDGET_PROGRESS: return "progress";
 	case W_GUI_WIDGET_DROP_DOWN: return "drop-down";
+	case W_GUI_WIDGET_TEXT_LIST: return "text-list";
 	case W_GUI_WIDGET_PANEL:     return "panel";
 	default:                 return "button";
 	}
@@ -2269,8 +2275,9 @@ static int Add_Range_Control(RXIFRM *frm, REBCNT kind)
 /***********************************************************************
 **  add-drop-down window items [block!] offset [pair!] size [pair!]
 **                /index n [integer!]
+**  add-text-list - the same arguments
 ***********************************************************************/
-COMMAND cmd_gui_add_drop_down(RXIFRM *frm, void *ctx)
+static int Add_List_Control(RXIFRM *frm, REBCNT kind)
 {
 	REBHOB    *hob;
 	GUIWIDGET *wid;
@@ -2297,11 +2304,13 @@ COMMAND cmd_gui_add_drop_down(RXIFRM *frm, void *ctx)
 	wid = (GUIWIDGET*)hob->data;
 	CLEARS(wid); // every field defined, whatever the pool handed back
 	wid->hob   = hob;
-	wid->kind  = W_GUI_WIDGET_DROP_DOWN;
+	wid->kind  = kind;
 	wid->owner  = win;
 	wid->parent = panel; // read by the backend to pick the native parent
 
-	if (!Gui_Create_Drop_Down(wid, win, x, y, w, h)) {
+	if (!(kind == W_GUI_WIDGET_TEXT_LIST
+	      ? Gui_Create_Text_List(wid, win, x, y, w, h)
+	      : Gui_Create_Drop_Down(wid, win, x, y, w, h))) {
 		wid->owner  = NULL;
 		wid->parent = NULL;
 		RL_FREE_HANDLE_CONTEXT(hob);
@@ -2309,13 +2318,24 @@ COMMAND cmd_gui_add_drop_down(RXIFRM *frm, void *ctx)
 	}
 
 	Block_To_Items(wid, RXA_SERIES(frm, 2));
-	// Nothing is picked unless asked for - a drop-down which starts blank
-	// is a normal thing to want.
+	// Nothing is picked unless asked for - a list which starts blank is a
+	// normal thing to want.
 	Gui_Widget_Set_Index(wid, RXA_REF(frm, 5) ? (REBINT)RXA_INT32(frm, 6) - 1 : -1);
 
 	Attach_Widget(wid, win, req_w, req_h);
 
 	RETURN_HANDLE(hob);
+}
+
+
+COMMAND cmd_gui_add_drop_down(RXIFRM *frm, void *ctx)
+{
+	return Add_List_Control(frm, W_GUI_WIDGET_DROP_DOWN);
+}
+
+COMMAND cmd_gui_add_text_list(RXIFRM *frm, void *ctx)
+{
+	return Add_List_Control(frm, W_GUI_WIDGET_TEXT_LIST);
 }
 
 
@@ -2852,7 +2872,13 @@ int GuiWidget_get_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 	case W_GUI_ARG_TEXT: {
 		REBSER *str;
 		if (!Kind_Has_Text(wid->kind)) { *type = RXT_NONE; break; }
-		str = Gui_Widget_Get_Text(wid);
+		if (wid->kind == W_GUI_WIDGET_TEXT_LIST) {
+			// A list box has no text of its own - the picked item is it,
+			// and nothing picked reads as none, not as an empty string.
+			REBINT n = Gui_Widget_Get_Index(wid);
+			str = (n < 0) ? NULL : Gui_Widget_Get_Item(wid, (REBCNT)n);
+		}
+		else str = Gui_Widget_Get_Text(wid);
 		if (!str) { *type = RXT_NONE; break; }
 		arg->series = str;
 		arg->index  = 0;
@@ -2998,7 +3024,7 @@ int GuiWidget_get_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 
 	case W_GUI_ARG_ITEMS: {
 		REBSER *blk;
-		if (wid->kind != W_GUI_WIDGET_DROP_DOWN) { *type = RXT_NONE; break; }
+		if (!Kind_Has_Items(wid->kind)) { *type = RXT_NONE; break; }
 		blk = Items_To_Block(wid);
 		if (!blk) { *type = RXT_NONE; break; }
 		arg->series = blk;
@@ -3008,7 +3034,7 @@ int GuiWidget_get_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 
 	case W_GUI_ARG_INDEX: {
 		REBINT n;
-		if (wid->kind != W_GUI_WIDGET_DROP_DOWN) { *type = RXT_NONE; break; }
+		if (!Kind_Has_Items(wid->kind)) { *type = RXT_NONE; break; }
 		n = Gui_Widget_Get_Index(wid);
 		*type = RXT_INTEGER;
 		// Rebol counts from one, and zero means nothing is picked.
@@ -3153,13 +3179,13 @@ int GuiWidget_set_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 
 	switch (word) {
 	case W_GUI_ARG_ITEMS:
-		if (wid->kind != W_GUI_WIDGET_DROP_DOWN) return PE_BAD_SET;
+		if (!Kind_Has_Items(wid->kind)) return PE_BAD_SET;
 		if (*type != RXT_BLOCK) return PE_BAD_SET_TYPE;
 		Block_To_Items(wid, (REBSER*)arg->series);
 		break;
 
 	case W_GUI_ARG_INDEX:
-		if (wid->kind != W_GUI_WIDGET_DROP_DOWN) return PE_BAD_SET;
+		if (!Kind_Has_Items(wid->kind)) return PE_BAD_SET;
 		if (*type != RXT_INTEGER) return PE_BAD_SET_TYPE;
 		// Out of range - zero included - simply picks nothing.
 		Gui_Widget_Set_Index(wid, (REBINT)arg->int64 - 1);
@@ -3169,8 +3195,9 @@ int GuiWidget_set_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 		REBYTE *utf8 = NULL;
 		int len;
 		if (!Kind_Has_Text(wid->kind)) return PE_BAD_SET;
-		// A drop-down shows whichever item is picked; `index` chooses it.
-		if (wid->kind == W_GUI_WIDGET_DROP_DOWN) return PE_BAD_SET;
+		// A drop-down or a text-list shows whichever item is picked;
+		// `index` chooses it.
+		if (Kind_Has_Items(wid->kind)) return PE_BAD_SET;
 		if (*type != RXT_STRING) return PE_BAD_SET_TYPE;
 		len = RL_GET_UTF8_STRING((REBSER*)arg->series, arg->index, (void**)&utf8);
 		if (len < 0) return PE_BAD_SET;

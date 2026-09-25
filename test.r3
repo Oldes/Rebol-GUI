@@ -67,7 +67,7 @@ print ["dark?:   " win/dark?]
 print ["dark-controls? by default:" win/dark-controls?]
 win/dark-controls?: true
 print ["and on:                   " win/dark-controls?]
-win/dark-controls?: false
+win/dark-controls?: false ;; turn it off again
 ;; every accessor which can be read can also be written, except id and open?
 win/title: "Rebol GUI extension - move the mouse"
 print ["title:   " mold win/title]
@@ -420,6 +420,37 @@ print ["index:    " picker/index "-> text:" mold picker/text]
 picker/items: ["Ash" "Birch" "Elm" "Oak" "Rowan"]
 picker/index: 4
 print ["after replacing the items:" picker/index mold picker/text]
+
+;;=============================================================================
+print as-yellow "^/== Text-list"
+;;=============================================================================
+
+;; The same list as a drop-down, shown in a box. It is kept short on purpose:
+;; the items do not fit, so the vertical scroll bar shows up on its own.
+trees: add-text-list win ["Ash" "Birch" "Elm" "Oak" "Rowan" "Willow"] 300x425 300x48
+
+print ["text-list:" trees/kind]
+print ["items:    " mold trees/items]
+print ["nothing picked:" trees/index mold trees/text "(expected 0 none)"]
+
+trees/index: 3
+print ["picked from Rebol:" trees/index mold trees/text "(expected 3 ^"Elm^")"]
+print ["text is read-only:" error? try [trees/text: "Yew"]]
+
+;; Replacing the list drops the selection with the items it referred to.
+trees/items: ["Alder" "Hazel" "Linden" "Maple" "Poplar" "Spruce" "Yew"]
+print ["after replacing the items:" length? trees/items trees/index "(expected 7 0)"]
+trees/index: 7            ;; the last one - scrolled into view
+print ["last picked:" mold trees/text]
+trees/index: 0            ;; zero, or anything out of range, picks nothing
+print ["cleared:" mold trees/text]
+
+;; `/index` picks one at creation, as for a drop-down; a zero size asks the
+;; list for its natural one. This one is removed straight away.
+spare: add-text-list/index win ["one" "two"] 0x0 0x0 2
+print ["natural size:" spare/size "picked:" mold spare/text]
+remove-widget spare
+release spare
 
 logged: copy "-- event log --"
 note: func ["Appends a line to the area" line [string!]][
@@ -950,6 +981,10 @@ report: func [event /local type source position kind][
 				;; Picking from the drop-down shows up in the label.
 				label/text: ajoin ["Picked: " source/text " (" source/index ")"]
 			]
+			source == trees [
+				;; ... and so does picking from the text-list.
+				label/text: ajoin ["Tree: " source/text " (" source/index ")"]
+			]
 			source == level [
 				;; Dragging the slider drives the progress bar next to it.
 				meter/value: source/value
@@ -1150,7 +1185,7 @@ print ["the image survives:" type? pic pic/size]
 ;; optional - the recycler would do it too.
 foreach handle reduce [
 	canvas counter closer label name log styled
-	toggle box warm cool slow fast level meter picker
+	toggle box warm cool slow fast level meter picker trees
 	fixed bare back-again
 ][	release handle ]
 ;; Screen handles lock nothing native, so they need no release - the

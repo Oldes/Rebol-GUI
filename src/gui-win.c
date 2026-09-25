@@ -1038,8 +1038,9 @@ static void Dark_Title_Bar(HWND hwnd, REBOOL dark)
 **
 **    push button, toggle,  DarkMode_Explorer
 **    check, radio
-**    field, area           DarkMode_Explorer - dark scroll bars; fill
-**                          and text come from WM_CTLCOLOREDIT
+**    field, area,          DarkMode_Explorer - dark scroll bars; fill
+**    text-list             and text come from WM_CTLCOLOREDIT and
+**                          WM_CTLCOLORLISTBOX
 **    drop-down             DarkMode_CFD
 **
 **  A themed check or radio draws its label in the theme's own colour,
@@ -1513,6 +1514,7 @@ static void Theme_Control(GUIWIDGET *wid, REBOOL dark)
 	case W_GUI_WIDGET_RADIO:
 	case W_GUI_WIDGET_FIELD:
 	case W_GUI_WIDGET_AREA:
+	case W_GUI_WIDGET_TEXT_LIST:
 		set(hwnd, dark ? L"DarkMode_Explorer" : NULL, NULL);
 		break;
 	case W_GUI_WIDGET_DROP_DOWN:
@@ -1891,6 +1893,23 @@ static LRESULT CALLBACK Gui_Window_Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
 			case CBN_SELCHANGE: type = EVT_CHANGE;  break;
 			case CBN_SETFOCUS:  type = EVT_FOCUS;   break;
 			case CBN_KILLFOCUS: type = EVT_UNFOCUS; break;
+			default: goto not_handled;
+			}
+			if (wid->hob) {
+				Gui_Widget_Get_Box(wid, &x, &y, &w, &h);
+				Gui_Queue_Event(wid->hob, type, x, y, Modifiers());
+			}
+			return 0;
+		}
+		// ... and the list box ones likewise: LBN_SELCHANGE is 1, which
+		// is also a button's BN_PAINT.
+		if (wid && wid->kind == W_GUI_WIDGET_TEXT_LIST) {
+			switch (HIWORD(wp)) {
+			// Only a pick by the user; LB_SETCURSEL raises nothing, so
+			// `list/index: n` is not reported back as an event.
+			case LBN_SELCHANGE: type = EVT_CHANGE;  break;
+			case LBN_SETFOCUS:  type = EVT_FOCUS;   break;
+			case LBN_KILLFOCUS: type = EVT_UNFOCUS; break;
 			default: goto not_handled;
 			}
 			if (wid->hob) {
@@ -3790,7 +3809,8 @@ static LRESULT CALLBACK Nav_Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 
 	// A field's or an area's edge in a dark window - see Paint_Dark_Edge().
 	if (msg == WM_NCPAINT && wid
-	    && (wid->kind == W_GUI_WIDGET_FIELD || wid->kind == W_GUI_WIDGET_AREA)
+	    && (wid->kind == W_GUI_WIDGET_FIELD || wid->kind == W_GUI_WIDGET_AREA
+	        || wid->kind == W_GUI_WIDGET_TEXT_LIST)
 	    && Dark_For(wid->owner)) {
 		LRESULT r = base ? CallWindowProcW(base, hwnd, msg, wp, lp)
 		                 : DefWindowProcW(hwnd, msg, wp, lp);
@@ -4803,9 +4823,11 @@ REBOOL Gui_Widget_Natural_Size(GUIWIDGET *wid, REBINT *w, REBINT *h)
 		pad_y = To_Device(dpi, 4);
 		break;
 	case W_GUI_WIDGET_AREA:
+	case W_GUI_WIDGET_TEXT_LIST:
 		// One line is not a useful multi-line box; four is the smallest
-		// that looks like one.
-		lines = 4;
+		// that looks like one. A list gets a few more, as it is read by
+		// scanning down it.
+		lines = (wid->kind == W_GUI_WIDGET_TEXT_LIST) ? 6 : 4;
 		// fall through
 	case W_GUI_WIDGET_FIELD:
 	case W_GUI_WIDGET_DROP_DOWN:
@@ -5069,12 +5091,56 @@ REBOOL Gui_Create_Drop_Down(GUIWIDGET *wid, GUIWIN *owner,
 }
 
 
+//-- text-list ----------------------------------------------------------------
+
+REBOOL Gui_Create_Text_List(GUIWIDGET *wid, GUIWIN *owner,
+                            REBINT x, REBINT y, REBINT w, REBINT h)
+{
+	HWND hwnd;
+
+	if (!wid || !owner || !owner->handle) return FALSE;
+	Box_To_Device(Dpi_Of(HWND_OF(owner)), &x, &y, &w, &h);
+
+	// WS_VSCROLL without LBS_DISABLENOSCROLL is a scroll bar that shows
+	// only while the items do not fit. LBS_NOINTEGRALHEIGHT keeps the box
+	// the size it was given, rather than shrinking it to whole rows.
+	hwnd = CreateWindowExW(
+		WS_EX_CLIENTEDGE, L"LISTBOX", L"",
+		WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL | WS_GROUP
+		| LBS_NOTIFY | LBS_NOINTEGRALHEIGHT | LBS_HASSTRINGS,
+		x, y, w, h,
+		Parent_Hwnd(wid, owner),
+		NULL,
+		App_Instance, NULL
+	);
+	if (!hwnd) return FALSE;
+
+	SetWindowLongPtrW(hwnd, GWLP_USERDATA, (LONG_PTR)wid);
+	SendMessageW(hwnd, WM_SETFONT, (WPARAM)Default_Font_At(Dpi_Of(hwnd)), TRUE);
+
+	wid->handle = (void*)hwnd;
+	Subclass_For_Nav(wid);
+
+	return TRUE;
+}
+
+
+/***********************************************************************
+**  The items of a drop-down and of a text-list.
+**
+**  A combo box and a list box hold their strings the same way under
+**  different message numbers, and report failure with different values:
+**  so each call picks its message by kind, and CB_ERR and LB_ERR are both
+**  -1, CB_ERRSPACE and LB_ERRSPACE both -2.
+***********************************************************************/
+#define IS_LIST(wid) ((wid)->kind == W_GUI_WIDGET_TEXT_LIST)
+
 REBCNT Gui_Widget_Count_Items(GUIWIDGET *wid)
 {
 	LRESULT count;
 	if (!wid || !wid->handle) return 0;
-	count = SendMessageW(HWND_OF_WID(wid), CB_GETCOUNT, 0, 0);
-	return (count == CB_ERR || count < 0) ? 0 : (REBCNT)count;
+	count = SendMessageW(HWND_OF_WID(wid), IS_LIST(wid) ? LB_GETCOUNT : CB_GETCOUNT, 0, 0);
+	return (count < 0) ? 0 : (REBCNT)count;
 }
 
 
@@ -5088,15 +5154,15 @@ REBSER* Gui_Widget_Get_Item(GUIWIDGET *wid, REBCNT n)
 	if (!wid || !wid->handle) return NULL;
 	hwnd = HWND_OF_WID(wid);
 
-	len = SendMessageW(hwnd, CB_GETLBTEXTLEN, (WPARAM)n, 0);
-	if (len == CB_ERR) return NULL;
+	len = SendMessageW(hwnd, IS_LIST(wid) ? LB_GETTEXTLEN : CB_GETLBTEXTLEN, (WPARAM)n, 0);
+	if (len < 0) return NULL;
 	if (len == 0) return RL_MAKE_STRING(0, FALSE);
 
 	buf = (WCHAR*)MAKE_MEM(((size_t)len + 1) * sizeof(WCHAR));
 	if (!buf) return NULL;
 
-	len = SendMessageW(hwnd, CB_GETLBTEXT, (WPARAM)n, (LPARAM)buf);
-	if (len == CB_ERR) { FREE_MEM(buf); return NULL; }
+	len = SendMessageW(hwnd, IS_LIST(wid) ? LB_GETTEXT : CB_GETLBTEXT, (WPARAM)n, (LPARAM)buf);
+	if (len < 0) { FREE_MEM(buf); return NULL; }
 
 	str = RL_ENCODE_UTF8_STRING(buf, (REBCNT)len, TRUE, 0);
 	FREE_MEM(buf);
@@ -5112,17 +5178,17 @@ REBOOL Gui_Widget_Add_Item(GUIWIDGET *wid, const REBYTE *utf8, REBCNT len)
 	if (!wid || !wid->handle) return FALSE;
 
 	wide = To_Wide(utf8, len);
-	res = SendMessageW(HWND_OF_WID(wid), CB_ADDSTRING, 0,
+	res = SendMessageW(HWND_OF_WID(wid), IS_LIST(wid) ? LB_ADDSTRING : CB_ADDSTRING, 0,
 	                   (LPARAM)(wide ? wide : L""));
 	if (wide) FREE_MEM(wide);
-	return (res == CB_ERR || res == CB_ERRSPACE) ? FALSE : TRUE;
+	return (res < 0) ? FALSE : TRUE;
 }
 
 
 void Gui_Widget_Clear_Items(GUIWIDGET *wid)
 {
 	if (!wid || !wid->handle) return;
-	SendMessageW(HWND_OF_WID(wid), CB_RESETCONTENT, 0, 0);
+	SendMessageW(HWND_OF_WID(wid), IS_LIST(wid) ? LB_RESETCONTENT : CB_RESETCONTENT, 0, 0);
 }
 
 
@@ -5130,17 +5196,17 @@ REBINT Gui_Widget_Get_Index(GUIWIDGET *wid)
 {
 	LRESULT n;
 	if (!wid || !wid->handle) return -1;
-	n = SendMessageW(HWND_OF_WID(wid), CB_GETCURSEL, 0, 0);
-	return (n == CB_ERR) ? -1 : (REBINT)n;
+	n = SendMessageW(HWND_OF_WID(wid), IS_LIST(wid) ? LB_GETCURSEL : CB_GETCURSEL, 0, 0);
+	return (n < 0) ? -1 : (REBINT)n;
 }
 
 
 void Gui_Widget_Set_Index(GUIWIDGET *wid, REBINT n)
 {
 	if (!wid || !wid->handle) return;
-	// CB_SETCURSEL with -1 clears the selection, which is what an index
-	// out of range means here.
-	SendMessageW(HWND_OF_WID(wid), CB_SETCURSEL, (WPARAM)n, 0);
+	// -1 clears the selection, for both, which is what an index out of
+	// range means here. A list box also scrolls the pick into view.
+	SendMessageW(HWND_OF_WID(wid), IS_LIST(wid) ? LB_SETCURSEL : CB_SETCURSEL, (WPARAM)n, 0);
 }
 
 

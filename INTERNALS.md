@@ -191,6 +191,15 @@ Cocoa flips offsets against the menu-bar screen; the content view answers
 - **Drop-down:** Windows' `COMBOBOX` height includes the list, so the backend
   adds it and reports `CB_GETITEMHEIGHT`. macOS adds `NSMenuItem`s directly
   so duplicate titles survive.
+- **Text-list:** Windows uses a `LISTBOX` with `WS_EX_CLIENTEDGE`,
+  `LBS_NOTIFY` and `LBS_NOINTEGRALHEIGHT`. It has `WS_VSCROLL` but not
+  `LBS_DISABLENOSCROLL`, so the bar shows only while needed. The item
+  functions pick `LB_*` or `CB_*` messages by kind. `LB_SETCURSEL` notifies no
+  one, so `index:` raises no `change`. macOS uses a one-column, cell-based
+  `NSTableView` in an `NSScrollView` with `autohidesScrollers`. The table is
+  its own data source, holds the strings in an `NSMutableArray`, and
+  suppresses `change` while the script sets the selection. `setFont:` is
+  overridden to set the column cell's font and the row height.
 - **Image widget:** the pixel pointer and size are read at every paint. BGRA
   is a 32-bit `BI_RGB` DIB and
   `kCGImageAlphaNoneSkipFirst | kCGBitmapByteOrder32Little`. `RXIARG`'s image

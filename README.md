@@ -20,8 +20,8 @@ in [INTERNALS.md](INTERNALS.md).
 - no DRAW dialect, no compositor - just the image widget
 - no keyboard events, beyond menu shortcuts and the platform's own navigation
 - no checkable menu items, and no popup (context) menus
-- twelve native controls: button, image, text, field, area, check, radio,
-  toggle, slider, progress, drop-down, panel
+- thirteen native controls: button, image, text, field, area, check, radio,
+  toggle, slider, progress, drop-down, text-list, panel
 - Windows and macOS only; there is no X11/Wayland backend yet
 
 ## Build
@@ -224,10 +224,9 @@ win/dark-controls?: true
 ```
 
 Then, while the system is dark, its buttons, toggles, checks, radios, fields,
-areas, drop-downs, sliders and progress bars are drawn dark, its menu bar and
-menus turn dark,
-and every colour left at `none` (the window's and panels' fill, text, the inside
-and the edges of fields) turns dark too. Off
+areas, drop-downs, text-lists, sliders and progress bars are drawn dark, its
+menu bar and menus turn dark, and every colour left at `none` (the window's
+and panels' fill, text, the inside and the edges of fields) turns dark too. Off
 by default, since it relies on undocumented parts of Windows. Colours the script set
 are never changed - set them on `theme-change`.
 
@@ -303,6 +302,7 @@ pic:   add-image  win some-image       340x20
 | `slider`    | draggable slider | `down` `move` `up`, and `change` continuously while dragged |
 | `progress`  | progress bar | nothing |
 | `drop-down` | pick one of a list | `change` `focus` `unfocus` |
+| `text-list` | pick one of a list shown in a box | `change` `focus` `unfocus` |
 | `panel`     | holds other widgets | nothing |
 | `image`     | shows an `image!` | its own mouse events |
 
@@ -536,6 +536,22 @@ pick/items: ["Oak" "Yew"] ;; replaces the list and clears the selection
 
 Non-string values in the block are skipped. `size` is the closed control.
 Duplicate entries are kept.
+
+### Text-lists
+
+The same list, shown in a fixed box instead of behind a button. A vertical
+scroll bar appears on its own while the items do not fit.
+
+```rebol
+trees: add-text-list/index win ["Ash" "Birch" "Elm" "Oak"] 300x425 200x80 2
+
+trees/index               ;; 2 - 1-based, 0 when nothing is picked
+trees/text                ;; "Birch" - none when nothing is picked; read-only
+trees/index: 4            ;; picks and scrolls it into view, without a `change`
+```
+
+`items` and `index` work as for a drop-down. `change` is reported only when
+the user picks. A zero size gives about twenty characters by six rows.
 
 ### Panels and group boxes
 
@@ -893,6 +909,15 @@ Creates a toggle - a push button which stays pushed - and returns its handle
 * `offset` `[pair!]` Position inside the client area
 * `size` `[pair!]`
 
+#### `add-text-list` `:parent` `:items` `:offset` `:size`
+Creates a list of strings in a fixed box, which scrolls when they do not fit, and returns its handle
+* `parent` `[handle!]` Window or panel to put it in
+* `items` `[block!]` Strings to show
+* `offset` `[pair!]` Position inside the client area
+* `size` `[pair!]`
+* `/index`
+* `n` `[integer!]` Item picked to start with, 1-based (default: none)
+
 
 ## Used handles and its getters / setters
 
@@ -939,15 +964,15 @@ Creates a toggle - a push button which stays pushed - and returns its handle
 
 ```rebol
 ;Refinement       Gets                Sets                          Description
-/text             string!             string!                       "Label or contents; the caption of a framed panel; the selected item of a drop-down, which is read-only; none for an image"
-/items            block!              block!                        "Strings a drop-down offers; none for other kinds"
+/text             string!             string!                       "Label or contents; the caption of a framed panel; the selected item of a drop-down or a text-list, which is read-only; none for an image"
+/items            block!              block!                        "Strings a drop-down or a text-list offers; none for other kinds"
 /index            integer!            integer!                      "Which item is picked, 1-based; 0 for none"
 /image            image!              image!                        "Image shown by an image widget, none for other kinds"
 /size             pair!               pair!                         "Size of the control; a zero axis asks it what that axis needs, the same as at creation"
 /offset           pair!               pair!                         "Position inside whatever holds it - a window or a panel"
 /at               pair!               none                          "Top-left corner in its window's client area, however deeply nested - what a mouse event's offset is measured from"
 /id               integer!            none                          "Native control handle as an integer"
-/kind             word!               none                          "What the control is: button, image, text, field, area, check, radio, toggle, slider, progress, drop-down or panel"
+/kind             word!               none                          "What the control is: button, image, text, field, area, check, radio, toggle, slider, progress, drop-down, text-list or panel"
 /value            percent!            [percent! decimal!]           "Position of a slider or a progress bar; none for other kinds"
 /state            logic!              logic!                        "Whether a check, a radio or a toggle is on; none for other kinds"
 /edge             logic!              logic!                        "Whether a panel draws a frame around itself; none for other kinds"
