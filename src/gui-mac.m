@@ -260,7 +260,7 @@ static void Apply_Button_Color(GUIWIDGET *wid);
 // extension.
 @interface RebolGuiPanel : NSView
 {
-	GUIWIDGET *context;  // read at paint time for GUI_PANEL_EDGE and colour
+	GUIWIDGET *context;  // read at paint time for GUI_PANEL_BORDER and colour
 	NSString  *caption;  // retained; nil when the panel has no title
 	NSFont    *font;     // retained; nil for the small system font
 }
@@ -657,7 +657,7 @@ TEXT_FIELD_BODY
 	NSBezierPath *path;
 	NSDictionary *attrs = nil;
 
-	if (!context || !(context->state & GUI_PANEL_EDGE)) return;
+	if (!context || !(context->state & GUI_PANEL_BORDER)) return;
 
 	if (caption && [caption length] > 0) {
 		// -font answers the small system font when none was set, so the
@@ -1997,6 +1997,35 @@ REBOOL Gui_Set_Offset(GUIWIN *win, REBINT x, REBINT y)
 **  first and given back afterwards, which is the same thing the Windows
 **  backend does by measuring the client area.
 ***********************************************************************/
+/***********************************************************************
+**  The shadow is not a property of its own - it is the window's `border?`.
+**  A titled window always casts one. Without a title bar, a borderless
+**  NSWindow draws a thin outline exactly when it has a shadow, so the
+**  two come and go together - which is what `border?` means - and nothing
+**  else about the window changes. Worked out again after every change of
+**  style mask or background, so a title bar taken away leaves the window
+**  as `border?` says, however it got there.
+***********************************************************************/
+static void Update_Shadow(GUIWIN *win)
+{
+	NSWindow *window;
+	BOOL      want;
+
+	if (!win || !win->handle) return;
+	window = NSWINDOW_OF(win);
+	want = (([window styleMask] & NSWindowStyleMaskTitled)
+	        || (win->flags & GUIW_BORDER)) ? YES : NO;
+	if ([window hasShadow] != want) {
+		[window setHasShadow:want];
+		[window invalidateShadow];
+	}
+}
+
+void Gui_Window_Apply_Border(GUIWIN *win)
+{
+	@autoreleasepool { Update_Shadow(win); }
+}
+
 static REBOOL Set_Window_Style_Mask(GUIWIN *win, NSUInteger mask)
 {
 	@autoreleasepool {
@@ -2012,6 +2041,7 @@ static REBOOL Set_Window_Style_Mask(GUIWIN *win, NSUInteger mask)
 		content = [window contentRectForFrameRect:[window frame]];
 		[window setStyleMask:mask];
 		[window setFrame:[window frameRectForContentRect:content] display:YES];
+		Update_Shadow(win);
 
 		// Losing the title bar takes the first responder with it often
 		// enough to be worth putting back - a window with no key view has
@@ -2048,7 +2078,7 @@ REBOOL Gui_Set_Resizable(GUIWIN *win, REBOOL on)
 }
 
 
-REBOOL Gui_Get_Border(GUIWIN *win)
+REBOOL Gui_Get_Title_Bar(GUIWIN *win)
 {
 	@autoreleasepool {
 		if (!win || !win->handle) return FALSE;
@@ -2058,7 +2088,7 @@ REBOOL Gui_Get_Border(GUIWIN *win)
 }
 
 
-REBOOL Gui_Set_Border(GUIWIN *win, REBOOL on)
+REBOOL Gui_Set_Title_Bar(GUIWIN *win, REBOOL on)
 {
 	if (!on) return Set_Window_Style_Mask(win, NSWindowStyleMaskBorderless);
 
@@ -3208,14 +3238,12 @@ void Gui_Window_Set_Background(GUIWIN *win)
 		if (GUI_BG_IS_CLEAR(win->background)) {
 			[window setOpaque:NO];
 			[window setBackgroundColor:[NSColor clearColor]];
-			// A borderless see-through window has no shadow worth
-			// casting: it would outline a rectangle which is not there.
-			[window setHasShadow:NO];
+			Update_Shadow(win);
 			return;
 		}
 
 		[window setOpaque:YES];
-		[window setHasShadow:YES];
+		Update_Shadow(win);
 
 		if (GUI_COLOR_HAS(win->background)) {
 			color = [NSColor colorWithSRGBRed:GUI_COLOR_R(win->background) / 255.0
@@ -3304,7 +3332,7 @@ REBOOL Gui_Create_Panel(GUIWIDGET *wid, GUIWIN *owner,
 }
 
 
-void Gui_Panel_Edge_Changed(GUIWIDGET *wid)
+void Gui_Panel_Border_Changed(GUIWIDGET *wid)
 {
 	@autoreleasepool {
 		if (!wid || !wid->handle) return;
@@ -3857,7 +3885,7 @@ void Gui_Widget_Set_Scrollable(GUIWIDGET *wid, REBOOL on)
 **  background with it, so it is asked to go on drawing one - otherwise
 **  `background` would have nothing to show.
 ***********************************************************************/
-REBOOL Gui_Widget_Get_Edge(GUIWIDGET *wid)
+REBOOL Gui_Widget_Get_Border(GUIWIDGET *wid)
 {
 	@autoreleasepool {
 		if (!wid || !wid->handle) return FALSE;
@@ -3868,7 +3896,7 @@ REBOOL Gui_Widget_Get_Edge(GUIWIDGET *wid)
 }
 
 
-void Gui_Widget_Set_Edge(GUIWIDGET *wid, REBOOL on)
+void Gui_Widget_Set_Border(GUIWIDGET *wid, REBOOL on)
 {
 	@autoreleasepool {
 		if (!wid || !wid->handle) return;

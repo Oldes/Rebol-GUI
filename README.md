@@ -167,10 +167,22 @@ open-window/borderless 400x300      ;; no title bar, no frame
 open-window/hidden     400x300      ;; build it first, then show-window
 ```
 
-`resizable?` and `border?` can be read and changed afterwards. Changing either
+`resizable?` and `title?` can be read and changed afterwards. Changing either
 keeps the client size - the window grows or shrinks around it - and they are
-independent: turning the border back on does not make a `/fixed` window
+independent: turning the title bar back on does not make a `/fixed` window
 resizable.
+
+`border?` says whether a window without a title bar still has a thin outline
+and a shadow. A window opened with `/borderless` or `/transparent` starts
+without one, and any other window starts with one. It reads `true` while
+the window has a title bar, and the setting is kept when `title?` changes.
+So hiding the title bar of a normal window leaves an outlined box, and
+showing and hiding it again on a `/borderless` one leaves it bare, as it was:
+
+```rebol
+win/title?: false         ;; no title bar - outline and shadow stay
+win/border?: false        ;; nothing around it at all
+```
 
 A **borderless window** has no title bar, so no close box and nothing to drag.
 Give it your own way out, and move it yourself if needed:
@@ -565,12 +577,12 @@ pass/secure?              ;; true
 ```
 
 A field, an area and a text-list can be made without their border with
-`/flat`. `edge` reads it back, and can turn it on or off at any time:
+`/flat`. `border?` reads it back, and can turn it on or off at any time:
 
 ```rebol
 plain: add-field/flat win "no border" 20x20 200x0
-plain/edge                ;; false
-plain/edge: true          ;; back to the platform's sunken edge
+plain/border?             ;; false
+plain/border?: true       ;; back to the platform's sunken edge
 ```
 
 The box stays the same size either way, and the text gets the border's room.
@@ -621,13 +633,13 @@ box:  add-panel win 20x285 260x60
 warm: add-radio/group box "Warm" 10x26 110x22 1   ;; 10x26 within the box
 ```
 
-`/edge` draws a frame and `/title` a caption in it (a caption implies a frame).
+`/border` draws a frame and `/title` a caption in it (a caption implies a frame).
 Both can be changed later:
 
 ```rebol
 box: add-panel/title win 20x285 260x60 "Temperature"
 box/text: "Temperature (°C)"
-box/edge: false
+box/border?: false
 ```
 
 The frame is drawn inside the panel's box and never moves its children, so
@@ -922,9 +934,9 @@ Creates a panel - a widget which holds other widgets - and returns its handle
 * `parent` `[handle!]` Window or panel to put it in
 * `offset` `[pair!]` Position inside the client area
 * `size` `[pair!]`
-* `/edge` Draws a frame around it
+* `/border` Draws a frame around it
 * `/title`
-* `text` `[string!]` Caption set into the frame; implies /edge
+* `text` `[string!]` Caption set into the frame; implies /border
 
 #### `gui-device`
 Returns the id of the device this extension registered
@@ -1008,7 +1020,8 @@ Creates an entry for a date, and optionally a time of day, and returns its handl
 /dark?            logic!              none                          "Whether the system shows it in the dark appearance; a `theme-change` event reports when this changes"
 /dark-controls?   logic!              logic!                        "Whether its controls and default colours follow the dark appearance on Windows (macOS always does); off by default"
 /resizable?       logic!              logic!                        "Whether the user can resize it"
-/border?          logic!              logic!                        "Whether it has a title bar and a frame; a borderless window cannot be moved or closed by the user"
+/title?           logic!              logic!                        "Whether it has a title bar and a frame; without one the user cannot move or close it"
+/border?          logic!              logic!                        "Whether it has a thin outline and a shadow; always true while it has a title bar, and remembered across `title?` changes"
 /background       tuple!              [tuple! none!]                "Colour of the client area; none for the system window colour"
 /transparent?     logic!              logic!                        "Whether the client area is see-through to whatever is behind the window"
 /drop?            logic!              logic!                        "Whether files dropped on it are accepted; off until asked for"
@@ -1047,7 +1060,7 @@ Creates an entry for a date, and optionally a time of day, and returns its handl
 /kind             word!               none                          "What the control is: button, image, text, field, area, check, radio, toggle, slider, progress, drop-down, text-list, date-field or panel"
 /value            percent!            [percent! decimal!]           "Position of a slider or a progress bar; the date of a date-field, with its time of day when made with `/time`; none for other kinds"
 /state            logic!              logic!                        "Whether a check, a radio or a toggle is on; none for other kinds"
-/edge             logic!              logic!                        "Whether a panel draws a frame around itself, or a field, an area or a text-list its border; none for other kinds"
+/border?          logic!              logic!                        "Whether a panel draws a frame around itself, or a field, an area or a text-list its border; none for other kinds"
 /font             string!             [string! none!]               "Font family; none puts it back to the system font"
 /font-size        integer!            [integer! none!]              "Point size; none puts it back to the system size"
 /bold?            logic!              logic!                        "Whether the text is bold"

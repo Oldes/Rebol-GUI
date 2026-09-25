@@ -152,7 +152,7 @@ typedef struct Gui_Widget_Context {
 	REBCNT  state;   // check / radio: 1 when on. The extension is the source
 	                 // of truth here, not the native control - see the radio
 	                 // grouping note in gui-commands.c.
-	                 // panel: GUI_PANEL_EDGE when it draws a frame - read by
+	                 // panel: GUI_PANEL_BORDER when it draws a frame - read by
 	                 // the backend at paint time, so it can be turned on and
 	                 // off without touching the native control
 	                 // field / area: GUI_TEXT_READ_ONLY. Kept rather than
@@ -185,16 +185,17 @@ typedef struct Gui_Widget_Context {
 #define GUIW_ACCEPTS_DROP  2
 #define GUIW_DARK          4   // the appearance last reported - see Gui_Theme_Changed()
 #define GUIW_DARK_CONTROLS 8   // `dark-controls?`: defaults follow the dark appearance
+#define GUIW_BORDER          16  // `border?`: without a title bar, still a thin outline and a shadow
 
 // Passed to Gui_Open_Window(). Everything a window's frame can be is
 // decided at creation and changeable afterwards through `resizable?` and
-// `border?`, so these say only what it STARTS as.
+// `title?`, so these say only what it STARTS as.
 #define GUI_WIN_FIXED       1
 #define GUI_WIN_BORDERLESS  2
 #define GUI_WIN_TRANSPARENT 4
 
 // wid->state of a panel
-#define GUI_PANEL_EDGE 1
+#define GUI_PANEL_BORDER 1
 
 // wid->state of a field or an area
 #define GUI_TEXT_READ_ONLY 1
@@ -351,7 +352,8 @@ handles: [
 		dark?    logic!    none      "Whether the system shows it in the dark appearance; a `theme-change` event reports when this changes"
 		dark-controls? logic! logic! "Whether its controls and default colours follow the dark appearance on Windows (macOS always does); off by default"
 		resizable? logic!  logic!    "Whether the user can resize it"
-		border?    logic!  logic!    "Whether it has a title bar and a frame; a borderless window cannot be moved or closed by the user"
+		title?     logic!  logic!    "Whether it has a title bar and a frame; without one the user cannot move or close it"
+		border?    logic!  logic!    "Whether it has a thin outline and a shadow; always true while it has a title bar, and remembered across `title?` changes"
 		background tuple!  [tuple! none!] "Colour of the client area; none for the system window colour"
 		transparent? logic! logic!   "Whether the client area is see-through to whatever is behind the window"
 		drop?     logic!   logic!    "Whether files dropped on it are accepted; off until asked for"
@@ -387,7 +389,7 @@ handles: [
 		kind     word!     none      "What the control is: button, image, text, field, area, check, radio, toggle, slider, progress, drop-down, text-list, date-field or panel"
 		value    percent!  [percent! decimal!] "Position of a slider or a progress bar; the date of a date-field, with its time of day when made with `/time`; none for other kinds"
 		state    logic!    logic!    "Whether a check, a radio or a toggle is on; none for other kinds"
-		edge     logic!    logic!    "Whether a panel draws a frame around itself, or a field, an area or a text-list its border; none for other kinds"
+		border?  logic!    logic!    "Whether a panel draws a frame around itself, or a field, an area or a text-list its border; none for other kinds"
 		;; Typography. Every kind which has `text` has these; the rest answer none.
 		font      string!  [string! none!] "Font family; none puts it back to the system font"
 		font-size integer! [integer! none!] "Point size; none puts it back to the system size"
@@ -524,8 +526,8 @@ commands: [
 		parent [handle!] "Window or panel to put it in"
 		offset [pair!]   "Position inside the client area"
 		size   [pair!]
-		/edge  "Draws a frame around it"
-		/title text [string!] "Caption set into the frame; implies /edge"
+		/border "Draws a frame around it"
+		/title text [string!] "Caption set into the frame; implies /border"
 	]
 	gui-device:        ["Returns the id of the device this extension registered"]
 	gui-device-polls:  ["Returns how many times the host has polled it"]

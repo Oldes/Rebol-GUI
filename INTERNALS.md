@@ -145,6 +145,17 @@ Cocoa flips offsets against the menu-bar screen; the content view answers
 - **Transparent window:** macOS uses a non-opaque `NSWindow`. Win32 uses
   `WS_EX_LAYERED` with a magenta colour key, because `UpdateLayeredWindow`
   alpha does not composite child windows.
+- **Window `border?`:** `GUIW_BORDER` in `win->flags`, set at open unless the
+  window is `/borderless` or `/transparent`. It only shows without a title
+  bar. `Gui_Window_Apply_Border` runs after open, after every `title?`
+  change and after `border?:`. macOS: the shadow is on for a titled window or
+  for `GUIW_BORDER` (`Update_Shadow`, also run on style-mask and background
+  changes), and AppKit draws the outline of a borderless window along with
+  its shadow. Windows: `WS_BORDER` gives the outline. The shadow comes from
+  DWM, which renders the non-client area (`DWMWA_NCRENDERING_POLICY =
+  DWMNCRP_ENABLED`) and extends the frame 1 px into the top of the client
+  area. Both are reset for `border?` off and for a titled window. Untested:
+  that 1 px may show the frame colour.
 - **Borderless:** `WS_POPUP` on Windows; `NSWindowStyleMaskBorderless` on
   macOS, which is why `resizable?` refuses there. Every macOS window subclass
   answers `YES` to `canBecomeKeyWindow` so fields in a borderless window accept
@@ -220,7 +231,7 @@ Cocoa flips offsets against the menu-bar screen; the content view answers
   macro. The secure field editor masks the text, refuses copy and cut, and
   turns on secure keyboard input. This cannot be changed after creation, so
   `secure?` is read-only.
-- **`/flat` and `edge` on an entry or a list:** these read the native control
+- **`/flat` and `border?` on an entry or a list:** these read the native control
   back rather than a state bit, because `state` bit 1 already means read-only
   on a field and fixed on a list. On Windows this is `WS_EX_CLIENTEDGE`
   toggled with `SWP_FRAMECHANGED`; natural size and `Paint_Dark_Edge` both

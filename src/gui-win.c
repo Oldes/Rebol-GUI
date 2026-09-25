@@ -2229,7 +2229,7 @@ static void Paint_Panel(HWND hwnd, HDC dc)
 		FillRect(dc, &rect, fill);
 	}
 
-	if (!wid || !(wid->state & GUI_PANEL_EDGE)) {
+	if (!wid || !(wid->state & GUI_PANEL_BORDER)) {
 		if (bg) DeleteObject(bg);
 		return;
 	}
@@ -3349,7 +3349,7 @@ REBOOL Gui_Set_Resizable(GUIWIN *win, REBOOL on)
 }
 
 
-REBOOL Gui_Get_Border(GUIWIN *win)
+REBOOL Gui_Get_Title_Bar(GUIWIN *win)
 {
 	if (!win || !win->handle) return FALSE;
 	return (GetWindowLongPtrW(HWND_OF(win), GWL_STYLE) & WS_CAPTION)
@@ -3357,17 +3357,74 @@ REBOOL Gui_Get_Border(GUIWIN *win)
 }
 
 
-REBOOL Gui_Set_Border(GUIWIN *win, REBOOL on)
+REBOOL Gui_Set_Title_Bar(GUIWIN *win, REBOOL on)
 {
+	REBOOL ok;
+
 	if (!win) return FALSE;
 
 	if (on) {
 		// The resize bits are not restored here: whether the window can be
 		// resized is its own property, and one it may never have had.
-		return Set_Window_Style_Bits(win, WS_POPUP, WINDOW_BORDER_BITS);
+		ok = Set_Window_Style_Bits(win, WS_POPUP, WINDOW_BORDER_BITS);
+	} else {
+		ok = Set_Window_Style_Bits(win,
+			WINDOW_BORDER_BITS | WINDOW_RESIZE_BITS, WS_POPUP);
 	}
-	return Set_Window_Style_Bits(win,
-		WINDOW_BORDER_BITS | WINDOW_RESIZE_BITS, WS_POPUP);
+	// Whatever `border?` says for a window without a title bar - or its
+	// normal frame back, for one with.
+	Gui_Window_Apply_Border(win);
+	return ok;
+}
+
+
+/***********************************************************************
+**  `border?` on a window without a title bar: WS_BORDER for the thin
+**  outline, and DWM for the shadow. A WS_POPUP window casts none of its
+**  own; letting DWM render its non-client area and extending that frame
+**  one pixel into the window gives it the same shadow a normal window
+**  has. Both are undone for `border?` off, and for a titled window, whose
+**  caption brings its own border and shadow. dwmapi is looked up at run
+**  time like the title bar's, so nothing is linked for it.
+***********************************************************************/
+typedef struct { int l, r, t, b; } GUI_MARGINS;   // MARGINS, without uxtheme.h
+typedef HRESULT (WINAPI *DWMEXTENDFRAME_T)(HWND, const GUI_MARGINS*);
+
+void Gui_Window_Apply_Border(GUIWIN *win)
+{
+	static DWMEXTENDFRAME_T      extend = NULL;
+	static DWMSETWINDOWATTRIBUTE_T set  = NULL;
+	static REBOOL looked = FALSE;
+	GUI_MARGINS m = {0, 0, 0, 0};
+	REBOOL titled, edge;
+	DWORD  policy;
+	HWND   hwnd;
+
+	if (!win || !win->handle) return;
+	hwnd = HWND_OF(win);
+	if (!looked) {
+		HMODULE dwm = LoadLibraryW(L"dwmapi.dll");
+		looked = TRUE;
+		if (dwm) {
+			extend = (DWMEXTENDFRAME_T)GetProcAddress(dwm, "DwmExtendFrameIntoClientArea");
+			set    = (DWMSETWINDOWATTRIBUTE_T)GetProcAddress(dwm, "DwmSetWindowAttribute");
+		}
+	}
+
+	titled = Gui_Get_Title_Bar(win);
+	edge   = (!titled && (win->flags & GUIW_BORDER)) ? TRUE : FALSE;
+
+	if (!titled) {
+		if (edge) Set_Window_Style_Bits(win, 0, WS_BORDER);
+		else      Set_Window_Style_Bits(win, WS_BORDER, 0);
+	}
+
+	// DWMNCRP_ENABLED (2) or DWMNCRP_USEWINDOWSTYLE (0), through
+	// DWMWA_NCRENDERING_POLICY (2).
+	policy = edge ? 2 : 0;
+	if (set) set(hwnd, 2, &policy, sizeof(policy));
+	if (edge) m.t = 1;
+	if (extend) extend(hwnd, &m);
 }
 
 
@@ -4134,7 +4191,7 @@ REBOOL Gui_Create_Panel(GUIWIDGET *wid, GUIWIN *owner,
 }
 
 
-void Gui_Panel_Edge_Changed(GUIWIDGET *wid)
+void Gui_Panel_Border_Changed(GUIWIDGET *wid)
 {
 	if (!wid || !wid->handle) return;
 	// TRUE erases first: an edge which has just been turned off has to have
@@ -4930,7 +4987,7 @@ REBOOL Gui_Widget_Natural_Size(GUIWIDGET *wid, REBINT *w, REBINT *h)
 		// The sunken border, plus the padding the control keeps inside it.
 		pad_x = To_Device(dpi, 8);
 		pad_y = To_Device(dpi, 8);
-		// The border, unless it was taken off with `/flat` or `edge`.
+		// The border, unless it was taken off with `/flat` or `border?`.
 		if (GetWindowLongPtrW(hwnd, GWL_EXSTYLE) & WS_EX_CLIENTEDGE) {
 			pad_x += 2 * Metric(dpi, SM_CXEDGE);
 			pad_y += 2 * Metric(dpi, SM_CYEDGE);
@@ -5528,7 +5585,7 @@ void Gui_Widget_Set_Scrollable(GUIWIDGET *wid, REBOOL on)
 **  grows into the room. The dark edge (Paint_Dark_Edge) already checks
 **  the bit, so a flat control in a dark window gets no ring either.
 ***********************************************************************/
-REBOOL Gui_Widget_Get_Edge(GUIWIDGET *wid)
+REBOOL Gui_Widget_Get_Border(GUIWIDGET *wid)
 {
 	if (!wid || !wid->handle) return FALSE;
 	return (GetWindowLongPtrW(HWND_OF_WID(wid), GWL_EXSTYLE) & WS_EX_CLIENTEDGE)
@@ -5536,7 +5593,7 @@ REBOOL Gui_Widget_Get_Edge(GUIWIDGET *wid)
 }
 
 
-void Gui_Widget_Set_Edge(GUIWIDGET *wid, REBOOL on)
+void Gui_Widget_Set_Border(GUIWIDGET *wid, REBOOL on)
 {
 	HWND     hwnd;
 	LONG_PTR ex;

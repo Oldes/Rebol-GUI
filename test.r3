@@ -54,7 +54,7 @@ print ["title:   " mold win/title]
 print ["size:    " win/size]
 print ["offset:  " win/offset]
 print ["scale:   " win/scale "(device pixels per unit - sizes below are logical)"]
-print ["resizable?" win/resizable? " border?" win/border?]
+print ["resizable?" win/resizable? " title?" win/title?]
 ;; Asked of the system each time; `theme-change` reports when it switches.
 print ["dark?:   " win/dark?]
 
@@ -348,10 +348,10 @@ print ["radio:" warm/kind "group:" warm/group "state:" warm/state]
 ;; The frame and its caption are readable and writable after the fact - both
 ;; are drawn by the extension at paint time, so neither rebuilds the control
 ;; and neither moves anything the panel holds.
-print ["panel edge:" box/edge "caption:" mold box/text]
+print ["panel border?:" box/border? "caption:" mold box/text]
 box/text: "Temperature (group box)"
 print ["... retitled to:" mold box/text]
-print ["a check has no edge:" mold toggle/edge]
+print ["a check has no border?:" mold toggle/border?]
 
 ;; `parent` is whatever holds it; `window` is the window either way.
 print ["warm sits in a" warm/parent/kind "at" warm/offset]
@@ -726,22 +726,22 @@ print as-yellow "^/== Window frames"
 ;; no title bar and no frame at all. Both are readable and writable afterwards
 ;; - and changing either keeps the CLIENT size, so nothing inside moves.
 fixed: open-window/title/at/fixed 240x120 "Fixed size" 700x120
-print ["fixed window - resizable?" fixed/resizable? " border?" fixed/border?]
+print ["fixed window - resizable?" fixed/resizable? " title?" fixed/title?]
 print ["client size:" fixed/size]
 
 ;; `/flat` makes an entry or a list without its border - a plain box of text.
-;; `edge` reads it back, and turns it on and off afterwards; the box stays
+;; `border?` reads it back, and turns it on and off afterwards; the box stays
 ;; where it is.
 ;;
 ;; WATCH: in the "Fixed size" window, a field and an area with no border.
 plain: add-field/flat fixed "a flat field" 10x10 220x0
 sheet: add-area/flat  fixed "a flat area^/with two lines" 10x44 220x66
-print ["flat field - edge?" plain/edge " area:" sheet/edge "(expected false false)"]
-print ["a normal field has one:" name/edge "(expected true)"]
-plain/edge: true
-print ["turned on: " plain/edge]
-plain/edge: false
-print ["and off:   " plain/edge]
+print ["flat field - border?" plain/border? " area:" sheet/border? "(expected false false)"]
+print ["a normal field has one:" name/border? "(expected true)"]
+plain/border?: true
+print ["turned on: " plain/border?]
+plain/border?: false
+print ["and off:   " plain/border?]
 
 ;; A window can carry a colour of its own, which every widget on it then
 ;; resolves to - a transparent label on a dark window needs no colour of its
@@ -779,13 +779,20 @@ wait 0.5
 ghost/transparent?: true
 
 bare: open-window/at/borderless 240x120 700x280
-print ["bare window  - resizable?" bare/resizable? " border?" bare/border?]
+print ["bare window  - resizable?" bare/resizable? " title?" bare/title?]
 print ["client size:" bare/size "(unchanged by having no frame)"]
 
 ;; A borderless window has no close box and nothing to drag, so the program
 ;; is the only thing that can move or close it. Give this one a way out.
 add-text   bare "No border - and no way to close me" 10x10 220x0
 back-again: add-button bare "Give me a frame" 10x50 0x0
+;; `/borderless` means nothing around it at all - no outline, no shadow -
+;; and that is kept when the button gives the title bar back and takes it
+;; away again. A titled window always reads as having a border.
+print ["bare border?:" bare/border? "(expected false)" " fixed border?:" fixed/border? "(expected true)"]
+;; ... and a toggle next to the button switches it. It shows only while
+;; there is no title bar, but the setting is kept either way.
+bordered: add-toggle bare "Border" 150x50 0x0
 
 ;; A date-field: `value` is a date!, with the time of day when the field is
 ;; made with `/time`. Both start at now.
@@ -1195,10 +1202,20 @@ report: func [event /local type source position kind][
 				redraw canvas
 			]
 			;; The borderless window's own button gives it a frame back - and with
-			;; a title bar it has a close box again.
+			;; a title bar it has a close box again - and takes it away again
+			;; on the next press. The label says which comes next, and the
+			;; zero size re-fits the button to it.
+			source == bordered [bare/border?: source/state]
 			source == back-again [
-				bare/border?: true
-				bare/title: "There you go"
+				either bare/title? [
+					bare/title?: false
+					back-again/text: "Give me a frame"
+				][
+					bare/title?: true
+					bare/title: "There you go"
+					back-again/text: "Hide the title"
+				]
+				back-again/size: 0x0
 			]
 		]
 	]
@@ -1256,7 +1273,7 @@ print ["the image survives:" type? pic pic/size]
 foreach handle reduce [
 	canvas counter closer label name log styled
 	toggle box warm cool slow fast level meter picker trees
-	fixed bare back-again
+	fixed bare back-again bordered
 ][	release handle ]
 ;; Screen handles lock nothing native, so they need no release - the
 ;; collector takes them once nothing refers to them.

@@ -326,8 +326,18 @@ REBOOL  Gui_Widget_Natural_Size(GUIWIDGET *wid, REBINT *w, REBINT *h);
 ***********************************************************************/
 REBOOL  Gui_Get_Resizable(GUIWIN *win);
 REBOOL  Gui_Set_Resizable(GUIWIN *win, REBOOL on);
-REBOOL  Gui_Get_Border(GUIWIN *win);
-REBOOL  Gui_Set_Border(GUIWIN *win, REBOOL on);
+REBOOL  Gui_Get_Title_Bar(GUIWIN *win);
+REBOOL  Gui_Set_Title_Bar(GUIWIN *win, REBOOL on);
+
+/***********************************************************************
+**  A window's `border?`: GUIW_BORDER in `win->flags`, kept by the shared
+**  layer. It only shows while the window has NO title bar - a titled
+**  window always has its frame and shadow - so a backend applies it
+**  here, and again from its own Gui_Set_Title_Bar(): a thin outline and a
+**  shadow when set, nothing at all when not. The client size is kept,
+**  as for `title?`.
+***********************************************************************/
+void    Gui_Window_Apply_Border(GUIWIN *win);
 
 // Allocates a Rebol string series; returns NULL on failure.
 REBSER* Gui_Get_Title(GUIWIN *win);
@@ -438,8 +448,8 @@ REBOOL  Gui_Create_Text_List(GUIWIDGET *wid, GUIWIN *owner,
 // the native parent to attach to is the panel's when it is set and the
 // window's otherwise. Every creation function reads it that way.
 //
-// `wid->state & GUI_PANEL_EDGE` - set by the caller before this is called,
-// and changeable afterwards through the `edge` accessor - says whether the
+// `wid->state & GUI_PANEL_BORDER` - set by the caller before this is called,
+// and changeable afterwards through the `border?` accessor - says whether the
 // panel draws a frame around itself, with `text` as its caption. Both are
 // read at PAINT time, never cached, which is what makes the accessor work
 // without recreating the control.
@@ -456,7 +466,7 @@ REBOOL  Gui_Create_Panel(GUIWIDGET *wid, GUIWIN *owner,
 
 // Repaints a panel after its edge or caption changed. A backend which draws
 // the frame in its own paint handler only has to invalidate.
-void    Gui_Panel_Edge_Changed(GUIWIDGET *wid);
+void    Gui_Panel_Border_Changed(GUIWIDGET *wid);
 
 REBCNT  Gui_Widget_Count_Items(GUIWIDGET *wid);
 REBSER* Gui_Widget_Get_Item(GUIWIDGET *wid, REBCNT n);   // 0-based
@@ -640,7 +650,7 @@ void    Gui_Widget_Scroll_To_Item(GUIWIDGET *wid, REBINT n);
 // or bezelled edge. Read back from the control rather than kept, since the
 // control holds it anyway. Off leaves the box where it is: the text simply
 // gets the room the border had.
-REBOOL  Gui_Widget_Get_Edge(GUIWIDGET *wid);
+REBOOL  Gui_Widget_Get_Border(GUIWIDGET *wid);
 
 /***********************************************************************
 **  date-field
@@ -664,7 +674,7 @@ REBOOL  Gui_Create_Date_Field(GUIWIDGET *wid, GUIWIN *owner,
                               REBINT x, REBINT y, REBINT w, REBINT h);
 REBOOL  Gui_Widget_Get_Date(GUIWIDGET *wid, GUIDATE *out);
 void    Gui_Widget_Set_Date(GUIWIDGET *wid, const GUIDATE *in);
-void    Gui_Widget_Set_Edge(GUIWIDGET *wid, REBOOL on);
+void    Gui_Widget_Set_Border(GUIWIDGET *wid, REBOOL on);
 
 
 // Gui_Init() is declared in gen-gui.h - the generated `_init` handler calls
