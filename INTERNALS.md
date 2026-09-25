@@ -145,6 +145,13 @@ Cocoa flips offsets against the menu-bar screen; the content view answers
 - **Transparent window:** macOS uses a non-opaque `NSWindow`. Win32 uses
   `WS_EX_LAYERED` with a magenta colour key, because `UpdateLayeredWindow`
   alpha does not composite child windows.
+- **Tall push buttons on macOS:** `NSBezelStyleRounded` draws at one fixed
+  height whatever the frame, so a taller box showed a standard button at
+  its bottom. `RebolGuiButton` overrides `setFrame:`/`setFrameSize:` to use
+  `NSBezelStyleRegularSquare` (called "flexible push" in newer SDKs) above
+  the standard height and rounded otherwise. This applies to buttons and
+  toggles only. A natural size is measured with the rounded style
+  (`plainFittingSize`).
 - **Window `border?`:** `GUIW_BORDER` in `win->flags`, set at open unless the
   window is `/borderless` or `/transparent`. It only shows without a title
   bar. `Gui_Window_Apply_Border` runs after open, after every `title?`

@@ -216,9 +216,11 @@ static void Apply_Button_Color(GUIWIDGET *wid);
 	GUIWIDGET *context;
 	BOOL       pressing;  // between `down` and its `up`
 	BOOL       inside;    // the pointer is over it, so releasing clicks
+	CGFloat    plain;     // height of the standard push bezel; 0 = not yet known
 }
 - (void)setContext:(GUIWIDGET*)ctx;
 - (void)clicked:(id)sender;
+- (NSSize)plainFittingSize;
 @end
 
 
@@ -460,6 +462,68 @@ static void Queue_Press(NSView *view, GUIWIDGET *ctx, REBCNT type, NSEvent *evt,
 @implementation RebolGuiButton
 
 - (void)setContext:(GUIWIDGET*)ctx { context = ctx; }
+
+/***********************************************************************
+**  A push button - and a toggle - as tall as its box.
+**
+**  NSBezelStyleRounded, the standard push button, is drawn at ONE
+**  height for its control size, whatever the frame: a taller box got a
+**  standard button sitting at the bottom of it. The square bezel
+**  (renamed "flexible push" in newer SDKs) looks the same and fills its
+**  frame, but at the standard height it is not quite the standard
+**  button. So the style follows the height: rounded up to the standard
+**  height, flexible above it - chosen again on every resize, so a
+**  button can grow and shrink back.
+**
+**  A check and a radio have no bezel to stretch and are left alone.
+***********************************************************************/
+- (BOOL)stretches
+{
+	return context && (context->kind == W_GUI_WIDGET_BUTTON
+	                || context->kind == W_GUI_WIDGET_TOGGLE);
+}
+
+- (void)fitBezelTo:(CGFloat)height
+{
+	NSBezelStyle want;
+
+	if (![self stretches]) return;
+	if (plain <= 0) {
+		NSBezelStyle was = [self bezelStyle];
+		[self setBezelStyle:NSBezelStyleRounded];
+		plain = [[self cell] cellSize].height;
+		[self setBezelStyle:was];
+	}
+	want = (height > plain + 1.0) ? NSBezelStyleRegularSquare : NSBezelStyleRounded;
+	if ([self bezelStyle] != want) [self setBezelStyle:want];
+}
+
+- (void)setFrame:(NSRect)frame
+{
+	[self fitBezelTo:frame.size.height];
+	[super setFrame:frame];
+}
+
+- (void)setFrameSize:(NSSize)size
+{
+	[self fitBezelTo:size.height];
+	[super setFrameSize:size];
+}
+
+// What a zero size asks for: the STANDARD button, whatever style a tall
+// frame has switched it to meanwhile.
+- (NSSize)plainFittingSize
+{
+	NSBezelStyle was;
+	NSSize       size;
+
+	if (![self stretches]) return [self fittingSize];
+	was = [self bezelStyle];
+	[self setBezelStyle:NSBezelStyleRounded];
+	size = [self fittingSize];
+	[self setBezelStyle:was];
+	return size;
+}
 
 - (void)clicked:(id)sender
 {
@@ -2233,6 +2297,8 @@ REBOOL Gui_Create_Button_Control(GUIWIDGET *wid, GUIWIN *owner,
 		[button setContext:wid];
 		[button setTarget:button];
 		[button setAction:@selector(clicked:)];
+		// Now that it knows its kind, the bezel can follow the height.
+		[button setFrame:[button frame]];
 
 		// The superview retains it as well; the reference kept here is the
 		// one Gui_Destroy_Widget gives back.
@@ -2677,9 +2743,12 @@ REBOOL Gui_Widget_Natural_Size(GUIWIDGET *wid, REBINT *w, REBINT *h)
 			return TRUE; }
 
 		case W_GUI_WIDGET_BUTTON:
+		case W_GUI_WIDGET_TOGGLE:
+			size = [NSBUTTON_OF(wid) plainFittingSize];
+			break;
+
 		case W_GUI_WIDGET_CHECK:
 		case W_GUI_WIDGET_RADIO:
-		case W_GUI_WIDGET_TOGGLE:
 		case W_GUI_WIDGET_TEXT:
 		case W_GUI_WIDGET_FIELD:
 		case W_GUI_WIDGET_DROP_DOWN:
