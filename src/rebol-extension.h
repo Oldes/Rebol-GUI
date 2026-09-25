@@ -1,7 +1,7 @@
 ////////////////////////////////////////////////////////////////////////
 // File: rebol-extension.h
 // Home: https://github.com/Oldes/Rebol3/
-// Date: 19-Sep-2026/8:46:35
+// Date: 25-Sep-2026/10:52:56
 // Note: This file is amalgamated from these sources:
 //
 //       reb-c.h
@@ -902,8 +902,8 @@ enum encoding_opts {
 ************************************************************************
 **
 **  Title: Extension Types (Isolators)
-**  Build: 3.22.8
-**  Date:  19-Sep-2026
+**  Build: 3.22.9
+**  Date:  25-Sep-2026
 **  File:  ext-types.h
 **
 **  AUTO-GENERATED FILE - Do not modify. (From: make-boot.reb)
@@ -2887,8 +2887,8 @@ typedef struct Reb_All {
 ************************************************************************
 **
 **  Title: Event Types
-**  Build: 3.22.8
-**  Date:  19-Sep-2026
+**  Build: 3.22.9
+**  Date:  25-Sep-2026
 **  File:  reb-evtypes.h
 **
 **  AUTO-GENERATED FILE - Do not modify. (From: make-boot.reb)
@@ -3062,15 +3062,6 @@ typedef int (*DECOMPRESS_FUNC)(
 
 
 
-#ifndef API_EXPORT
-# define RL_API API_EXPORT
-# ifdef TO_WINDOWS
-#  define API_EXPORT __declspec(dllexport)
-# else
-#  define API_EXPORT __attribute__((visibility("default")))
-# endif
-#endif
-
 // RXIARG has 16bytes and so there is room only for 15 args, because
 // the first RXIARG in the RXIFRM contains types of all used command args.
 #define MAX_RXI_ARGS 15
@@ -3146,6 +3137,10 @@ typedef union rxi_arg_val {
 	// An event is 16 bytes (12 on 32-bit) - it fits whole into the slot,
 	// which is why it needs no series and no spec id like struct/vector.
 	REBEVT event;
+	struct {
+		i64 time;   // nanoseconds, NO_TIME if none
+		i32 date;   // REBYMD bits
+	} datetime;
 } RXIARG;
 
 // For direct access to arg array:
@@ -3206,7 +3201,8 @@ typedef struct rxi_struct_info {
 #define RXA_LOGIC(f,n)          (RXA_ARG(f,n).int32a)
 #define RXA_CHAR(f,n)           (RXA_ARG(f,n).int32a)
 #define RXA_TIME(f,n)           (RXA_ARG(f,n).int64)
-#define RXA_DATE(f,n)           (RXA_ARG(f,n).int32a)
+#define RXA_DATE(f,n)           (RXA_ARG(f,n).datetime.date)
+#define RXA_DATE_TIME(f,n)      (RXA_ARG(f,n).datetime.time)
 #define RXA_WORD(f,n)           (RXA_ARG(f,n).int32a)
 #define RXA_PAIR(f,n)           (RXA_ARG(f,n).pair)
 #define RXA_TUPLE(f,n)          (RXA_ARG(f,n).tuple_bytes)
@@ -3875,8 +3871,8 @@ enum {
 ************************************************************************
 **
 **  Title: REBOL Host and Extension API
-**  Build: 3.22.8
-**  Date:  19-Sep-2026
+**  Build: 3.22.9
+**  Date:  25-Sep-2026
 **  File:  reb-lib.reb
 **
 **  AUTO-GENERATED FILE - Do not modify. (From: make-reb-lib.reb)
@@ -3888,7 +3884,7 @@ enum {
 // for compatiblity with the reb-lib DLL (using RL_Version.)
 #define RL_VER 3
 #define RL_REV 22
-#define RL_UPD 8
+#define RL_UPD 9
 
 // Bumped ONLY when an existing RL_API function's signature/semantics
 // change in a way that breaks old extension binaries calling it - i.e.
@@ -3971,20 +3967,30 @@ typedef struct rebol_ext_api {
 	int (*do_device)(REBREQ *req, REBCNT command);
 } RL_LIB;
 
+#ifndef API_EXPORT
+# define RL_API API_EXPORT
+# ifdef TO_WINDOWS
+#  define API_EXPORT __declspec(dllexport)
+# else
+#  define API_EXPORT __attribute__((visibility("default")))
+# endif
+#endif
+
 // Extension entry point functions:
 #ifdef TO_WINDOWS
 #ifdef __cplusplus
-#define RXIEXT extern "C" __declspec(dllexport)
+#define RXIEXT extern "C" API_EXPORT
 #else
-#define RXIEXT __declspec(dllexport)
+#define RXIEXT API_EXPORT
 #endif
 #else
-#define RXIEXT extern
+#define RXIEXT extern API_EXPORT
 #endif
 
 RXIEXT const char *RX_Init(int opts, RL_LIB *lib);
 RXIEXT int RX_Quit(int opts);
 RXIEXT int RX_Call(int cmd, RXIFRM *frm, void *data);
+RXIEXT int RX_Abi(void);
 
 // The macros below will require this base pointer:
 extern RL_LIB *RL;  // is passed to the RX_Init() function

@@ -84,6 +84,7 @@
 #define RebolGuiSlider    GUI_CLASS(Slider)
 #define RebolGuiPopUp     GUI_CLASS(PopUp)
 #define RebolGuiList      GUI_CLASS(List)
+#define RebolGuiDatePicker GUI_CLASS(DatePicker)
 #define RebolGuiPanel     GUI_CLASS(Panel)
 #define RebolGuiWindow    GUI_CLASS(Window)
 #define NSWINDOW_OF(win) ((NSWindow*)((win)->handle))
@@ -297,6 +298,18 @@ static void Apply_Button_Color(GUIWIDGET *wid);
 - (void)setContext:(GUIWIDGET*)ctx;
 - (NSMutableArray*)items;
 - (void)setQuiet:(BOOL)on;
+@end
+
+
+// A date-field. Reports `change` when the user edits it - the action is
+// not sent for setDateValue:, so a date set by the script is not reported
+// back - and `focus`/`unfocus` as it gains and loses first responder.
+@interface RebolGuiDatePicker : NSDatePicker
+{
+	GUIWIDGET *context;
+}
+- (void)setContext:(GUIWIDGET*)ctx;
+- (void)picked:(id)sender;
 @end
 
 
@@ -726,6 +739,65 @@ TEXT_FIELD_BODY
 @end
 
 
+@implementation RebolGuiDatePicker
+
+- (void)setContext:(GUIWIDGET*)ctx { context = ctx; }
+
+- (void)queue:(REBCNT)type
+{
+	NSRect frame;
+	if (!context || !context->hob) return;
+	frame = [self frame];
+	Gui_Queue_Event(context->hob, type,
+	                (REBINT)frame.origin.x, (REBINT)frame.origin.y,
+	                Modifier_Bits([NSEvent modifierFlags]));
+}
+
+- (void)picked:(id)sender { [self queue:EVT_CHANGE]; }
+
+// Return and Enter are a `click`, as in a field. NSDatePicker has no use
+// for them and beeps; the key is consumed here instead of reaching it.
+- (void)keyDown:(NSEvent*)evt
+{
+	NSString *chars = [evt charactersIgnoringModifiers];
+	unichar   c     = [chars length] ? [chars characterAtIndex:0] : 0;
+	if (c == '\r' || c == 3 /* keypad Enter */) {
+		[self queue:EVT_CLICK];
+		return;
+	}
+	[super keyDown:evt];
+}
+
+// Its intrinsic height is the height it is drawn for: a taller frame only
+// stretches the bezel, and leaves the text sitting at the top of it. So
+// the frame keeps its height and is centred in the box it was given.
+- (void)setFrame:(NSRect)frame
+{
+	CGFloat want = [self intrinsicContentSize].height;
+	if (want > 0 && frame.size.height > want) {
+		frame.origin.y   += floor((frame.size.height - want) / 2.0);
+		frame.size.height = want;
+	}
+	[super setFrame:frame];
+}
+
+- (BOOL)becomeFirstResponder
+{
+	BOOL ok = [super becomeFirstResponder];
+	if (ok) [self queue:EVT_FOCUS];
+	return ok;
+}
+
+- (BOOL)resignFirstResponder
+{
+	BOOL ok = [super resignFirstResponder];
+	if (ok) [self queue:EVT_UNFOCUS];
+	return ok;
+}
+
+@end
+
+
 @implementation RebolGuiList
 
 - (void)setContext:(GUIWIDGET*)ctx { context = ctx; }
@@ -872,10 +944,13 @@ TEXT_FIELD_BODY
 **  flag alone. The value is still worked out by -trackTo: AFTER each
 **  hook, so the drag behaves the same whatever the hooks do.
 **
-**  The value is worked out rather than asked for: the point is in this
-**  view's own coordinates, which are NOT flipped whatever the content
-**  view does, so y grows upward and a vertical slider's minimum is at
-**  the bottom - the same end the Windows backend reports as 0%.
+**  The value is worked out rather than asked for, from the point in this
+**  view's own coordinates. A vertical slider's minimum is at the BOTTOM -
+**  the same end the Windows backend reports as 0% - but whether y grows
+**  up or down here is the view's own business: NSSlider answers
+**  isFlipped YES on current macOS, and assuming it did not put a click on
+**  the knob at the mirror position, so the knob jumped to the opposite
+**  end. So the view is asked, and a flipped y is measured from the bottom.
 ***********************************************************************/
 - (void)trackTo:(NSEvent*)evt
 {
@@ -886,8 +961,9 @@ TEXT_FIELD_BODY
 	double  value;
 
 	if ([self isVertical]) {
+		CGFloat up = [self isFlipped] ? (NSMaxY(box) - p.y) : (p.y - NSMinY(box));
 		span = box.size.height - knob;
-		at   = p.y - (knob / 2.0);
+		at   = up - (knob / 2.0);
 	} else {
 		span = box.size.width - knob;
 		at   = p.x - (knob / 2.0);
@@ -2546,6 +2622,30 @@ REBOOL Gui_Widget_Natural_Size(GUIWIDGET *wid, REBINT *w, REBINT *h)
 		if (!wid || !wid->handle) return FALSE;
 
 		switch (wid->kind) {
+		case W_GUI_WIDGET_DATE_FIELD: {
+			/***************************************************************
+			**  Measured with the WIDEST date it can show, not the one it
+			**  shows now: fitting to today leaves no room for a longer
+			**  date set later, and a few pixels short clips the text. Two
+			**  digit day and month, and an evening time for a 12-hour
+			**  clock's "PM". Rounded UP, with a pixel of slack, as the
+			**  stepper's width is fractional.
+			***************************************************************/
+			NSDatePicker *picker = (NSDatePicker*)wid->handle;
+			NSDate *was = [[picker dateValue] retain];
+			NSDateComponents *c = [[[NSDateComponents alloc] init] autorelease];
+			NSDate *wide;
+			[c setYear:2000]; [c setMonth:12]; [c setDay:28];
+			[c setHour:20]; [c setMinute:58]; [c setSecond:58];
+			wide = [[NSCalendar currentCalendar] dateFromComponents:c];
+			if (wide) [picker setDateValue:wide];
+			size = [picker fittingSize];
+			[picker setDateValue:was];
+			[was release];
+			if (w) *w = (REBINT)ceil(size.width) + 2;
+			if (h) *h = (REBINT)ceil(size.height);
+			return TRUE; }
+
 		case W_GUI_WIDGET_BUTTON:
 		case W_GUI_WIDGET_CHECK:
 		case W_GUI_WIDGET_RADIO:
@@ -3248,6 +3348,115 @@ REBOOL Gui_Create_Drop_Down(GUIWIDGET *wid, GUIWIN *owner,
 		[content addSubview:popup];
 		wid->handle = (void*)popup;
 		return TRUE;
+	}
+}
+
+
+//-- date-field ---------------------------------------------------------------
+
+REBOOL Gui_Create_Date_Field(GUIWIDGET *wid, GUIWIN *owner,
+                             REBINT x, REBINT y, REBINT w, REBINT h)
+{
+	@autoreleasepool {
+		RebolGuiDatePicker *picker;
+		NSView *content;
+		NSDatePickerElementFlags parts = NSDatePickerElementFlagYearMonthDay;
+
+		if (!wid || !owner || !owner->handle) return FALSE;
+		if (![NSThread isMainThread]) return FALSE;
+
+		content = Parent_View(wid, owner);
+		if (!content) return FALSE;
+
+		picker = [[RebolGuiDatePicker alloc] initWithFrame:
+			NSMakeRect((CGFloat)x, (CGFloat)y, (CGFloat)w, (CGFloat)h)];
+		if (!picker) return FALSE;
+
+		// The field with the little stepper - the compact form, and the
+		// nearest thing to Windows' date picker, which drops a calendar
+		// instead.
+		if (wid->state & GUI_DATE_TIME) parts |= NSDatePickerElementFlagHourMinute;
+		[picker setDatePickerStyle:NSDatePickerStyleTextFieldAndStepper];
+		[picker setDatePickerElements:parts];
+		[picker setDatePickerMode:NSDatePickerModeSingle];
+		[picker setBezeled:YES];
+		[picker setDrawsBackground:YES];
+		// The regular control size and system font - the same as a field.
+		// NSDatePicker defaults to neither, and its text then looks smaller
+		// and set lower than the fields next to it.
+		[picker setControlSize:NSControlSizeRegular];
+		[picker setFont:[NSFont systemFontOfSize:[NSFont systemFontSize]]];
+		[picker setFrame:[picker frame]];   // clamp to its height, now known
+		// Local time, the same as the Windows control; the calendar is the
+		// user's own.
+		[picker setTimeZone:[NSTimeZone localTimeZone]];
+		[picker setCalendar:[NSCalendar currentCalendar]];
+		[picker setDateValue:[NSDate date]];
+
+		[picker setContext:wid];
+		[picker setTarget:picker];
+		[picker setAction:@selector(picked:)];
+
+		[content addSubview:picker];
+		wid->handle = (void*)picker;
+		return TRUE;
+	}
+}
+
+
+REBOOL Gui_Widget_Get_Date(GUIWIDGET *wid, GUIDATE *out)
+{
+	@autoreleasepool {
+		NSDateComponents *c;
+		NSCalendar *cal;
+
+		if (!wid || !wid->handle || !out) return FALSE;
+		cal = [NSCalendar currentCalendar];
+		[cal setTimeZone:[NSTimeZone localTimeZone]];
+		c = [cal components:(NSCalendarUnitYear | NSCalendarUnitMonth | NSCalendarUnitDay
+		                     | NSCalendarUnitHour | NSCalendarUnitMinute | NSCalendarUnitSecond)
+		           fromDate:[(NSDatePicker*)wid->handle dateValue]];
+		if (!c) return FALSE;
+		out->year  = (REBINT)[c year];
+		out->month = (REBINT)[c month];
+		out->day   = (REBINT)[c day];
+		out->ns    = (wid->state & GUI_DATE_TIME)
+			? ((REBI64)[c hour] * 3600 + [c minute] * 60 + [c second]) * 1000000000
+			: 0;
+		return TRUE;
+	}
+}
+
+
+void Gui_Widget_Set_Date(GUIWIDGET *wid, const GUIDATE *in)
+{
+	@autoreleasepool {
+		NSDateComponents *c;
+		NSCalendar *cal;
+		NSDate *date;
+		REBI64 s;
+
+		if (!wid || !wid->handle || !in) return;
+		cal = [NSCalendar currentCalendar];
+		[cal setTimeZone:[NSTimeZone localTimeZone]];
+		c = [[[NSDateComponents alloc] init] autorelease];
+		[c setYear:in->year];
+		[c setMonth:in->month];
+		[c setDay:in->day];
+		s = (wid->state & GUI_DATE_TIME) ? in->ns / 1000000000 : 0;
+		[c setHour:(NSInteger)(s / 3600)];
+		[c setMinute:(NSInteger)((s / 60) % 60)];
+		[c setSecond:(NSInteger)(s % 60)];
+		// NSCalendar rolls an impossible date over (30-Feb becomes early
+		// March); Windows refuses one. Refused here too, for one answer.
+		date = [cal dateFromComponents:c];
+		if (!date) return;
+		{	NSDateComponents *back = [cal components:(NSCalendarUnitYear
+			    | NSCalendarUnitMonth | NSCalendarUnitDay) fromDate:date];
+			if ([back day] != in->day || [back month] != in->month) return;
+		}
+		[(NSDatePicker*)wid->handle setDateValue:date];
+		Display_Pending = TRUE;
 	}
 }
 

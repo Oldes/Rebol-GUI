@@ -52,6 +52,9 @@ static REBOOL Default_Font_Owned = FALSE;
 // does not come back as a `change` event. SetWindowText delivers EN_CHANGE
 // synchronously on this same thread, so a plain flag is enough.
 static REBOOL Setting_Text = FALSE;
+// ... and the same for DTM_SETSYSTEMTIME, which notifies DTN_DATETIMECHANGE
+// like a pick by the user would.
+static REBOOL Setting_Date = FALSE;
 
 // WS_CLIPCHILDREN, for the same reason a panel has it: without it a
 // parent's WM_PAINT paints straight over the controls it holds. The DC
@@ -1764,6 +1767,34 @@ static LRESULT CALLBACK Gui_Window_Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
 
 	case WM_NOTIFY: {
 		LRESULT r;
+		// A date-field's own notifications: a new date or time, and the
+		// focus. Only for a control that really is one - notification
+		// codes are per family, and a trackbar's custom draw arrives here
+		// too.
+		// Found through the window's own list, not the sender's user data:
+		// the tooltip and a date picker's own calendar notify too, and what
+		// their user data holds is not a GUIWIDGET.
+		{	NMHDR *nm = (NMHDR*)lp;
+			GUIWIDGET *dw = NULL;
+			if (nm && win) {
+				for (dw = (GUIWIDGET*)win->widgets; dw; dw = (GUIWIDGET*)dw->next)
+					if ((HWND)dw->handle == nm->hwndFrom) break;
+			}
+			if (dw && dw->kind == W_GUI_WIDGET_DATE_FIELD) {
+				REBCNT type = 0;
+				REBINT x = 0, y = 0, w = 0, h = 0;
+				switch (nm->code) {
+				case DTN_DATETIMECHANGE: if (!Setting_Date) type = EVT_CHANGE; break;
+				case NM_SETFOCUS:        type = EVT_FOCUS;   break;
+				case NM_KILLFOCUS:       type = EVT_UNFOCUS; break;
+				}
+				if (type && dw->hob) {
+					Gui_Widget_Get_Box(dw, &x, &y, &w, &h);
+					Gui_Queue_Event(dw->hob, type, x, y, Modifiers());
+				}
+				if (nm->code == DTN_DATETIMECHANGE) return 0;
+			}
+		}
 		if (Dark_Custom_Draw(win, lp, &r)) return r;
 		break; }
 
@@ -2433,7 +2464,8 @@ void Gui_Init_Platform(void)
 	// The trackbar and the progress bar live in comctl32 and their classes
 	// have to be registered before either can be created.
 	controls.dwSize = sizeof(controls);
-	controls.dwICC  = ICC_BAR_CLASSES | ICC_PROGRESS_CLASS | ICC_STANDARD_CLASSES;
+	controls.dwICC  = ICC_BAR_CLASSES | ICC_PROGRESS_CLASS | ICC_STANDARD_CLASSES
+	                | ICC_DATE_CLASSES;
 	InitCommonControlsEx(&controls);
 
 	/*******************************************************************
@@ -3806,8 +3838,11 @@ static LRESULT CALLBACK Nav_Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 	// the beep comes from the WM_CHAR.
 	//
 	// An `area` is multi-line and keeps Enter for itself: it is how a new
-	// line is typed.
-	if (wid && wid->kind == W_GUI_WIDGET_FIELD && wp == VK_RETURN
+	// line is typed. A date-field is a one-line entry like a field, and
+	// beeps the same way; its dropped calendar is a window of its own, so
+	// Enter there still picks the day.
+	if (wid && (wid->kind == W_GUI_WIDGET_FIELD || wid->kind == W_GUI_WIDGET_DATE_FIELD)
+	    && wp == VK_RETURN
 	    && (msg == WM_KEYDOWN || msg == WM_CHAR)) {
 		if (msg == WM_KEYDOWN && wid->hob) {
 			REBINT x = 0, y = 0, w = 0, h = 0;
@@ -4824,6 +4859,28 @@ REBOOL Gui_Widget_Natural_Size(GUIWIDGET *wid, REBINT *w, REBINT *h)
 	if (!wid || !wid->handle) return FALSE;
 	hwnd = HWND_OF_WID(wid);
 
+	// A date picker measures itself, drop-down button and all.
+	// Measured with the WIDEST date it can show rather than the current one
+	// (see the macOS backend): two-digit day and month, an evening time.
+	if (wid->kind == W_GUI_WIDGET_DATE_FIELD) {
+		SIZE ideal = {0, 0};
+		SYSTEMTIME was, wide;
+		REBOOL had = (SendMessageW(hwnd, DTM_GETSYSTEMTIME, 0, (LPARAM)&was) == GDT_VALID);
+		ZeroMemory(&wide, sizeof(wide));
+		wide.wYear = 2000; wide.wMonth = 12; wide.wDay = 28;
+		wide.wHour = 20; wide.wMinute = 58; wide.wSecond = 58;
+		Setting_Date = TRUE;
+		SendMessageW(hwnd, DTM_SETSYSTEMTIME, GDT_VALID, (LPARAM)&wide);
+		SendMessageW(hwnd, DTM_GETIDEALSIZE, 0, (LPARAM)&ideal);
+		if (had) SendMessageW(hwnd, DTM_SETSYSTEMTIME, GDT_VALID, (LPARAM)&was);
+		Setting_Date = FALSE;
+		if (ideal.cx <= 0) return FALSE;
+		ideal.cx += To_Device(Dpi_Of(hwnd), 2);
+		if (w) *w = To_Logical(Dpi_Of(hwnd), (REBINT)ideal.cx);
+		if (h) *h = To_Logical(Dpi_Of(hwnd), (REBINT)ideal.cy);
+		return TRUE;
+	}
+
 	dc = GetDC(hwnd);
 	if (!dc) return FALSE;
 
@@ -5136,6 +5193,111 @@ REBOOL Gui_Create_Drop_Down(GUIWIDGET *wid, GUIWIN *owner,
 
 
 //-- text-list ----------------------------------------------------------------
+
+//-- date-field ---------------------------------------------------------------
+
+#ifndef DTM_GETIDEALSIZE
+#define DTM_GETIDEALSIZE (DTM_FIRST + 15)   // Vista and later
+#endif
+#ifndef LOCALE_SSHORTTIME
+#define LOCALE_SSHORTTIME 0x00000079        // Windows 7 and later
+#endif
+
+/***********************************************************************
+**  A date picker shows the date alone unless told otherwise, and has no
+**  style for "date and time". A custom format does it: the user's own
+**  short date and short time pictures, which are the same pictures a
+**  DTM_SETFORMAT string takes, joined with a space - so the field looks
+**  like every other date and time on that machine.
+***********************************************************************/
+static void Set_Date_Time_Format(HWND hwnd)
+{
+	WCHAR date[80], time[80], both[164];
+
+	if (!GetLocaleInfoW(LOCALE_USER_DEFAULT, LOCALE_SSHORTDATE, date, 80))
+		lstrcpyW(date, L"yyyy-MM-dd");
+	if (!GetLocaleInfoW(LOCALE_USER_DEFAULT, LOCALE_SSHORTTIME, time, 80)
+	 && !GetLocaleInfoW(LOCALE_USER_DEFAULT, LOCALE_STIMEFORMAT, time, 80))
+		lstrcpyW(time, L"HH:mm");
+	lstrcpyW(both, date);
+	lstrcatW(both, L" ");
+	lstrcatW(both, time);
+	SendMessageW(hwnd, DTM_SETFORMATW, 0, (LPARAM)both);
+}
+
+
+REBOOL Gui_Create_Date_Field(GUIWIDGET *wid, GUIWIN *owner,
+                             REBINT x, REBINT y, REBINT w, REBINT h)
+{
+	HWND hwnd;
+
+	if (!wid || !owner || !owner->handle) return FALSE;
+	Box_To_Device(Dpi_Of(HWND_OF(owner)), &x, &y, &w, &h);
+
+	// DTS_SHORTDATECENTURYFORMAT: four-digit years. The drop-down calendar
+	// comes with the class.
+	hwnd = CreateWindowExW(
+		0, DATETIMEPICK_CLASSW, L"",
+		WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_GROUP | DTS_SHORTDATECENTURYFORMAT,
+		x, y, w, h,
+		Parent_Hwnd(wid, owner),
+		NULL,
+		App_Instance, NULL
+	);
+	if (!hwnd) return FALSE;
+
+	SetWindowLongPtrW(hwnd, GWLP_USERDATA, (LONG_PTR)wid);
+	SendMessageW(hwnd, WM_SETFONT, (WPARAM)Default_Font_At(Dpi_Of(hwnd)), TRUE);
+	if (wid->state & GUI_DATE_TIME) Set_Date_Time_Format(hwnd);
+
+	wid->handle = (void*)hwnd;
+	Subclass_For_Nav(wid);
+	return TRUE;
+}
+
+
+REBOOL Gui_Widget_Get_Date(GUIWIDGET *wid, GUIDATE *out)
+{
+	SYSTEMTIME st;
+
+	if (!wid || !wid->handle || !out) return FALSE;
+	if (SendMessageW(HWND_OF_WID(wid), DTM_GETSYSTEMTIME, 0, (LPARAM)&st) != GDT_VALID)
+		return FALSE;
+	out->year  = st.wYear;
+	out->month = st.wMonth;
+	out->day   = st.wDay;
+	out->ns    = (wid->state & GUI_DATE_TIME)
+		? ((REBI64)st.wHour * 3600 + st.wMinute * 60 + st.wSecond) * 1000000000
+		  + (REBI64)st.wMilliseconds * 1000000
+		: 0;
+	return TRUE;
+}
+
+
+void Gui_Widget_Set_Date(GUIWIDGET *wid, const GUIDATE *in)
+{
+	SYSTEMTIME st;
+	REBI64     ms;
+
+	if (!wid || !wid->handle || !in) return;
+	ZeroMemory(&st, sizeof(st));
+	st.wYear  = (WORD)in->year;
+	st.wMonth = (WORD)in->month;
+	st.wDay   = (WORD)in->day;
+	if (wid->state & GUI_DATE_TIME) {
+		ms = in->ns / 1000000;
+		st.wHour         = (WORD)(ms / 3600000);
+		st.wMinute       = (WORD)((ms / 60000) % 60);
+		st.wSecond       = (WORD)((ms / 1000) % 60);
+		st.wMilliseconds = (WORD)(ms % 1000);
+	}
+	// The control refuses a date it cannot show (a 30th of February, a
+	// year out of its range) by returning 0 and keeping what it had.
+	Setting_Date = TRUE;
+	SendMessageW(HWND_OF_WID(wid), DTM_SETSYSTEMTIME, GDT_VALID, (LPARAM)&st);
+	Setting_Date = FALSE;
+}
+
 
 REBOOL Gui_Create_Text_List(GUIWIDGET *wid, GUIWIN *owner,
                             REBINT x, REBINT y, REBINT w, REBINT h)

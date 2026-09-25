@@ -17,6 +17,8 @@ For people working on the extension itself. Users want [README.md](README.md).
   `Cmp_Handle` orders context handles before plain ones.
 - **Event `code` as a word** (`EVF_HAS_SYM`), used by `menu-select` - see
   `core-menu-word.md`.
+- **`date!` with its time** (`RXIARG.datetime`, 3.22.9) - used by
+  `date-field`'s `value`.
 - Already present: `image!` crossing the ABI ignores the series index, and a
   released context handle still answers `/type`.
 
@@ -226,6 +228,25 @@ Cocoa flips offsets against the menu-bar screen; the content view answers
   `setDrawsBackground:YES` so `background` still shows, and an area's or a
   list's scroll view uses `NSNoBorder`. `/flat` is applied before
   `Attach_Widget`, so a natural size leaves no room for a missing border.
+- **Date-field:** since 3.22.9 a `date!` crosses the extension boundary as
+  `RXIARG.datetime`: the 32 `REBYMD` bits in `date`, and nanoseconds in
+  `time` (`NO_TIME` for none). The bits are unpacked by shifts, not through
+  the bit-fields, whose declared order depends on `ENDIAN_LITTLE`.
+  `Date_From_Arg` keeps the field's time of day when none is given, wraps a
+  time into the day, and ignores the zone. A field without `/time` reads
+  back with `NO_TIME`. Backends exchange `GUIDATE` (year, month, day,
+  nanoseconds since midnight, all local). Windows: `DATETIMEPICK_CLASS`
+  (`ICC_DATE_CLASSES`), `DTS_SHORTDATECENTURYFORMAT`, and for `/time` a
+  `DTM_SETFORMAT` built from `LOCALE_SSHORTDATE` + `LOCALE_SSHORTTIME`.
+  `DTN_DATETIMECHANGE` and `NM_SETFOCUS`/`NM_KILLFOCUS` are handled in the
+  window's `WM_NOTIFY`. The sender is found by walking the window's widget
+  list, since a date picker's calendar also notifies. `DTM_SETSYSTEMTIME`
+  notifies too, so `Setting_Date` suppresses it. Natural size comes from
+  `DTM_GETIDEALSIZE`. macOS: `NSDatePicker` in text-field-and-stepper style,
+  local time zone, target/action for `change` (not sent for
+  `setDateValue:`), and first-responder overrides for focus. An impossible
+  date is refused on both platforms: Windows refuses it itself, and macOS
+  would roll it over, so the result is checked.
 - **Integer `scroll` on a text-list:** the shared layer clamps it to the
   items and calls `Gui_Widget_Scroll_To_Item` 0-based. Windows compares it
   with `LB_GETTOPINDEX` and the rows that fit, then sets the top index only

@@ -815,6 +815,56 @@ static REBOOL Kind_Has_Text(REBCNT kind)
 	((kind) == W_GUI_WIDGET_FIELD || (kind) == W_GUI_WIDGET_AREA \
 	 || (kind) == W_GUI_WIDGET_TEXT_LIST)
 
+/***********************************************************************
+**  A date! as it crosses the extension boundary (3.22.9 and later): the
+**  32 bits of the core's REBYMD in `datetime.date`, and the time of day
+**  in nanoseconds in `datetime.time` - NO_TIME for a date without one.
+**
+**  Unpacked by hand rather than through the REBYMD bit-fields: their
+**  declared order depends on ENDIAN_LITTLE, which an extension build is
+**  not guaranteed to define, while the NUMBER they make up is the same
+**  either way - zone in bits 0-6, day 7-11, month 12-15, year 16-31.
+***********************************************************************/
+static void Date_From_Bits(u32 bits, GUIDATE *d)
+{
+	d->year  = (REBINT)(bits >> 16);
+	d->month = (REBINT)((bits >> 12) & 0x0F);
+	d->day   = (REBINT)((bits >> 7) & 0x1F);
+	d->ns    = 0;
+}
+
+static u32 Bits_From_Date(const GUIDATE *d)
+{
+	// Zone 0: a date read back from a control is local and has none.
+	return ((u32)d->year << 16) | (((u32)d->month & 0x0F) << 12)
+	     | (((u32)d->day & 0x1F) << 7);
+}
+
+#define NS_PER_DAY ((REBI64)86400 * 1000000000)
+
+/***********************************************************************
+**  The date! a date-field is set to, into a GUIDATE. A date without a
+**  time keeps the time of day the field has. (A date! never carries
+**  24:00 or more; the modulo below only guards the backends against a
+**  value that did.) A zone is not
+**  applied: the field is in local time, and the date and time are read
+**  as written. FALSE for a date the field cannot hold.
+***********************************************************************/
+static REBOOL Date_From_Arg(GUIWIDGET *wid, u32 bits, i64 time, GUIDATE *d)
+{
+	GUIDATE now;
+
+	Date_From_Bits(bits, d);
+	if (d->month < 1 || d->day < 1) return FALSE;
+	if (time == NO_TIME) {
+		if (Gui_Widget_Get_Date(wid, &now)) d->ns = now.ns;
+	} else {
+		d->ns = (REBI64)time % NS_PER_DAY;
+		if (d->ns < 0) d->ns += NS_PER_DAY;
+	}
+	return TRUE;
+}
+
 // Which kinds hold a list of strings, and pick one of them by `index`.
 #define Kind_Has_Items(kind) \
 	((kind) == W_GUI_WIDGET_DROP_DOWN || (kind) == W_GUI_WIDGET_TEXT_LIST)
@@ -1199,6 +1249,7 @@ static const char* Kind_Name(REBCNT kind)
 	case W_GUI_WIDGET_PROGRESS: return "progress";
 	case W_GUI_WIDGET_DROP_DOWN: return "drop-down";
 	case W_GUI_WIDGET_TEXT_LIST: return "text-list";
+	case W_GUI_WIDGET_DATE_FIELD: return "date-field";
 	case W_GUI_WIDGET_PANEL:     return "panel";
 	default:                 return "button";
 	}
@@ -2354,6 +2405,64 @@ COMMAND cmd_gui_add_text_list(RXIFRM *frm, void *ctx)
 }
 
 
+/***********************************************************************
+**  add-date-field parent offset size /date when [date!] /time
+***********************************************************************/
+COMMAND cmd_gui_add_date_field(RXIFRM *frm, void *ctx)
+{
+	REBHOB    *hob;
+	GUIWIDGET *wid;
+	GUIWIDGET *panel = NULL;
+	GUIWIN    *win = Frm_Parent(frm, 1, &panel);
+	REBINT     x, y, w, h, req_w, req_h;
+
+	if (!win || !win->handle) RETURN_ERROR(ERR_INVALID_HANDLE);
+
+	x = (REBINT)RXA_PAIR(frm, 2).x;
+	y = (REBINT)RXA_PAIR(frm, 2).y;
+	w = (REBINT)RXA_PAIR(frm, 3).x;
+	h = (REBINT)RXA_PAIR(frm, 3).y;
+	if (w < 0 || h < 0) RETURN_ERROR(ERR_BAD_SIZE);
+
+	// A zero axis asks for the natural size - see Add_Button_Control.
+	req_w = w; req_h = h;
+	if (w <= 0) w = 1;
+	if (h <= 0) h = 1;
+
+	hob = RL_MAKE_HANDLE_CONTEXT(Handle_GuiWidget);
+	if (hob == NULL) RETURN_ERROR(ERR_NO_HANDLE);
+
+	wid = (GUIWIDGET*)hob->data;
+	CLEARS(wid);
+	wid->hob    = hob;
+	wid->kind   = W_GUI_WIDGET_DATE_FIELD;
+	wid->owner  = win;
+	wid->parent = panel;
+	// Decided before the control exists - which parts it shows is a
+	// creation style on Windows and a creation-time choice on macOS.
+	if (RXA_REF(frm, 6)) wid->state |= GUI_DATE_TIME;
+
+	if (!Gui_Create_Date_Field(wid, win, x, y, w, h)) {
+		wid->owner  = NULL;
+		wid->parent = NULL;
+		RL_FREE_HANDLE_CONTEXT(hob);
+		RETURN_ERROR(ERR_NO_WIDGET);
+	}
+
+	// Both controls start at the current date and time; `/date` replaces
+	// them - the date, and the time of day too when it has one.
+	if (RXA_REF(frm, 4)) {
+		GUIDATE d;
+		if (Date_From_Arg(wid, (u32)RXA_DATE(frm, 5), RXA_DATE_TIME(frm, 5), &d))
+			Gui_Widget_Set_Date(wid, &d);
+	}
+
+	Attach_Widget(wid, win, req_w, req_h);
+
+	RETURN_HANDLE(hob);
+}
+
+
 COMMAND cmd_gui_add_slider(RXIFRM *frm, void *ctx)
 {
 	return Add_Range_Control(frm, W_GUI_WIDGET_SLIDER);
@@ -3062,6 +3171,16 @@ int GuiWidget_get_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 		break; }
 
 	case W_GUI_ARG_VALUE:
+		if (wid->kind == W_GUI_WIDGET_DATE_FIELD) {
+			GUIDATE d;
+			if (!Gui_Widget_Get_Date(wid, &d)) { *type = RXT_NONE; break; }
+			*type = RXT_DATE;
+			arg->datetime.date = (i32)Bits_From_Date(&d);
+			// A field without `/time` has no time of day to report, and
+			// reads as a plain date.
+			arg->datetime.time = (wid->state & GUI_DATE_TIME) ? (i64)d.ns : NO_TIME;
+			break;
+		}
 		if (!Kind_Has_Value(wid->kind)) { *type = RXT_NONE; break; }
 		// Reported as a percent!, which is what a fraction of a range
 		// reads as in Rebol - `50%` rather than `0.5`.
@@ -3417,6 +3536,14 @@ int GuiWidget_set_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 
 	case W_GUI_ARG_VALUE: {
 		REBDEC value;
+		if (wid->kind == W_GUI_WIDGET_DATE_FIELD) {
+			GUIDATE d;
+			if (*type != RXT_DATE) return PE_BAD_SET_TYPE;
+			if (!Date_From_Arg(wid, (u32)arg->datetime.date, arg->datetime.time, &d))
+				return PE_BAD_SET;
+			Gui_Widget_Set_Date(wid, &d);
+			break;
+		}
 		if (!Kind_Has_Value(wid->kind)) return PE_BAD_SET;
 		// A percent! is a decimal! underneath, so both arrive the same way.
 		if (*type != RXT_PERCENT && *type != RXT_DECIMAL) return PE_BAD_SET_TYPE;

@@ -12,7 +12,7 @@ image widget - render into an `image!` with whatever draws pixels
 ([Blend2D](https://github.com/Siskin-framework/Rebol-Blend2D) being the
 intended one) and `redraw` it.
 
-Requires Rebol **3.22.8** or newer. Implementation notes for contributors are
+Requires Rebol **3.22.9** or newer. Implementation notes for contributors are
 in [INTERNALS.md](INTERNALS.md).
 
 ## What it is not (yet)
@@ -20,8 +20,8 @@ in [INTERNALS.md](INTERNALS.md).
 - no DRAW dialect, no compositor - just the image widget
 - no keyboard events, beyond menu shortcuts and the platform's own navigation
 - no checkable menu items, and no popup (context) menus
-- thirteen native controls: button, image, text, field, area, check, radio,
-  toggle, slider, progress, drop-down, text-list, panel
+- fourteen native controls: button, image, text, field, area, check, radio,
+  toggle, slider, progress, drop-down, text-list, date-field, panel
 - Windows and macOS only; there is no X11/Wayland backend yet
 
 ## Build
@@ -303,6 +303,7 @@ pic:   add-image  win some-image       340x20
 | `progress`  | progress bar | nothing |
 | `drop-down` | pick one of a list | `change` `focus` `unfocus` |
 | `text-list` | pick one of a list shown in a box | `change` `focus` `unfocus` |
+| `date-field` | a date, and optionally a time of day | `change` `click` `focus` `unfocus` |
 | `panel`     | holds other widgets | nothing |
 | `image`     | shows an `image!` | its own mouse events |
 
@@ -587,6 +588,29 @@ trees/scroll: 3           ;; brings item 3 into view, without picking it
 An integer `scroll` scrolls as little as it takes: not at all if the item is
 already visible, and otherwise until it sits at the nearer edge. Values out
 of range are clamped. Reading `scroll` still gives a percent.
+
+### Date-fields
+
+```rebol
+when: add-date-field/date/time win 20x20 0x0 24-Dec-2026/14:05
+
+when/value                ;; 24-Dec-2026/14:05
+when/value: 31-Dec-2026   ;; no time given - keeps the time of day
+when/value: 1-Jan-2027/9:15
+```
+
+A new field shows the current date and time, and `/date` replaces them.
+Without `/time` the field shows the date only, and `value` is a date
+without a time. Values are local time, and a zone on a date you set is
+ignored. `change` is reported only for the user's edits, and Enter is a
+`click`, as in a field. On macOS the field keeps its own height and is
+centred in a taller box.
+
+Windows uses the Date and Time Picker, which drops down a calendar; with
+`/time` it shows the user's short date and time formats. macOS uses
+`NSDatePicker` as a field with a stepper. `dark-controls?` does not change
+the Windows control yet. Requires Rebol 3.22.9, the first version that
+passes a date's time to extensions.
 
 ### Panels and group boxes
 
@@ -957,6 +981,15 @@ Creates a list of strings in a fixed box, which scrolls when they do not fit, an
 * `n` `[integer!]` Item picked to start with, 1-based (default: none)
 * `/flat` Without the border
 
+#### `add-date-field` `:parent` `:offset` `:size`
+Creates an entry for a date, and optionally a time of day, and returns its handle
+* `parent` `[handle!]` Window or panel to put it in
+* `offset` `[pair!]` Position inside the client area
+* `size` `[pair!]`
+* `/date`
+* `when` `[date!]` Date (and time) to start with (default: now)
+* `/time` Shows and edits the time of day as well
+
 
 ## Used handles and its getters / setters
 
@@ -1011,8 +1044,8 @@ Creates a list of strings in a fixed box, which scrolls when they do not fit, an
 /offset           pair!               pair!                         "Position inside whatever holds it - a window or a panel"
 /at               pair!               none                          "Top-left corner in its window's client area, however deeply nested - what a mouse event's offset is measured from"
 /id               integer!            none                          "Native control handle as an integer"
-/kind             word!               none                          "What the control is: button, image, text, field, area, check, radio, toggle, slider, progress, drop-down, text-list or panel"
-/value            percent!            [percent! decimal!]           "Position of a slider or a progress bar; none for other kinds"
+/kind             word!               none                          "What the control is: button, image, text, field, area, check, radio, toggle, slider, progress, drop-down, text-list, date-field or panel"
+/value            percent!            [percent! decimal!]           "Position of a slider or a progress bar; the date of a date-field, with its time of day when made with `/time`; none for other kinds"
 /state            logic!              logic!                        "Whether a check, a radio or a toggle is on; none for other kinds"
 /edge             logic!              logic!                        "Whether a panel draws a frame around itself, or a field, an area or a text-list its border; none for other kinds"
 /font             string!             [string! none!]               "Font family; none puts it back to the system font"

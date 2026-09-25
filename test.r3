@@ -1,6 +1,6 @@
 Rebol [
 	Title:   "Rebol/GUI extension test"
-	Needs:   3.22.8
+	Needs:   3.22.9
 	Purpose: {
 		Opens a window and prints the mouse events it produces. Meant to be
 		run by a human - close the window to end it.
@@ -761,6 +761,7 @@ secret: add-field/secure tinted "hunter2" 12x44 230x0
 print ["secure?" secret/secure? "text:" mold secret/text "(expected true ^"hunter2^")"]
 print ["an ordinary field is not:" name/secure? " a button has none:" mold counter/secure?]
 
+
 ;; And one which is SEE-THROUGH: the client area is dropped by the compositor
 ;; and only the widgets are left on screen.
 ;;
@@ -785,6 +786,24 @@ print ["client size:" bare/size "(unchanged by having no frame)"]
 ;; is the only thing that can move or close it. Give this one a way out.
 add-text   bare "No border - and no way to close me" 10x10 220x0
 back-again: add-button bare "Give me a frame" 10x50 0x0
+
+;; A date-field: `value` is a date!, with the time of day when the field is
+;; made with `/time`. Both start at now.
+;;
+;; WATCH: a date and time entry under the button in the borderless window.
+;; Not on the "Dark window": its background is set by hand, and the macOS
+;; stepper arrows are drawn for the system's light or dark look, not for it.
+when: add-date-field/date/time bare 10x88 0x0 24-Dec-2026/18:30
+print ["date-field:" when/kind "size:" when/size]
+print ["value:" when/value "(expected 24-Dec-2026/18:30)"]
+when/value: 31-Dec-2026            ;; no time given - the time of day is kept
+print ["date set: " when/value "(expected 31-Dec-2026/18:30)"]
+when/value: 1-Jan-2027/9:15
+print ["both set: " when/value "(expected 1-Jan-2027/9:15)"]
+plain-date: add-date-field bare 10x88 0x0
+print ["without /time, a plain date:" plain-date/value "(expected" now/date ")"]
+remove-widget plain-date
+release plain-date
 
 ;; Turning the border back on does not turn resizing back on: they are two
 ;; properties, and this window never had the second one.
@@ -1026,6 +1045,10 @@ report: func [event /local type source position kind][
 				;; Picking from the drop-down shows up in the label.
 				label/text: ajoin ["Picked: " source/text " (" source/index ")"]
 			]
+			source == when [
+				;; A new date or time, picked by the user.
+				note ajoin ["date-field: " source/value]
+			]
 			source == trees [
 				;; ... and so does picking from the text-list.
 				label/text: ajoin ["Tree: " source/text " (" source/index ")"]
@@ -1136,6 +1159,8 @@ report: func [event /local type source position kind][
 				close-window win
 				exit
 			]
+			;; ENTER in a date-field too.
+			source == when [note ajoin ["date-field entered: " source/value]]
 			;; ENTER in a field reports a `click` - the same word a button
 			;; uses, because it is the same thing: the control was activated
 			;; rather than merely edited. An area keeps Enter for itself.

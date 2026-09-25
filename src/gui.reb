@@ -2,7 +2,7 @@ REBOL [
 	Title:   "Rebol GUI extension"
 	Name:    gui
 	Version: 0.3.0
-	Needs:   3.22.8
+	Needs:   3.22.9
 	Author:  @Oldes
 	License: Apache-2.0
 	Options: [delay]
@@ -11,7 +11,7 @@ REBOL [
 		add-button add-image add-text add-field add-area
 		add-check add-radio add-slider add-progress add-drop-down add-panel
 		remove-widget redraw set-focus screens track-mouse add-toggle
-		add-text-list
+		add-text-list add-date-field
 		gui-device gui-device-polls gui-device-events
 		gui-device-pumps gui-device-messages
 		poll-events do-events
@@ -204,6 +204,10 @@ typedef struct Gui_Widget_Context {
 // wheel does not move it; `index` and `scroll` still do
 #define GUI_LIST_FIXED 1
 
+// wid->state of a date-field made with `/time`: it shows and edits the time
+// of day as well as the date
+#define GUI_DATE_TIME 1
+
 // wid->color. The top byte is the "has one" flag, which is why a colour of
 // 0.0.0 is still distinguishable from no colour at all.
 #define GUI_COLOR_SET        0xFF000000
@@ -322,6 +326,7 @@ words: [
 		panel           ;; holds other widgets; see `parent` below
 		toggle          ;; a push button which stays pushed; on or off like a check
 		text-list       ;; pick one of a list shown in a box; reports `change`
+		date-field      ;; a date, and optionally a time of day; reports `change`
 	]
 	;; What a `theme-change` event carries in `code`.
 	theme: [
@@ -379,8 +384,8 @@ handles: [
 		offset   pair!     pair!     "Position inside whatever holds it - a window or a panel"
 		at       pair!     none      "Top-left corner in its window's client area, however deeply nested - what a mouse event's offset is measured from"
 		id       integer!  none      "Native control handle as an integer"
-		kind     word!     none      "What the control is: button, image, text, field, area, check, radio, toggle, slider, progress, drop-down, text-list or panel"
-		value    percent!  [percent! decimal!] "Position of a slider or a progress bar; none for other kinds"
+		kind     word!     none      "What the control is: button, image, text, field, area, check, radio, toggle, slider, progress, drop-down, text-list, date-field or panel"
+		value    percent!  [percent! decimal!] "Position of a slider or a progress bar; the date of a date-field, with its time of day when made with `/time`; none for other kinds"
 		state    logic!    logic!    "Whether a check, a radio or a toggle is on; none for other kinds"
 		edge     logic!    logic!    "Whether a panel draws a frame around itself, or a field, an area or a text-list its border; none for other kinds"
 		;; Typography. Every kind which has `text` has these; the rest answer none.
@@ -569,6 +574,15 @@ commands: [
 		size   [pair!]
 		/index n [integer!] "Item picked to start with, 1-based (default: none)"
 		/flat "Without the border"
+	]
+
+	add-date-field: [
+		"Creates an entry for a date, and optionally a time of day, and returns its handle"
+		parent [handle!] "Window or panel to put it in"
+		offset [pair!]   "Position inside the client area"
+		size   [pair!]
+		/date  when [date!] "Date (and time) to start with (default: now)"
+		/time  "Shows and edits the time of day as well"
 	]
 ]
 

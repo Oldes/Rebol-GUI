@@ -641,6 +641,29 @@ void    Gui_Widget_Scroll_To_Item(GUIWIDGET *wid, REBINT n);
 // control holds it anyway. Off leaves the box where it is: the text simply
 // gets the room the border had.
 REBOOL  Gui_Widget_Get_Edge(GUIWIDGET *wid);
+
+/***********************************************************************
+**  date-field
+**
+**  A date and, when `wid->state & GUI_DATE_TIME` (set by the caller
+**  before creation), a time of day. Both in LOCAL time, which is what
+**  both platforms' controls show - no zone is involved.
+**
+**  GUIDATE is plain numbers so that neither side has to know the other's
+**  representation: month and day are 1-based, `ns` is nanoseconds since
+**  midnight - the unit a Rebol time! is kept in. A backend only has to
+**  honour `ns` for a field with GUI_DATE_TIME; without it, the time is
+**  read back as 0 and ignored on the way in.
+***********************************************************************/
+typedef struct Gui_Date {
+	REBINT year, month, day;
+	REBI64 ns;
+} GUIDATE;
+
+REBOOL  Gui_Create_Date_Field(GUIWIDGET *wid, GUIWIN *owner,
+                              REBINT x, REBINT y, REBINT w, REBINT h);
+REBOOL  Gui_Widget_Get_Date(GUIWIDGET *wid, GUIDATE *out);
+void    Gui_Widget_Set_Date(GUIWIDGET *wid, const GUIDATE *in);
 void    Gui_Widget_Set_Edge(GUIWIDGET *wid, REBOOL on);
 
 
