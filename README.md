@@ -20,8 +20,8 @@ in [INTERNALS.md](INTERNALS.md).
 - no DRAW dialect, no compositor - just the image widget
 - keyboard events only per window, with `keys?`, and observed rather than taken
 - no checkable menu items, and no popup (context) menus
-- fourteen native controls: button, image, text, field, area, check, radio,
-  toggle, slider, progress, drop-down, text-list, date-field, panel
+- fifteen native controls: button, image, text, field, area, check, radio,
+  toggle, slider, progress, drop-list, drop-down, text-list, date-field, panel
 - Windows and macOS only; there is no X11/Wayland backend yet
 
 ## Build
@@ -236,7 +236,7 @@ win/dark-controls?: true
 ```
 
 Then, while the system is dark, its buttons, toggles, checks, radios, fields,
-areas, drop-downs, text-lists, sliders and progress bars are drawn dark, its
+areas, drop-lists, drop-downs, text-lists, sliders and progress bars are drawn dark, its
 menu bar and menus turn dark, and every colour left at `none` (the window's
 and panels' fill, text, the inside and the edges of fields) turns dark too. Off
 by default, since it relies on undocumented parts of Windows. Colours the script set
@@ -313,7 +313,8 @@ pic:   add-image  win some-image       340x20
 | `toggle`    | push button which stays pushed | `down` `move` `up` `click` |
 | `slider`    | draggable slider | `down` `move` `up`, and `change` continuously while dragged |
 | `progress`  | progress bar | nothing |
-| `drop-down` | pick one of a list | `change` `focus` `unfocus` |
+| `drop-list` | pick one of a list | `change` `focus` `unfocus` |
+| `drop-down` | editable combo box - pick from a list, or type free text | `change` `focus` `unfocus` |
 | `text-list` | pick one of a list shown in a box | `change` `focus` `unfocus` |
 | `date-field` | a date, and optionally a time of day | `change` `click` `focus` `unfocus` |
 | `panel`     | holds other widgets | nothing |
@@ -445,7 +446,7 @@ monitor with another setting.
 
 ### Text and colour
 
-Anything with text - button, text, field, area, check, radio, drop-down and a
+Anything with text - button, text, field, area, check, radio, drop-list, drop-down and a
 panel's caption - takes typography:
 
 ```rebol
@@ -460,7 +461,9 @@ A window's `font` and `font-size` are defaults for widgets created **after**
 they are set; widgets already on the window are not changed.
 
 Not every platform honours every setting: a text colour on a Windows push
-button, and on a macOS drop-down, is stored and read back but not shown.
+button is stored and read back but not shown. On macOS a text colour on a
+drop-list (a pop-up button) is likewise stored but not shown; a drop-down's
+(the combo box) colour does show, through `NSComboBox`'s own text colour.
 
 `background` and `transparent?` work as on a window:
 
@@ -473,7 +476,7 @@ lbl/transparent?: true        ;; nothing - what it sits on shows through
 Setting a colour turns transparency off. A widget fills with the *window's*
 colour by default, so a control inside a coloured panel or on an image needs
 `transparent?: true` to blend in. Transparency applies to `text`, `check`,
-`radio` and `panel`; entries and drop-downs take a `background` colour only.
+`radio` and `panel`; entries, drop-lists and drop-downs take a `background` colour only.
 
 ### Fields and areas
 
@@ -536,10 +539,10 @@ meter/value: level/value  ;; decimal! is accepted too; out-of-range clamps
 
 A slider taller than it is wide is vertical, with `0%` at the bottom.
 
-### Drop-downs
+### Drop-lists
 
 ```rebol
-pick: add-drop-down/index win ["Ash" "Birch" "Elm"] 300x350 200x0 2
+pick: add-drop-list/index win ["Ash" "Birch" "Elm"] 300x350 200x0 2
 
 pick/items                ;; ["Ash" "Birch" "Elm"]
 pick/index                ;; 2 - 1-based, 0 when nothing is picked
@@ -549,6 +552,25 @@ pick/items: ["Oak" "Yew"] ;; replaces the list and clears the selection
 
 Non-string values in the block are skipped. `size` is the closed control.
 Duplicate entries are kept.
+
+### Drop-downs
+
+The editable counterpart of a drop-list: a combo box that lets the user pick
+from a list *or* type free text of their own.
+
+```rebol
+combo: add-drop-down/index win ["Ash" "Birch" "Elm"] 300x350 200x0 2
+combo/items                ;; ["Ash" "Birch" "Elm"]
+combo/index                ;; 2
+combo/text                 ;; "Birch" - can also be typed freely
+combo/text: "Custom value" ;; sets the typed value directly
+```
+
+`add-drop-down` takes the same arguments as `add-drop-list` (parent, items,
+offset, size, `/index n`). Unlike a drop-list, whose `text` is read-only,
+a drop-down's `text` is both readable **and** writable - it is both what the
+box shows and what the user may have typed - and typing in it reports
+`change` just like editing a field.
 
 ### Text-lists
 
@@ -563,7 +585,7 @@ trees/text                ;; "Birch" - none when nothing is picked; read-only
 trees/index: 4            ;; picks and scrolls it into view, without a `change`
 ```
 
-`items` and `index` work as for a drop-down. `change` is reported only when
+`items` and `index` work as for a drop-list. `change` is reported only when
 the user picks. A zero size gives about twenty characters by six rows.
 
 A field made with `/secure` masks what is typed, for a password, and refuses
@@ -944,7 +966,7 @@ Creates a progress bar inside a window and returns its handle
 * `/value`
 * `val` `[percent! decimal!]` Initial position (default: 0%)
 
-#### `add-drop-down` `:parent` `:items` `:offset` `:size`
+#### `add-drop-list` `:parent` `:items` `:offset` `:size`
 Creates a drop-down list inside a window and returns its handle
 * `parent` `[handle!]` Window or panel to put it in
 * `items` `[block!]` Strings to offer
@@ -1026,6 +1048,15 @@ Creates an entry for a date, and optionally a time of day, and returns its handl
 * `when` `[date!]` Date (and time) to start with (default: now)
 * `/time` Shows and edits the time of day as well
 
+#### `add-drop-down` `:parent` `:items` `:offset` `:size`
+Creates an editable combo box - a drop-down list which also takes typed text - inside a window and returns its handle
+* `parent` `[handle!]` Window or panel to put it in
+* `items` `[block!]` Strings to offer
+* `offset` `[pair!]` Position inside the client area
+* `size` `[pair!]` Of the closed control; room for the list is added
+* `/index`
+* `n` `[integer!]` Item picked to start with, 1-based (default: none)
+
 
 ## Used handles and its getters / setters
 
@@ -1074,15 +1105,15 @@ Creates an entry for a date, and optionally a time of day, and returns its handl
 
 ```rebol
 ;Refinement       Gets                Sets                          Description
-/text             string!             string!                       "Label or contents; the caption of a framed panel; the selected item of a drop-down or a text-list, which is read-only; none for an image"
-/items            block!              block!                        "Strings a drop-down or a text-list offers; none for other kinds"
+/text             string!             string!                       "Label or contents; the caption of a framed panel; the selected item of a drop-list or a text-list, which is read-only; the typed value of a drop-down, which can be set; none for an image"
+/items            block!              block!                        "Strings a drop-list, a drop-down or a text-list offers; none for other kinds"
 /index            integer!            integer!                      "Which item is picked, 1-based; 0 for none"
 /image            image!              image!                        "Image shown by an image widget, none for other kinds"
 /size             pair!               pair!                         "Size of the control; a zero axis asks it what that axis needs, the same as at creation"
 /offset           pair!               pair!                         "Position inside whatever holds it - a window or a panel"
 /at               pair!               none                          "Top-left corner in its window's client area, however deeply nested - what a mouse event's offset is measured from"
 /id               integer!            none                          "Native control handle as an integer"
-/kind             word!               none                          "What the control is: button, image, text, field, area, check, radio, toggle, slider, progress, drop-down, text-list, date-field or panel"
+/kind             word!               none                          "What the control is: button, image, text, field, area, check, radio, toggle, slider, progress, drop-list, drop-down, text-list, date-field or panel"
 /value            percent!            [percent! decimal!]           "Position of a slider or a progress bar; the date of a date-field, with its time of day when made with `/time`; none for other kinds"
 /state            logic!              logic!                        "Whether a check, a radio or a toggle is on; none for other kinds"
 /border?          logic!              logic!                        "Whether a panel draws a frame around itself, or a field, an area or a text-list its border; none for other kinds"

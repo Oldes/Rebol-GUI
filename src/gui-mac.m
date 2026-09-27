@@ -83,12 +83,14 @@
 #define RebolGuiImageView GUI_CLASS(ImageView)
 #define RebolGuiSlider    GUI_CLASS(Slider)
 #define RebolGuiPopUp     GUI_CLASS(PopUp)
+#define RebolGuiComboBox  GUI_CLASS(ComboBox)
 #define RebolGuiList      GUI_CLASS(List)
 #define RebolGuiDatePicker GUI_CLASS(DatePicker)
 #define RebolGuiPanel     GUI_CLASS(Panel)
 #define RebolGuiWindow    GUI_CLASS(Window)
 #define NSWINDOW_OF(win) ((NSWindow*)((win)->handle))
 #define NSPANEL_OF(wid)  ((RebolGuiPanel*)((wid)->handle))
+#define NSCOMBO_OF(wid)  ((RebolGuiComboBox*)((wid)->handle))
 
 // How far in from the left edge a framed panel's caption starts. The same
 // number as in gui-win.c, so the two look alike even though each measures
@@ -281,6 +283,18 @@ static void Apply_Button_Color(GUIWIDGET *wid);
 
 // Reports `change` when the selection moves.
 @interface RebolGuiPopUp : NSPopUpButton
+{
+	GUIWIDGET *context;
+}
+- (void)setContext:(GUIWIDGET*)ctx;
+- (void)picked:(id)sender;
+@end
+
+
+// An editable combo box: the list-picking half is an NSComboBox, and the
+// typed half is reported through the NSTextField delegate methods it
+// inherits - so both a pick and a keystroke land on the same `change`.
+@interface RebolGuiComboBox : NSComboBox <NSComboBoxDelegate>
 {
 	GUIWIDGET *context;
 }
@@ -800,6 +814,33 @@ TEXT_FIELD_BODY
 	                (REBINT)frame.origin.x, (REBINT)frame.origin.y,
 	                Modifier_Bits([NSEvent modifierFlags]));
 }
+
+@end
+
+
+@implementation RebolGuiComboBox
+
+- (void)setContext:(GUIWIDGET*)ctx { context = ctx; }
+
+- (void)queue:(REBCNT)type
+{
+	NSRect frame;
+	if (!context || !context->hob) return;
+	frame = [self frame];
+	Gui_Queue_Event(context->hob, type,
+	                (REBINT)frame.origin.x, (REBINT)frame.origin.y,
+	                Modifier_Bits([NSEvent modifierFlags]));
+}
+
+// A pick from the dropped list.
+- (void)picked:(id)sender { [self queue:EVT_CHANGE]; }
+- (void)comboBoxSelectionDidChange:(NSNotification*)note { [self queue:EVT_CHANGE]; }
+
+// NSComboBox is NSTextField-derived, so typed text is reported the same
+// way a plain field's is.
+- (void)controlTextDidChange:(NSNotification*)note       { [self queue:EVT_CHANGE]; }
+- (void)controlTextDidBeginEditing:(NSNotification*)note { [self queue:EVT_FOCUS]; }
+- (void)controlTextDidEndEditing:(NSNotification*)note   { [self queue:EVT_UNFOCUS]; }
 
 @end
 
@@ -2772,6 +2813,7 @@ REBOOL Gui_Widget_Natural_Size(GUIWIDGET *wid, REBINT *w, REBINT *h)
 		case W_GUI_WIDGET_RADIO:
 		case W_GUI_WIDGET_TEXT:
 		case W_GUI_WIDGET_FIELD:
+		case W_GUI_WIDGET_DROP_LIST:
 		case W_GUI_WIDGET_DROP_DOWN:
 			// AppKit measures its own controls, bezel and all, which is a
 			// better answer than any padding table this file could keep.
@@ -2803,6 +2845,7 @@ REBOOL Gui_Widget_Natural_Size(GUIWIDGET *wid, REBINT *w, REBINT *h)
 		if (wid->kind == W_GUI_WIDGET_FIELD
 		 || wid->kind == W_GUI_WIDGET_AREA
 		 || wid->kind == W_GUI_WIDGET_TEXT_LIST
+		 || wid->kind == W_GUI_WIDGET_DROP_LIST
 		 || wid->kind == W_GUI_WIDGET_DROP_DOWN) {
 			CGFloat least = 20.0 * [NSFont systemFontSize] * 0.55;
 			if (size.width < least) size.width = least;
@@ -2862,9 +2905,11 @@ REBSER* Gui_Widget_Get_Text(GUIWIDGET *wid)
 		case W_GUI_WIDGET_TEXT:
 		case W_GUI_WIDGET_FIELD:
 			return From_NSString([(NSTextField*)wid->handle stringValue]);
-		case W_GUI_WIDGET_DROP_DOWN:
+		case W_GUI_WIDGET_DROP_LIST:
 			// An NSPopUpButton's own `title` is not what it displays.
 			return From_NSString([NSPOPUP_OF(wid) titleOfSelectedItem]);
+		case W_GUI_WIDGET_DROP_DOWN:
+			return From_NSString([(NSComboBox*)wid->handle stringValue]);
 		case W_GUI_WIDGET_PANEL:
 			// A panel is a plain view; its caption is the extension's own.
 			return From_NSString([NSPANEL_OF(wid) caption]);
@@ -2894,6 +2939,9 @@ REBOOL Gui_Widget_Set_Text(GUIWIDGET *wid, const REBYTE *utf8, REBCNT len)
 			break;
 		case W_GUI_WIDGET_PANEL:
 			[NSPANEL_OF(wid) setCaption:value];
+			break;
+		case W_GUI_WIDGET_DROP_DOWN:
+			[(NSComboBox*)wid->handle setStringValue:value];
 			break;
 		default:
 			[NSBUTTON_OF(wid) setTitle:value];
@@ -3102,11 +3150,16 @@ REBOOL Gui_Widget_Set_Color(GUIWIDGET *wid)
 			[List_View_Of(wid) setNeedsDisplay:YES];
 			break;
 
-		case W_GUI_WIDGET_DROP_DOWN:
+		case W_GUI_WIDGET_DROP_LIST:
 			// See Apply_Button_Color: a pop-up shows a menu item, not a
 			// title of its own, so this is the one control here whose
 			// colour AppKit will not take.
 			return FALSE;
+
+		case W_GUI_WIDGET_DROP_DOWN:
+			[(NSComboBox*)wid->handle setTextColor:
+				(color ? color : [NSColor textColor])];
+			break;
 
 		default:
 			Apply_Button_Color(wid);
@@ -3566,9 +3619,9 @@ void Gui_Panel_Border_Changed(GUIWIDGET *wid)
 }
 
 
-//-- drop-down ----------------------------------------------------------------
+//-- drop-list / drop-down -----------------------------------------------------
 
-REBOOL Gui_Create_Drop_Down(GUIWIDGET *wid, GUIWIN *owner,
+REBOOL Gui_Create_Drop_List(GUIWIDGET *wid, GUIWIN *owner,
                             REBINT x, REBINT y, REBINT w, REBINT h)
 {
 	@autoreleasepool {
@@ -3595,6 +3648,41 @@ REBOOL Gui_Create_Drop_Down(GUIWIDGET *wid, GUIWIN *owner,
 
 		[content addSubview:popup];
 		wid->handle = (void*)popup;
+		return TRUE;
+	}
+}
+
+
+// An editable combo box: modelled closely on Gui_Create_Drop_List, but
+// backed by an NSComboBox rather than an NSPopUpButton, and editable -
+// the user can type a value that is not in the list.
+REBOOL Gui_Create_Combo_Box(GUIWIDGET *wid, GUIWIN *owner,
+                            REBINT x, REBINT y, REBINT w, REBINT h)
+{
+	@autoreleasepool {
+		RebolGuiComboBox *combo;
+		NSView *content;
+
+		if (!wid || !owner || !owner->handle) return FALSE;
+		if (![NSThread isMainThread]) return FALSE;
+
+		content = Parent_View(wid, owner);
+		if (!content) return FALSE;
+
+		combo = [[RebolGuiComboBox alloc]
+			initWithFrame:NSMakeRect((CGFloat)x, (CGFloat)y, (CGFloat)w, (CGFloat)h)];
+		if (!combo) return FALSE;
+
+		[combo setEditable:YES];
+		[combo setContext:wid];
+		[combo setTarget:combo];
+		[combo setAction:@selector(picked:)];
+		[combo setDelegate:combo];
+		[combo setUsesDataSource:NO];
+		[combo setCompletes:NO];
+
+		[content addSubview:combo];
+		wid->handle = (void*)combo;
 		return TRUE;
 	}
 }
@@ -3769,6 +3857,8 @@ REBCNT Gui_Widget_Count_Items(GUIWIDGET *wid)
 		if (!wid || !wid->handle) return 0;
 		if (wid->kind == W_GUI_WIDGET_TEXT_LIST)
 			return (REBCNT)[[List_View_Of(wid) items] count];
+		if (wid->kind == W_GUI_WIDGET_DROP_DOWN)
+			return (REBCNT)[NSCOMBO_OF(wid) numberOfItems];
 		return (REBCNT)[NSPOPUP_OF(wid) numberOfItems];
 	}
 }
@@ -3782,6 +3872,10 @@ REBSER* Gui_Widget_Get_Item(GUIWIDGET *wid, REBCNT n)
 			NSMutableArray *items = [List_View_Of(wid) items];
 			if (n >= (REBCNT)[items count]) return NULL;
 			return From_NSString([items objectAtIndex:(NSUInteger)n]);
+		}
+		if (wid->kind == W_GUI_WIDGET_DROP_DOWN) {
+			if ((NSInteger)n >= [NSCOMBO_OF(wid) numberOfItems]) return NULL;
+			return From_NSString([NSCOMBO_OF(wid) objectValueOfItemAtIndex:(NSInteger)n]);
 		}
 		if ((NSInteger)n >= [NSPOPUP_OF(wid) numberOfItems]) return NULL;
 		return From_NSString([NSPOPUP_OF(wid) itemTitleAtIndex:(NSInteger)n]);
@@ -3804,6 +3898,11 @@ REBOOL Gui_Widget_Add_Item(GUIWIDGET *wid, const REBYTE *utf8, REBCNT len)
 			[list setQuiet:YES];
 			[list noteNumberOfRowsChanged];
 			[list setQuiet:NO];
+			return TRUE;
+		}
+
+		if (wid->kind == W_GUI_WIDGET_DROP_DOWN) {
+			[NSCOMBO_OF(wid) addItemWithObjectValue:title];
 			return TRUE;
 		}
 
@@ -3830,6 +3929,10 @@ void Gui_Widget_Clear_Items(GUIWIDGET *wid)
 			[list setQuiet:NO];
 			return;
 		}
+		if (wid->kind == W_GUI_WIDGET_DROP_DOWN) {
+			[NSCOMBO_OF(wid) removeAllItems];
+			return;
+		}
 		[NSPOPUP_OF(wid) removeAllItems];
 	}
 }
@@ -3841,6 +3944,8 @@ REBINT Gui_Widget_Get_Index(GUIWIDGET *wid)
 		if (!wid || !wid->handle) return -1;
 		if (wid->kind == W_GUI_WIDGET_TEXT_LIST)
 			return (REBINT)[List_View_Of(wid) selectedRow]; // -1 for none
+		if (wid->kind == W_GUI_WIDGET_DROP_DOWN)
+			return (REBINT)[NSCOMBO_OF(wid) indexOfSelectedItem];
 		return (REBINT)[NSPOPUP_OF(wid) indexOfSelectedItem];
 	}
 }
@@ -3867,6 +3972,17 @@ void Gui_Widget_Set_Index(GUIWIDGET *wid, REBINT n)
 			[list setQuiet:NO];
 			return;
 		}
+
+		if (wid->kind == W_GUI_WIDGET_DROP_DOWN) {
+			RebolGuiComboBox *combo = NSCOMBO_OF(wid);
+			if (n < 0 || n >= [combo numberOfItems]) {
+				[combo setStringValue:@""];
+			} else {
+				[combo selectItemAtIndex:(NSInteger)n];
+			}
+			return;
+		}
+
 		popup = NSPOPUP_OF(wid);
 
 		if (n < 0 || n >= [popup numberOfItems]) {

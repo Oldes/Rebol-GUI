@@ -92,6 +92,8 @@ static REBOOL Setting_Date = FALSE;
 // control plus the list it drops down - so room for the list has to be
 // added to whatever height the caller asked for. Ask for too little and
 // the list is a sliver; this is the classic Win32 trap with this control.
+// Shared by both combo-box based widgets: drop-list (CBS_DROPDOWNLIST, a
+// closed chooser) and drop-down (CBS_DROPDOWN, an editable combo box).
 #define DROP_LIST_ROOM 220
 
 #define HWND_OF(win)      ((HWND)((win)->handle))
@@ -1520,6 +1522,7 @@ static void Theme_Control(GUIWIDGET *wid, REBOOL dark)
 	case W_GUI_WIDGET_TEXT_LIST:
 		set(hwnd, dark ? L"DarkMode_Explorer" : NULL, NULL);
 		break;
+	case W_GUI_WIDGET_DROP_LIST:
 	case W_GUI_WIDGET_DROP_DOWN:
 		set(hwnd, dark ? L"DarkMode_CFD" : NULL, NULL);
 		break;
@@ -1921,11 +1924,12 @@ static LRESULT CALLBACK Gui_Window_Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
 		// Notification codes overlap between control families (BN_CLICKED
 		// and CBN_ERRSPACE are both 0), so the combo box codes are only
 		// read when the control really is one.
-		if (wid && wid->kind == W_GUI_WIDGET_DROP_DOWN) {
+		if (wid && (wid->kind == W_GUI_WIDGET_DROP_LIST || wid->kind == W_GUI_WIDGET_DROP_DOWN)) {
 			switch (HIWORD(wp)) {
-			case CBN_SELCHANGE: type = EVT_CHANGE;  break;
-			case CBN_SETFOCUS:  type = EVT_FOCUS;   break;
-			case CBN_KILLFOCUS: type = EVT_UNFOCUS; break;
+			case CBN_SELCHANGE:  type = EVT_CHANGE;  break;
+			case CBN_EDITCHANGE: type = EVT_CHANGE;  break;
+			case CBN_SETFOCUS:   type = EVT_FOCUS;   break;
+			case CBN_KILLFOCUS:  type = EVT_UNFOCUS; break;
 			default: goto not_handled;
 			}
 			if (wid->hob) {
@@ -5080,6 +5084,7 @@ REBOOL Gui_Widget_Natural_Size(GUIWIDGET *wid, REBINT *w, REBINT *h)
 		lines = (wid->kind == W_GUI_WIDGET_TEXT_LIST) ? 6 : 4;
 		// fall through
 	case W_GUI_WIDGET_FIELD:
+	case W_GUI_WIDGET_DROP_LIST:
 	case W_GUI_WIDGET_DROP_DOWN:
 		// The sunken border, plus the padding the control keeps inside it.
 		pad_x = To_Device(dpi, 8);
@@ -5124,7 +5129,7 @@ REBOOL Gui_Widget_Get_Box(GUIWIDGET *wid, REBINT *x, REBINT *y, REBINT *w, REBIN
 
 	// A combo box's window rectangle covers the dropped list as well, which
 	// is not the box anyone laid out. The closed control is reported instead.
-	if (wid->kind == W_GUI_WIDGET_DROP_DOWN) {
+	if (wid->kind == W_GUI_WIDGET_DROP_LIST || wid->kind == W_GUI_WIDGET_DROP_DOWN) {
 		if (!GetClientRect(hwnd, &r)) return FALSE;
 		pt.x = 0; pt.y = 0;
 		ClientToScreen(hwnd, &pt);
@@ -5169,7 +5174,7 @@ REBOOL Gui_Widget_Set_Box(GUIWIDGET *wid, REBINT x, REBINT y, REBINT w, REBINT h
 	Box_To_Device(Dpi_Of(hwnd), &x, &y, &w, &h);
 	// ... and the same room has to be added back when it is moved. It is a
 	// device-pixel constant, so it is added AFTER the conversion.
-	if (wid->kind == W_GUI_WIDGET_DROP_DOWN) h += DROP_LIST_ROOM;
+	if (wid->kind == W_GUI_WIDGET_DROP_LIST || wid->kind == W_GUI_WIDGET_DROP_DOWN) h += DROP_LIST_ROOM;
 
 	// Where it is now, in the coordinates the new box is given in - the
 	// client area of whatever holds it, a window or a panel.
@@ -5313,9 +5318,63 @@ void Gui_Widget_Set_Value(GUIWIDGET *wid, REBDEC value)
 }
 
 
-//-- drop-down ----------------------------------------------------------------
+//-- drop-list / drop-down -----------------------------------------------------
 
-REBOOL Gui_Create_Drop_Down(GUIWIDGET *wid, GUIWIN *owner,
+/***********************************************************************
+**  ENTER in the typed part of an editable combo box (drop-down).
+**
+**  A drop-list's COMBOBOX has no edit portion, so it never comes up -
+**  but a drop-down's does, and it is a CHILD window of its own, created
+**  by the system inside the combo box rather than by this file. Nav_Proc
+**  only ever sees the combo box's own HWND: the host dispatches straight
+**  to whichever window the message is really for, so a key typed into
+**  that child edit control reaches its stock Edit window procedure and
+**  never passes through here at all - which is why it only beeps,
+**  exactly like an unhandled field would.
+**
+**  So the edit child is subclassed too, the moment the combo box is
+**  created, and Enter is caught there the same way a field's is: the key
+**  and the WM_CHAR the default procedure would otherwise beep on are
+**  both swallowed, and a `click` is reported instead.
+***********************************************************************/
+static WNDPROC ComboEdit_Proc = NULL;
+
+static LRESULT CALLBACK Combo_Edit_Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
+{
+	GUIWIDGET *wid = (GUIWIDGET*)GetWindowLongPtrW(hwnd, GWLP_USERDATA);
+
+	if (wid && wp == VK_RETURN && (msg == WM_KEYDOWN || msg == WM_CHAR)) {
+		if (msg == WM_KEYDOWN && wid->hob) {
+			REBINT x = 0, y = 0, w = 0, h = 0;
+			Gui_Widget_Get_Box(wid, &x, &y, &w, &h);
+			Gui_Queue_Event(wid->hob, EVT_CLICK, x, y, Modifiers());
+		}
+		return 0;
+	}
+
+	return ComboEdit_Proc ? CallWindowProcW(ComboEdit_Proc, hwnd, msg, wp, lp)
+	                      : DefWindowProcW(hwnd, msg, wp, lp);
+}
+
+// Every drop-down's edit child is the same system EDIT class, so its
+// original procedure is captured once, the way Static_Proc and Button_Proc
+// are above - there is nothing per-widget to keep beyond the GWLP_USERDATA
+// this sets so Combo_Edit_Proc can find its way back to `wid`.
+static void Subclass_Combo_Edit(GUIWIDGET *wid, HWND combo)
+{
+	COMBOBOXINFO cbi;
+
+	ZeroMemory(&cbi, sizeof(cbi));
+	cbi.cbSize = sizeof(cbi);
+	if (!GetComboBoxInfo(combo, &cbi) || !cbi.hwndItem) return;
+
+	SetWindowLongPtrW(cbi.hwndItem, GWLP_USERDATA, (LONG_PTR)wid);
+	if (!ComboEdit_Proc)
+		ComboEdit_Proc = (WNDPROC)GetWindowLongPtrW(cbi.hwndItem, GWLP_WNDPROC);
+	SetWindowLongPtrW(cbi.hwndItem, GWLP_WNDPROC, (LONG_PTR)Combo_Edit_Proc);
+}
+
+REBOOL Gui_Create_Drop_List(GUIWIDGET *wid, GUIWIN *owner,
                             REBINT x, REBINT y, REBINT w, REBINT h)
 {
 	HWND hwnd;
@@ -5341,6 +5400,41 @@ REBOOL Gui_Create_Drop_Down(GUIWIDGET *wid, GUIWIN *owner,
 
 	wid->handle = (void*)hwnd;
 	Subclass_For_Nav(wid);
+
+	return TRUE;
+}
+
+
+// An editable combo box: the same as a drop-list, except CBS_DROPDOWN
+// (rather than CBS_DROPDOWNLIST) leaves the edit portion open to typing,
+// so the user can enter a value that is not in the list.
+REBOOL Gui_Create_Combo_Box(GUIWIDGET *wid, GUIWIN *owner,
+                            REBINT x, REBINT y, REBINT w, REBINT h)
+{
+	HWND hwnd;
+
+	if (!wid || !owner || !owner->handle) return FALSE;
+	// The caller's coordinates are logical units, converted at the DPI of
+	// the window the control goes into - which it will share.
+	Box_To_Device(Dpi_Of(HWND_OF(owner)), &x, &y, &w, &h);
+
+	hwnd = CreateWindowExW(
+		0, L"COMBOBOX", L"",
+		WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL | WS_GROUP
+		| CBS_DROPDOWN | CBS_HASSTRINGS,
+		x, y, w, h + DROP_LIST_ROOM, // see DROP_LIST_ROOM
+		Parent_Hwnd(wid, owner),
+		NULL,
+		App_Instance, NULL
+	);
+	if (!hwnd) return FALSE;
+
+	SetWindowLongPtrW(hwnd, GWLP_USERDATA, (LONG_PTR)wid);
+	SendMessageW(hwnd, WM_SETFONT, (WPARAM)Default_Font_At(Dpi_Of(hwnd)), TRUE);
+
+	wid->handle = (void*)hwnd;
+	Subclass_For_Nav(wid);
+	Subclass_Combo_Edit(wid, hwnd);
 
 	return TRUE;
 }

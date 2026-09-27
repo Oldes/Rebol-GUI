@@ -46,32 +46,32 @@ int GuiScreen_mold(REBHOB *hob, REBSER *str);
 // Implemented in gui-commands.c so that the consumer owns the buffer.
 
 typedef struct Gui_Event {
-	REBHOB *source; // handle context which produced it: a window, or a widget
-	REBCNT  type;   // the core's EVT_* code, straight from reb-evtypes.h
-	REBINT  x, y;   // position in client coordinates
-	REBINT  value;  // modifier bits, or the wheel delta in lines
+    REBHOB *source; // handle context which produced it: a window, or a widget
+    REBCNT  type;   // the core's EVT_* code, straight from reb-evtypes.h
+    REBINT  x, y;   // position in client coordinates
+    REBINT  value;  // modifier bits, or the wheel delta in lines
 
-	// What was dropped, for EVT_DROP_FILE and EVT_DROP_TEXT; NULL for every
-	// other type. Plain C memory owned by the QUEUE: whoever drains or
-	// purges the event frees it, which is what lets the window procedure
-	// record a drop without allocating a Rebol series.
-	GUIDROPDATA *drop;
+    // What was dropped, for EVT_DROP_FILE and EVT_DROP_TEXT; NULL for every
+    // other type. Plain C memory owned by the QUEUE: whoever drains or
+    // purges the event frees it, which is what lets the window procedure
+    // record a drop without allocating a Rebol series.
+    GUIDROPDATA *drop;
 
-	// A `move` over a screen outside this program's windows has no handle
-	// yet: making one allocates, which the pump must not do. The screen is
-	// named by its key instead, `source` is NULL, and `poll-events` turns
-	// the key into the screen's handle. Empty for every other event.
-	REBYTE screen[GUI_SCREEN_KEY];
+    // A `move` over a screen outside this program's windows has no handle
+    // yet: making one allocates, which the pump must not do. The screen is
+    // named by its key instead, `source` is NULL, and `poll-events` turns
+    // the key into the screen's handle. Empty for every other event.
+    REBYTE screen[GUI_SCREEN_KEY];
 } GUIEVT;
 
 // Modifier bits reported in GUIEVT.value. They are translated into the
 // event!'s own EVF_SHIFT / EVF_CONTROL / EVF_ALT / EVF_DOUBLE when the queue
 // is drained, which is what makes `evt/flags` a block of words.
 enum {
-	GUI_FLAG_SHIFT   = 1,
-	GUI_FLAG_CONTROL = 2,
-	GUI_FLAG_ALT     = 4,
-	GUI_FLAG_DOUBLE  = 8
+    GUI_FLAG_SHIFT   = 1,
+    GUI_FLAG_CONTROL = 2,
+    GUI_FLAG_ALT     = 4,
+    GUI_FLAG_DOUBLE  = 8
 };
 
 
@@ -156,7 +156,7 @@ REBCNT Gui_Event_Count(void);
 **  the children in every repaint to reach them again.
 ***********************************************************************/
 #define Kind_Is_Container(k) \
-	((k) == W_GUI_WIDGET_PANEL || (k) == W_GUI_WIDGET_IMAGE)
+    ((k) == W_GUI_WIDGET_PANEL || (k) == W_GUI_WIDGET_IMAGE)
 
 // Called by the backend once a native window has really gone away, however
 // that happened: drops the queued events which point at the handle context
@@ -441,12 +441,20 @@ REBDEC  Gui_Widget_Get_Value(GUIWIDGET *wid);
 void    Gui_Widget_Set_Value(GUIWIDGET *wid, REBDEC value);
 
 
-//-- drop-down ----------------------------------------------------------------
+//-- drop-list / drop-down -----------------------------------------------------
 // Deliberately one item at a time. Turning a Rebol block into a list, and a
 // list back into a block, is the same work on every platform and is done
 // once in gui-commands.c - a backend only has to know how to hold strings.
+//
+// `drop-list` is the non-editable one - pick an item, nothing else - and
+// `drop-down` is the same box with an editable text field added, so the
+// user can also type a value that is not in the list. Both share the item
+// and index functions below; a backend tells them apart by `wid->kind`.
 
-REBOOL  Gui_Create_Drop_Down(GUIWIDGET *wid, GUIWIN *owner,
+REBOOL  Gui_Create_Drop_List(GUIWIDGET *wid, GUIWIN *owner,
+                             REBINT x, REBINT y, REBINT w, REBINT h);
+
+REBOOL  Gui_Create_Combo_Box(GUIWIDGET *wid, GUIWIN *owner,
                              REBINT x, REBINT y, REBINT w, REBINT h);
 
 // A text-list: the same strings, shown as a list in a fixed box rather than
@@ -683,8 +691,8 @@ REBOOL  Gui_Widget_Get_Border(GUIWIDGET *wid);
 **  read back as 0 and ignored on the way in.
 ***********************************************************************/
 typedef struct Gui_Date {
-	REBINT year, month, day;
-	REBI64 ns;
+    REBINT year, month, day;
+    REBI64 ns;
 } GUIDATE;
 
 REBOOL  Gui_Create_Date_Field(GUIWIDGET *wid, GUIWIN *owner,

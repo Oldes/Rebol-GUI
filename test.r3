@@ -411,15 +411,16 @@ print ["at the bottom:" riser/value]
 riser/value: 25%
 
 ;;=============================================================================
-print as-yellow "^/== Drop-down"
+print as-yellow "^/== Drop-list"
 ;;=============================================================================
 
-;; The only widget which takes a list. `size` is the closed control - room
-;; for the list it drops is the backend's problem, not the caller's.
-picker: add-drop-down/index win
-	["Bilberry" "Cloudberry" "Lingonberry" "Rowan"] 300x350 200x26 2
+;; The non-editable one - a button that drops a list. `size` is the closed
+;; control; room for the list it drops is the backend's problem, not the
+;; caller's.
+picker: add-drop-list/index win
+	["Bilberry" "Cloudberry" "Lingonberry" "Rowan"] 300x350 100x26 2
 
-print ["drop-down:" picker/kind]
+print ["drop-list:" picker/kind]
 print ["items:    " mold picker/items]
 print ["index:    " picker/index "-> text:" mold picker/text]
 
@@ -430,10 +431,25 @@ picker/index: 4
 print ["after replacing the items:" picker/index mold picker/text]
 
 ;;=============================================================================
+print as-yellow "^/== Drop-down"
+;;=============================================================================
+
+;; The editable one - a combo box: pick from the list, or type free text.
+;; `text` is both readable and writable here, unlike a drop-list's.
+combo: add-drop-down/index win
+	["Small" "Medium" "Large"] 410x350 100x0 1
+
+print ["drop-down:" combo/kind]
+print ["items:    " mold combo/items]
+print ["index:    " combo/index "-> text:" mold combo/text]
+combo/text: "Extra Large"
+print ["typed directly:" mold combo/text]
+
+;;=============================================================================
 print as-yellow "^/== Text-list"
 ;;=============================================================================
 
-;; The same list as a drop-down, shown in a box. It is kept short on purpose:
+;; The same list as a drop-list, shown in a box. It is kept short on purpose:
 ;; the items do not fit, so the vertical scroll bar shows up on its own.
 trees: add-text-list win ["Ash" "Birch" "Elm" "Oak" "Rowan" "Willow"] 300x425 300x48
 
@@ -477,7 +493,7 @@ print ["still scrolled by code:" trees/scroll "(expected 0%)"]
 trees/scrollable?: true
 print ["not a list's accessor: " mold picker/scrollable? "(expected none)"]
 
-;; `/index` picks one at creation, as for a drop-down; a zero size asks the
+;; `/index` picks one at creation, as for a drop-list; a zero size asks the
 ;; list for its natural one. This one is removed straight away.
 spare: add-text-list/index win ["one" "two"] 0x0 0x0 2
 print ["natural size:" spare/size "picked:" mold spare/text]
@@ -897,7 +913,8 @@ ENTER in the field reports a click; ESCAPE is deliberately ignored.
 "Click me" counts clicks and repaints the image.
 The checkbox enables and disables it; the radios come in two groups.
 Dragging the slider drives the progress bar below it.
-Picking from the drop-down shows up in the label.
+Picking from the drop-list shows up in the label; the drop-down lets you
+pick OR type your own text.
 Typing in the field greets you in the label above it.
 Clicks, edits and focus changes are logged into the area.
 "Close it" - or the title bar - ends the test.
@@ -1064,8 +1081,13 @@ report: func [event /local type source position kind][
 	if type == 'change [
 		case [
 			source == picker [
-				;; Picking from the drop-down shows up in the label.
+				;; Picking from the drop-list shows up in the label.
 				label/text: ajoin ["Picked: " source/text " (" source/index ")"]
+			]
+			source == combo [
+				;; Picking OR typing in the drop-down shows up in the label -
+				;; no index shown, since typed text may not match any item.
+				label/text: ajoin ["Combo: " source/text]
 			]
 			source == when [
 				;; A new date or time, picked by the user.
@@ -1287,7 +1309,7 @@ print ["the image survives:" type? pic pic/size]
 ;; optional - the recycler would do it too.
 foreach handle reduce [
 	canvas counter closer label name log styled
-	toggle box warm cool slow fast level meter picker trees
+	toggle box warm cool slow fast level meter picker combo trees
 	fixed bare back-again bordered
 ][	release handle ]
 ;; Screen handles lock nothing native, so they need no release - the

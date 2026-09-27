@@ -225,9 +225,12 @@ Cocoa flips offsets against the menu-bar screen; the content view answers
   `NSButton` tracks in a modal loop too, so `RebolGuiButton` tracks the press
   itself (highlight while inside, `setNextState` for a check, then `clicked:`
   directly) - otherwise `down` reaches Rebol only together with `up`.
-- **Drop-down:** Windows' `COMBOBOX` height includes the list, so the backend
-  adds it and reports `CB_GETITEMHEIGHT`. macOS adds `NSMenuItem`s directly
-  so duplicate titles survive.
+- **Drop-list / drop-down:** Windows' `COMBOBOX` height includes the list, so
+  the backend adds it and reports `CB_GETITEMHEIGHT` for both kinds
+  (`CBS_DROPDOWNLIST` for a drop-list, `CBS_DROPDOWN` for a drop-down). On
+  macOS a drop-list still adds `NSMenuItem`s directly to an `NSPopUpButton` so
+  duplicate titles survive; a drop-down uses `NSComboBox` with its own item
+  API instead.
 - **Text-list:** Windows uses a `LISTBOX` with `WS_EX_CLIENTEDGE`,
   `LBS_NOTIFY` and `LBS_NOINTEGRALHEIGHT`. It has `WS_VSCROLL` but not
   `LBS_DISABLENOSCROLL`, so the bar shows only while needed. The item
@@ -419,7 +422,7 @@ and the flag; it picks `Default_Window_Color`/`Default_Text_Color` and a lighter
 entry fill in place of the system colours, which do not change with the
 appearance. Controls get `SetWindowTheme` classes (`Theme_Control`):
 `DarkMode_Explorer` for buttons, toggles, checks, radios, fields and areas,
-`DarkMode_CFD` for drop-downs - undocumented, present since 1809. Applied at
+`DarkMode_CFD` for drop-lists and drop-downs - undocumented, present since 1809. Applied at
 creation (`Subclass_For_Nav`), when the flag changes, and on a real switch
 (`Theme_Window`), before the event.
 

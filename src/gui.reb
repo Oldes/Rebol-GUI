@@ -9,7 +9,7 @@ REBOL [
 	Exports: [
 		open-window close-window show-window hide-window
 		add-button add-image add-text add-field add-area
-		add-check add-radio add-slider add-progress add-drop-down add-panel
+		add-check add-radio add-slider add-progress add-drop-down add-drop-list add-panel
 		remove-widget redraw set-focus screens track-mouse add-toggle
 		add-text-list add-date-field
 		gui-device gui-device-polls gui-device-events
@@ -324,11 +324,12 @@ words: [
 		radio           ;; one of a group; see `group` below
 		slider          ;; draggable, reports `change`
 		progress        ;; shows a value, takes no input
-		drop-down       ;; pick one of a list; reports `change`
+		drop-list       ;; pick one of a list behind a button; reports `change`
 		panel           ;; holds other widgets; see `parent` below
 		toggle          ;; a push button which stays pushed; on or off like a check
 		text-list       ;; pick one of a list shown in a box; reports `change`
 		date-field      ;; a date, and optionally a time of day; reports `change`
+		drop-down       ;; an editable combo box - drop-list plus a typed value; reports `change`
 	]
 	;; What a `theme-change` event carries in `code`.
 	theme: [
@@ -380,15 +381,15 @@ handles: [
 	widget: [
 		"GUI widget handle - a native control inside a window"
 		;NAME    GET       SET       DESCRIPTION
-		text     string!   string!   "Label or contents; the caption of a framed panel; the selected item of a drop-down or a text-list, which is read-only; none for an image"
-		items    block!    block!    "Strings a drop-down or a text-list offers; none for other kinds"
+		text     string!   string!   "Label or contents; the caption of a framed panel; the selected item of a drop-list or a text-list, which is read-only; the typed value of a drop-down, which can be set; none for an image"
+		items    block!    block!    "Strings a drop-list, a drop-down or a text-list offers; none for other kinds"
 		index    integer!  integer!  "Which item is picked, 1-based; 0 for none"
 		image    image!    image!    "Image shown by an image widget, none for other kinds"
 		size     pair!     pair!     "Size of the control; a zero axis asks it what that axis needs, the same as at creation"
 		offset   pair!     pair!     "Position inside whatever holds it - a window or a panel"
 		at       pair!     none      "Top-left corner in its window's client area, however deeply nested - what a mouse event's offset is measured from"
 		id       integer!  none      "Native control handle as an integer"
-		kind     word!     none      "What the control is: button, image, text, field, area, check, radio, toggle, slider, progress, drop-down, text-list, date-field or panel"
+		kind     word!     none      "What the control is: button, image, text, field, area, check, radio, toggle, slider, progress, drop-list, drop-down, text-list, date-field or panel"
 		value    percent!  [percent! decimal!] "Position of a slider or a progress bar; the date of a date-field, with its time of day when made with `/time`; none for other kinds"
 		state    logic!    logic!    "Whether a check, a radio or a toggle is on; none for other kinds"
 		border?  logic!    logic!    "Whether a panel draws a frame around itself, or a field, an area or a text-list its border; none for other kinds"
@@ -515,7 +516,7 @@ commands: [
 		size   [pair!]
 		/value val [percent! decimal!] "Initial position (default: 0%)"
 	]
-	add-drop-down: [
+	add-drop-list: [
 		"Creates a drop-down list inside a window and returns its handle"
 		parent [handle!] "Window or panel to put it in"
 		items  [block!] "Strings to offer"
@@ -587,6 +588,15 @@ commands: [
 		size   [pair!]
 		/date  when [date!] "Date (and time) to start with (default: now)"
 		/time  "Shows and edits the time of day as well"
+	]
+
+	add-drop-down: [
+		"Creates an editable combo box - a drop-down list which also takes typed text - inside a window and returns its handle"
+		parent [handle!] "Window or panel to put it in"
+		items  [block!] "Strings to offer"
+		offset [pair!]  "Position inside the client area"
+		size   [pair!]  "Of the closed control; room for the list is added"
+		/index n [integer!] "Item picked to start with, 1-based (default: none)"
 	]
 ]
 

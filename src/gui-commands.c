@@ -812,7 +812,9 @@ static REBOOL Kind_Has_Text(REBCNT kind)
 	     // the caption of a framed panel; harmless on an unframed one,
 	     // which simply keeps a string nothing draws
 	     || kind == W_GUI_WIDGET_PANEL
-	     // readable, but not writable - see the set path
+	     // drop-list: readable, but not writable - see the set path.
+	     // drop-down: readable AND writable - it is the typed value.
+	     || kind == W_GUI_WIDGET_DROP_LIST
 	     || kind == W_GUI_WIDGET_DROP_DOWN
 	     || kind == W_GUI_WIDGET_TEXT_LIST) ? TRUE : FALSE;
 }
@@ -875,7 +877,8 @@ static REBOOL Date_From_Arg(GUIWIDGET *wid, u32 bits, i64 time, GUIDATE *d)
 
 // Which kinds hold a list of strings, and pick one of them by `index`.
 #define Kind_Has_Items(kind) \
-	((kind) == W_GUI_WIDGET_DROP_DOWN || (kind) == W_GUI_WIDGET_TEXT_LIST)
+	((kind) == W_GUI_WIDGET_DROP_LIST || (kind) == W_GUI_WIDGET_DROP_DOWN \
+	 || (kind) == W_GUI_WIDGET_TEXT_LIST)
 
 // Which kinds are on or off.
 static REBOOL Kind_Has_State(REBCNT kind)
@@ -915,7 +918,8 @@ static REBOOL Kind_Has_Value(REBCNT kind)
 }
 
 /***********************************************************************
-**  Block <-> list marshalling for a drop-down.
+**  Block <-> list marshalling for a drop-list, a drop-down or a
+**  text-list.
 **
 **  Done here rather than in the backends: it is identical work on every
 **  platform, and a backend only has to know how to hold strings.
@@ -1233,13 +1237,13 @@ static REBOOL Kind_Has_Enabled(REBCNT kind)
 }
 
 // Which kinds can be read-only: the two the user types into. A label
-// cannot be edited to begin with, and a drop-down's text is already
+// cannot be edited to begin with, and a drop-list's text is already
 // read-only in a sense of its own - you pick an item rather than write one.
 #define Kind_Has_Read_Only(kind) \
 	((kind) == W_GUI_WIDGET_FIELD || (kind) == W_GUI_WIDGET_AREA)
 
-// Which kinds scroll, and can be asked where they are. A drop-down's list
-// scrolls too, but is not addressable.
+// Which kinds scroll, and can be asked where they are. A drop-list's or a
+// drop-down's list scrolls too, but is not addressable.
 #define Kind_Scrolls(kind) \
 	((kind) == W_GUI_WIDGET_AREA || (kind) == W_GUI_WIDGET_TEXT_LIST)
 
@@ -1255,6 +1259,7 @@ static const char* Kind_Name(REBCNT kind)
 	case W_GUI_WIDGET_TOGGLE: return "toggle";
 	case W_GUI_WIDGET_SLIDER:   return "slider";
 	case W_GUI_WIDGET_PROGRESS: return "progress";
+	case W_GUI_WIDGET_DROP_LIST: return "drop-list";
 	case W_GUI_WIDGET_DROP_DOWN: return "drop-down";
 	case W_GUI_WIDGET_TEXT_LIST: return "text-list";
 	case W_GUI_WIDGET_DATE_FIELD: return "date-field";
@@ -2360,10 +2365,16 @@ static int Add_Range_Control(RXIFRM *frm, REBCNT kind)
 	RETURN_HANDLE(hob);
 }
 
+
 /***********************************************************************
-**  add-drop-down window items [block!] offset [pair!] size [pair!]
-**                /index n [integer!]
-**  add-text-list - the same arguments
+**  add-drop-list / add-drop-down / add-text-list
+**      window items [block!] offset [pair!] size [pair!] /index n [integer!]
+**
+**  Three widgets, one body: a drop-list picks one of a list behind a
+**  button; a drop-down is the same box with an editable text field
+**  added, so the user can also type a value that is not in the list;
+**  a text-list shows the same strings in a fixed box instead of behind
+**  a button. `wid->kind` is what a backend tells them apart by.
 ***********************************************************************/
 static int Add_List_Control(RXIFRM *frm, REBCNT kind)
 {
@@ -2372,6 +2383,7 @@ static int Add_List_Control(RXIFRM *frm, REBCNT kind)
 	GUIWIDGET *panel = NULL;
 	GUIWIN    *win = Frm_Parent(frm, 1, &panel);
 	REBINT     x, y, w, h, req_w, req_h;
+	REBOOL     created;
 
 	if (!win || !win->handle) RETURN_ERROR(ERR_INVALID_HANDLE);
 
@@ -2396,16 +2408,20 @@ static int Add_List_Control(RXIFRM *frm, REBCNT kind)
 	wid->owner  = win;
 	wid->parent = panel; // read by the backend to pick the native parent
 
-	if (!(kind == W_GUI_WIDGET_TEXT_LIST
-	      ? Gui_Create_Text_List(wid, win, x, y, w, h)
-	      : Gui_Create_Drop_Down(wid, win, x, y, w, h))) {
+	switch (kind) {
+	case W_GUI_WIDGET_TEXT_LIST: created = Gui_Create_Text_List(wid, win, x, y, w, h); break;
+	case W_GUI_WIDGET_DROP_DOWN: created = Gui_Create_Combo_Box(wid, win, x, y, w, h); break;
+	default:                     created = Gui_Create_Drop_List(wid, win, x, y, w, h); break;
+	}
+	if (!created) {
 		wid->owner  = NULL;
 		wid->parent = NULL;
 		RL_FREE_HANDLE_CONTEXT(hob);
 		RETURN_ERROR(ERR_NO_WIDGET);
 	}
 
-	// `/flat` is the text-list's alone; a drop-down has no refinement 7.
+	// `/flat` is the text-list's alone; a drop-list or a drop-down has no
+	// refinement 7.
 	if (kind == W_GUI_WIDGET_TEXT_LIST && RXA_REF(frm, 7)) Gui_Widget_Set_Border(wid, FALSE);
 
 	Block_To_Items(wid, RXA_SERIES(frm, 2));
@@ -2419,9 +2435,9 @@ static int Add_List_Control(RXIFRM *frm, REBCNT kind)
 }
 
 
-COMMAND cmd_gui_add_drop_down(RXIFRM *frm, void *ctx)
+COMMAND cmd_gui_add_drop_list(RXIFRM *frm, void *ctx)
 {
-	return Add_List_Control(frm, W_GUI_WIDGET_DROP_DOWN);
+	return Add_List_Control(frm, W_GUI_WIDGET_DROP_LIST);
 }
 
 COMMAND cmd_gui_add_text_list(RXIFRM *frm, void *ctx)
@@ -2535,6 +2551,19 @@ COMMAND cmd_gui_redraw(RXIFRM *frm, void *ctx)
 		return RXR_TRUE;
 	}
 	RETURN_ERROR(ERR_INVALID_HANDLE);
+}
+
+
+/***********************************************************************
+**  add-drop-down window items [block!] offset [pair!] size [pair!]
+**                /index n [integer!]
+**
+**  The editable combo box: everything a drop-list is, plus a text field
+**  the user can type into - see the note above Add_List_Control.
+***********************************************************************/
+COMMAND cmd_gui_add_drop_down(RXIFRM *frm, void *ctx)
+{
+	return Add_List_Control(frm, W_GUI_WIDGET_DROP_DOWN);
 }
 
 
@@ -3050,9 +3079,10 @@ int GuiWidget_get_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 	case W_GUI_ARG_TEXT: {
 		REBSER *str;
 		if (!Kind_Has_Text(wid->kind)) { *type = RXT_NONE; break; }
-		if (wid->kind == W_GUI_WIDGET_TEXT_LIST) {
-			// A list box has no text of its own - the picked item is it,
-			// and nothing picked reads as none, not as an empty string.
+		if (wid->kind == W_GUI_WIDGET_TEXT_LIST || wid->kind == W_GUI_WIDGET_DROP_LIST) {
+			// A list box, or a non-editable drop-down, has no text of its
+			// own - the picked item is it, and nothing picked reads as
+			// none, not as an empty string.
 			REBINT n = Gui_Widget_Get_Index(wid);
 			str = (n < 0) ? NULL : Gui_Widget_Get_Item(wid, (REBCNT)n);
 		}
@@ -3400,9 +3430,11 @@ int GuiWidget_set_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 		REBYTE *utf8 = NULL;
 		int len;
 		if (!Kind_Has_Text(wid->kind)) return PE_BAD_SET;
-		// A drop-down or a text-list shows whichever item is picked;
-		// `index` chooses it.
-		if (Kind_Has_Items(wid->kind)) return PE_BAD_SET;
+		// A drop-list or a text-list shows whichever item is picked;
+		// `index` chooses it. A drop-down is the one list-like kind
+		// whose text CAN be set - it is the typed value, not a pick.
+		if (wid->kind == W_GUI_WIDGET_DROP_LIST
+		 || wid->kind == W_GUI_WIDGET_TEXT_LIST) return PE_BAD_SET;
 		if (*type != RXT_STRING) return PE_BAD_SET_TYPE;
 		len = RL_GET_UTF8_STRING((REBSER*)arg->series, arg->index, (void**)&utf8);
 		if (len < 0) return PE_BAD_SET;
