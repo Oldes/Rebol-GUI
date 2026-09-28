@@ -392,13 +392,16 @@ warm/state: true
 ;;
 ;; WATCH: "Bold log" stays pushed in after a click and makes the log bold;
 ;; a second click lets it out again.
-bolder: add-toggle win "Bold log" 20x440 0x0
+bolder: add-toggle win "Bold log" 20x440 100x0
 print ["toggle:" bolder/kind "state:" bolder/state]
 bolder/state: true
 print ["set from Rebol:" bolder/state]
 bolder/state: false
 print ["and back:      " bolder/state]
 print ["a button has no state:" none? counter/state]
+
+keys-switch: add-toggle win "Catch keys" 130x440 0x0
+keys-switch/state: win/keys?
 
 ;;=============================================================================
 print as-yellow "^/== Slider and progress"
@@ -1292,6 +1295,11 @@ report: func [event /local type source position kind][
 				log/bold?: source/state
 				note ajoin ["log bold: " source/state]
 			]
+			;; Toggle keys listening.
+			source == keys-switch [
+				win/keys?: keys-switch/state
+				note ajoin ["catch keys: " win/keys?]
+			]
 			;; ... and a radio has already settled its group.
 			source/kind = 'radio [
 				note ajoin ["group " source/group " -> " source/text]
@@ -1377,7 +1385,7 @@ print ["the image survives:" type? pic pic/size]
 ;; optional - the recycler would do it too.
 foreach handle reduce [
 	canvas counter closer label name log styled
-	toggle box warm cool slow fast level meter picker combo trees rule hr tabs
+	toggle box warm cool slow fast level meter picker combo trees rule hr tabs keys-switch
 	fixed bare back-again bordered
 ][	release handle ]
 ;; Screen handles lock nothing native, so they need no release - the
