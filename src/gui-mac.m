@@ -402,7 +402,8 @@ static GUIWIDGET *Widget_Under_Point(GUIWIN *win, NSView *root, NSPoint inRoot)
 		for (wid = (GUIWIDGET*)win->widgets; wid; wid = (GUIWIDGET*)wid->next) {
 			NSView *view = (NSView*)wid->handle;
 			if ((GUIWIDGET*)wid->parent != found || !view || [view isHidden]) continue;
-			if (wid->kind == W_GUI_WIDGET_TEXT) continue;
+			// A line likewise: a Win32 static, see-through to the mouse.
+			if (wid->kind == W_GUI_WIDGET_TEXT || wid->kind == W_GUI_WIDGET_LINE) continue;
 			if ([view isKindOfClass:[NSControl class]] && ![(NSControl*)view isEnabled]) continue;
 			if (NSPointInRect([view convertPoint:inRoot fromView:root], [view bounds])) {
 				found  = wid;
@@ -3793,6 +3794,41 @@ void Gui_Widget_Set_Date(GUIWIDGET *wid, const GUIDATE *in)
 		}
 		[(NSDatePicker*)wid->handle setDateValue:date];
 		Display_Pending = TRUE;
+	}
+}
+
+
+//-- line ---------------------------------------------------------------------
+
+/***********************************************************************
+**  A separator: NSBox's own separator type, which draws a hairline in
+**  the system's separator colour - so it follows the dark appearance
+**  with nothing to do here. Which way it runs is NSBox's decision from
+**  the frame, the same rule the shared layer states: wider than tall
+**  is horizontal. It is not a control, so it has no enabled state and
+**  no context to detach.
+***********************************************************************/
+REBOOL Gui_Create_Line(GUIWIDGET *wid, GUIWIN *owner,
+                       REBINT x, REBINT y, REBINT w, REBINT h)
+{
+	@autoreleasepool {
+		NSBox  *box;
+		NSView *content;
+
+		if (!wid || !owner || !owner->handle) return FALSE;
+		if (![NSThread isMainThread]) return FALSE;
+
+		content = Parent_View(wid, owner);
+		if (!content) return FALSE;
+
+		box = [[NSBox alloc] initWithFrame:
+			NSMakeRect((CGFloat)x, (CGFloat)y, (CGFloat)w, (CGFloat)h)];
+		if (!box) return FALSE;
+		[box setBoxType:NSBoxSeparator];
+
+		[content addSubview:box];
+		wid->handle = (void*)box;
+		return TRUE;
 	}
 }
 

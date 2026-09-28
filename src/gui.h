@@ -695,6 +695,11 @@ typedef struct Gui_Date {
     REBI64 ns;
 } GUIDATE;
 
+// A separator: an etched rule, horizontal when the box is wider than it
+// is tall. Static - it takes no input and reports nothing.
+REBOOL  Gui_Create_Line(GUIWIDGET *wid, GUIWIN *owner,
+                        REBINT x, REBINT y, REBINT w, REBINT h);
+
 REBOOL  Gui_Create_Date_Field(GUIWIDGET *wid, GUIWIN *owner,
                               REBINT x, REBINT y, REBINT w, REBINT h);
 REBOOL  Gui_Widget_Get_Date(GUIWIDGET *wid, GUIDATE *out);

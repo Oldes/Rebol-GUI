@@ -906,6 +906,7 @@ static REBOOL Kind_Takes_Focus(REBCNT kind)
 	return (kind == W_GUI_WIDGET_TEXT      // a label
 	     || kind == W_GUI_WIDGET_IMAGE     // pixels, and a container
 	     || kind == W_GUI_WIDGET_PANEL     // a container
+	     || kind == W_GUI_WIDGET_LINE      // decoration
 	     || kind == W_GUI_WIDGET_PROGRESS) // shows a value, takes no input
 		? FALSE : TRUE;
 }
@@ -1233,6 +1234,7 @@ static REBOOL Kind_Has_Enabled(REBCNT kind)
 	// has no enabled state at all.
 	return (kind != W_GUI_WIDGET_IMAGE
 	     && kind != W_GUI_WIDGET_PROGRESS
+	     && kind != W_GUI_WIDGET_LINE      // decoration, nothing to operate
 	     && kind != W_GUI_WIDGET_PANEL) ? TRUE : FALSE;
 }
 
@@ -1264,6 +1266,7 @@ static const char* Kind_Name(REBCNT kind)
 	case W_GUI_WIDGET_TEXT_LIST: return "text-list";
 	case W_GUI_WIDGET_DATE_FIELD: return "date-field";
 	case W_GUI_WIDGET_PANEL:     return "panel";
+	case W_GUI_WIDGET_LINE:      return "line";
 	default:                 return "button";
 	}
 }
@@ -2564,6 +2567,57 @@ COMMAND cmd_gui_redraw(RXIFRM *frm, void *ctx)
 COMMAND cmd_gui_add_drop_down(RXIFRM *frm, void *ctx)
 {
 	return Add_List_Control(frm, W_GUI_WIDGET_DROP_DOWN);
+}
+
+
+/***********************************************************************
+**  add-line parent offset size
+**
+**  A separator. Which way it runs follows the box, as for a slider:
+**  wider than tall is horizontal. A zero axis is not measured - a line
+**  has no content - but means the line's own thickness, so `200x0` is
+**  a horizontal rule 200 long.
+***********************************************************************/
+#define GUI_LINE_THICKNESS 2
+
+COMMAND cmd_gui_add_line(RXIFRM *frm, void *ctx)
+{
+	REBHOB    *hob;
+	GUIWIDGET *wid;
+	GUIWIDGET *panel = NULL;
+	GUIWIN    *win = Frm_Parent(frm, 1, &panel);
+	REBINT     x, y, w, h;
+
+	if (!win || !win->handle) RETURN_ERROR(ERR_INVALID_HANDLE);
+
+	x = (REBINT)RXA_PAIR(frm, 2).x;
+	y = (REBINT)RXA_PAIR(frm, 2).y;
+	w = (REBINT)RXA_PAIR(frm, 3).x;
+	h = (REBINT)RXA_PAIR(frm, 3).y;
+	if (w < 0 || h < 0 || (w == 0 && h == 0)) RETURN_ERROR(ERR_BAD_SIZE);
+	if (w == 0) w = GUI_LINE_THICKNESS;
+	if (h == 0) h = GUI_LINE_THICKNESS;
+
+	hob = RL_MAKE_HANDLE_CONTEXT(Handle_GuiWidget);
+	if (hob == NULL) RETURN_ERROR(ERR_NO_HANDLE);
+
+	wid = (GUIWIDGET*)hob->data;
+	CLEARS(wid);
+	wid->hob    = hob;
+	wid->kind   = W_GUI_WIDGET_LINE;
+	wid->owner  = win;
+	wid->parent = panel;
+
+	if (!Gui_Create_Line(wid, win, x, y, w, h)) {
+		wid->owner  = NULL;
+		wid->parent = NULL;
+		RL_FREE_HANDLE_CONTEXT(hob);
+		RETURN_ERROR(ERR_NO_WIDGET);
+	}
+
+	Attach_Widget(wid, win, w, h);
+
+	RETURN_HANDLE(hob);
 }
 
 

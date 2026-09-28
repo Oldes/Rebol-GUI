@@ -11,7 +11,7 @@ REBOL [
 		add-button add-image add-text add-field add-area
 		add-check add-radio add-slider add-progress add-drop-down add-drop-list add-panel
 		remove-widget redraw set-focus screens track-mouse add-toggle
-		add-text-list add-date-field
+		add-text-list add-date-field add-line
 		gui-device gui-device-polls gui-device-events
 		gui-device-pumps gui-device-messages
 		poll-events do-events
@@ -331,6 +331,7 @@ words: [
 		text-list       ;; pick one of a list shown in a box; reports `change`
 		date-field      ;; a date, and optionally a time of day; reports `change`
 		drop-down       ;; an editable combo box - drop-list plus a typed value; reports `change`
+		line            ;; a static separator, horizontal or vertical; reports nothing
 	]
 	;; What a `theme-change` event carries in `code`.
 	theme: [
@@ -390,7 +391,7 @@ handles: [
 		offset   pair!     pair!     "Position inside whatever holds it - a window or a panel"
 		at       pair!     none      "Top-left corner in its window's client area, however deeply nested - what a mouse event's offset is measured from"
 		id       integer!  none      "Native control handle as an integer"
-		kind     word!     none      "What the control is: button, image, text, field, area, check, radio, toggle, slider, progress, drop-list, drop-down, text-list, date-field or panel"
+		kind     word!     none      "What the control is: button, image, text, field, area, check, radio, toggle, slider, progress, drop-list, drop-down, text-list, date-field, panel or line"
 		value    [percent! date!] [percent! decimal! date!] "Position of a slider or a progress bar; the date of a date-field, with its time of day when made with `/time`; none for other kinds"
 		state    logic!    logic!    "Whether a check, a radio or a toggle is on; none for other kinds"
 		border?  logic!    logic!    "Whether a panel draws a frame around itself, or a field, an area or a text-list its border; none for other kinds"
@@ -598,6 +599,13 @@ commands: [
 		offset [pair!]  "Position inside the parent"
 		size   [pair!]  "Of the closed control; room for the list is added"
 		/index n [integer!] "Item picked to start with, 1-based (default: none)"
+	]
+
+	add-line: [
+		"Creates a separator line - a static etched rule - and returns its handle"
+		parent [handle!] "Window, panel or image widget to put it in"
+		offset [pair!]   "Position inside the parent"
+		size   [pair!]   "Wider than tall makes it horizontal; a zero axis is the line's own thickness"
 	]
 ]
 

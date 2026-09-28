@@ -925,7 +925,7 @@ static void Tip_Tool(TOOLINFOW *ti, GUIWIDGET *wid)
 	ti->cbSize = TTTOOLINFOW_V2_SIZE;
 	ti->hwnd   = GetParent(hwnd);
 	ti->uId    = (UINT_PTR)hwnd;
-	if (wid->kind == W_GUI_WIDGET_TEXT) {
+	if (wid->kind == W_GUI_WIDGET_TEXT || wid->kind == W_GUI_WIDGET_LINE) {
 		// Its rectangle in the container, which gets the label's mouse.
 		if (GetWindowRect(hwnd, &ti->rect))
 			MapWindowPoints(NULL, ti->hwnd, (POINT*)&ti->rect, 2);
@@ -941,7 +941,8 @@ static void Tip_Follow(GUIWIDGET *wid)
 	TOOLINFOW ti;
 	HWND      tip;
 
-	if (!wid || !wid->handle || wid->kind != W_GUI_WIDGET_TEXT) return;
+	if (!wid || !wid->handle
+	    || (wid->kind != W_GUI_WIDGET_TEXT && wid->kind != W_GUI_WIDGET_LINE)) return;
 	if (!(tip = Tip_Of(HWND_OF_WID(wid), FALSE))) return;
 	Tip_Tool(&ti, wid);
 	SendMessageW(tip, TTM_NEWTOOLRECTW, 0, (LPARAM)&ti);
@@ -5643,6 +5644,35 @@ void Gui_Widget_Set_Date(GUIWIDGET *wid, const GUIDATE *in)
 	Setting_Date = TRUE;
 	SendMessageW(HWND_OF_WID(wid), DTM_SETSYSTEMTIME, GDT_VALID, (LPARAM)&st);
 	Setting_Date = FALSE;
+}
+
+
+/***********************************************************************
+**  A separator: a STATIC with an etched edge. Like a label it answers
+**  HTTRANSPARENT, so the mouse goes to whatever holds it.
+**
+**  SS_ETCHEDHORZ/VERT draw a 2-pixel etched edge along the TOP (or the
+**  left) of the box whatever its size, so the box is the hit area and
+**  the line sits on its leading edge.
+***********************************************************************/
+REBOOL Gui_Create_Line(GUIWIDGET *wid, GUIWIN *owner,
+                       REBINT x, REBINT y, REBINT w, REBINT h)
+{
+	HWND  hwnd;
+	DWORD style = WS_CHILD | WS_VISIBLE | WS_GROUP;
+
+	if (!wid || !owner || !owner->handle) return FALSE;
+	style |= (w >= h) ? SS_ETCHEDHORZ : SS_ETCHEDVERT;  // decided in logical units
+	Box_To_Device(Dpi_Of(HWND_OF(owner)), &x, &y, &w, &h);
+
+	hwnd = CreateWindowExW(0, L"STATIC", L"", style, x, y, w, h,
+	                       Parent_Hwnd(wid, owner), NULL, App_Instance, NULL);
+	if (!hwnd) return FALSE;
+
+	SetWindowLongPtrW(hwnd, GWLP_USERDATA, (LONG_PTR)wid);
+	wid->handle = (void*)hwnd;
+	Subclass_For_Nav(wid);
+	return TRUE;
 }
 
 

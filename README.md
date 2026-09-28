@@ -20,8 +20,9 @@ in [INTERNALS.md](INTERNALS.md).
 - no DRAW dialect, no compositor - just the image widget
 - keyboard events only per window, with `keys?`, and observed rather than taken
 - no checkable menu items, and no popup (context) menus
-- fifteen native controls: button, image, text, field, area, check, radio,
-  toggle, slider, progress, drop-list, drop-down, text-list, date-field, panel
+- sixteen native controls: button, image, text, field, area, check, radio,
+  toggle, slider, progress, drop-list, drop-down, text-list, date-field, panel,
+  line
 - Windows and macOS only; there is no X11/Wayland backend yet
 
 ## Build
@@ -318,6 +319,7 @@ pic:   add-image  win some-image       340x20
 | `text-list` | pick one of a list shown in a box | `change` `focus` `unfocus` |
 | `date-field` | a date, and optionally a time of day | `change` `click` `focus` `unfocus` |
 | `panel`     | holds other widgets | nothing |
+| `line`      | separator rule | nothing |
 | `image`     | shows an `image!` | its own mouse events |
 
 Buttons, checks, radios and sliders report the left mouse button going
@@ -669,6 +671,19 @@ leave room for it yourself.
 
 A panel is not transparent to the mouse: clicks on its background are not
 reported to the window. Removing a panel removes everything in it.
+
+### Separator lines
+
+```rebol
+add-line win 20x280 300x0     ;; horizontal, 300 long
+add-line box 140x10 0x40      ;; vertical, inside a panel
+```
+
+Wider than tall is horizontal. A zero axis is the line's own thickness; both
+zero is an error. A line is decoration: it takes no focus, reports nothing
+and, like a label, lets the mouse through to what holds it. Windows draws an
+etched edge along the top (or left) of the box; macOS a hairline in the
+system separator colour, which follows the dark appearance.
 
 ### Image widgets
 
@@ -1057,6 +1072,12 @@ Creates an editable combo box - a drop-down list which also takes typed text - a
 * `/index`
 * `n` `[integer!]` Item picked to start with, 1-based (default: none)
 
+#### `add-line` `:parent` `:offset` `:size`
+Creates a separator line - a static etched rule - and returns its handle
+* `parent` `[handle!]` Window, panel or image widget to put it in
+* `offset` `[pair!]` Position inside the parent
+* `size` `[pair!]` Wider than tall makes it horizontal; a zero axis is the line's own thickness
+
 
 ## Used handles and its getters / setters
 
@@ -1113,7 +1134,7 @@ Creates an editable combo box - a drop-down list which also takes typed text - a
 /offset           pair!               pair!                         "Position inside whatever holds it - a window or a panel"
 /at               pair!               none                          "Top-left corner in its window's client area, however deeply nested - what a mouse event's offset is measured from"
 /id               integer!            none                          "Native control handle as an integer"
-/kind             word!               none                          "What the control is: button, image, text, field, area, check, radio, toggle, slider, progress, drop-list, drop-down, text-list, date-field or panel"
+/kind             word!               none                          "What the control is: button, image, text, field, area, check, radio, toggle, slider, progress, drop-list, drop-down, text-list, date-field, panel or line"
 /value            [percent! date!]    [percent! decimal! date!]     "Position of a slider or a progress bar; the date of a date-field, with its time of day when made with `/time`; none for other kinds"
 /state            logic!              logic!                        "Whether a check, a radio or a toggle is on; none for other kinds"
 /border?          logic!              logic!                        "Whether a panel draws a frame around itself, or a field, an area or a text-list its border; none for other kinds"

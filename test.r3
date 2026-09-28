@@ -332,6 +332,17 @@ cool: add-radio/group box "Cool" 130x26 110x22 1
 slow: add-radio/group win "Slow"  20x350 110x22 2
 fast: add-radio/group win "Fast" 150x350 110x22 2
 
+;; A separator. Taller than wide runs vertically; a zero axis is the line's
+;; own thickness, so only the length has to be given.
+;;
+;; WATCH: a thin vertical rule between "Warm" and "Cool" in the panel.
+rule: add-line box 124x24 0x26
+print ["line:" rule/kind "size:" rule/size "parent is the panel:" rule/parent = box]
+print ["it takes no focus:  " not set-focus rule]
+print ["it has no enabled?: " none? rule/enabled?]
+print ["nor any text:       " none? rule/text]
+print ["0x0 is refused:     " error? try [add-line box 0x0 0x0]]
+
 warm/state: true
 slow/state: true
 
@@ -772,6 +783,10 @@ plain: add-field/flat fixed "a flat field" 10x10 220x0
 ;; translates keys before dispatching them, so Tab's character is already
 ;; queued for the area when the key moves the focus away.
 sheet: add-area/flat  fixed "a flat area^/with two lines" 10x44 220x66
+
+;; WATCH: a horizontal rule between the flat field and the flat area.
+hr: add-line fixed 10x38 220x0
+print ["horizontal line:" hr/size "(expected 220x2)"]
 print ["flat field - border?" plain/border? " area:" sheet/border? "(expected false false)"]
 print ["a normal field has one:" name/border? "(expected true)"]
 plain/border?: true
@@ -1324,7 +1339,7 @@ print ["the image survives:" type? pic pic/size]
 ;; optional - the recycler would do it too.
 foreach handle reduce [
 	canvas counter closer label name log styled
-	toggle box warm cool slow fast level meter picker combo trees
+	toggle box warm cool slow fast level meter picker combo trees rule hr
 	fixed bare back-again bordered
 ][	release handle ]
 ;; Screen handles lock nothing native, so they need no release - the
