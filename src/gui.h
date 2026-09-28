@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // ===========================================================================
 // Shared between the entry points (gui.c), the command sources
-// (gui-commands.c) and the platform backend (gui-win.c).
+// (gui-commands.c) and the platform backends (gui-win.c, gui-mac.m).
 //
 // The GUIWIN struct and the `Handle_GuiWindow` extern come from the
 // generated header, via the specification's `c-header:` field.
@@ -178,7 +178,7 @@ void   Gui_Widget_Activated(GUIWIDGET *widget, REBINT x, REBINT y, REBINT flags)
 
 
 //== platform backend =========================================================
-// Everything below is implemented per platform (currently gui-win.c only).
+// Everything below is implemented per platform: gui-win.c and gui-mac.m.
 // None of it takes a REBGOB or touches the host's View sources.
 
 // Passed as x/y to Gui_Open_Window to let the system place the window.

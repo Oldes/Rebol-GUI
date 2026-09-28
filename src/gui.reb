@@ -19,11 +19,12 @@ REBOL [
 	Purpose: {
 		A minimal, GOB-free windowing extension.
 
-		This first version does exactly one thing: it opens native windows
-		of a requested client size and title, and hands mouse events back
-		to Rebol as plain values. There is no compositor, no DRAW dialect
-		and no dependency on the host's View sources - drawing is expected
-		to arrive later as an image! blitted into the window.
+		It opens native windows and puts native controls in them - fifteen
+		kinds, from a button to a date-field - with menus, drag and drop,
+		tooltips and screen information, on Windows and macOS. There is no
+		compositor, no DRAW dialect and no dependency on the host's View
+		sources: custom drawing is rendered into an image! by whatever draws
+		pixels (Blend2D is the intended one) and shown by an image widget.
 
 		GUI events are NOT posted to system/ports/event: the extension
 		keeps its own queue and `poll-events` drains it into a block of
@@ -344,7 +345,7 @@ handles: [
 		"GUI window handle"
 		;NAME    GET       SET       DESCRIPTION
 		title    string!   string!   "Text shown in the title bar"
-		size     pair!     pair!     "Size of the client area in pixels"
+		size     pair!     pair!     "Size of the client area, in logical units (see `scale`)"
 		offset   pair!     pair!     "Position of the top-left corner on the screen"
 		at       pair!     none      "Always 0x0 - a window's client area is where mouse offsets are measured from; here so that `evt/offset - evt/source/at` works for any source"
 		id       integer!  none      "Native window handle as an integer"
@@ -390,7 +391,7 @@ handles: [
 		at       pair!     none      "Top-left corner in its window's client area, however deeply nested - what a mouse event's offset is measured from"
 		id       integer!  none      "Native control handle as an integer"
 		kind     word!     none      "What the control is: button, image, text, field, area, check, radio, toggle, slider, progress, drop-list, drop-down, text-list, date-field or panel"
-		value    percent!  [percent! decimal!] "Position of a slider or a progress bar; the date of a date-field, with its time of day when made with `/time`; none for other kinds"
+		value    [percent! date!] [percent! decimal! date!] "Position of a slider or a progress bar; the date of a date-field, with its time of day when made with `/time`; none for other kinds"
 		state    logic!    logic!    "Whether a check, a radio or a toggle is on; none for other kinds"
 		border?  logic!    logic!    "Whether a panel draws a frame around itself, or a field, an area or a text-list its border; none for other kinds"
 		;; Typography. Every kind which has `text` has these; the rest answer none.
@@ -445,18 +446,18 @@ commands: [
 	hide-window:  ["Hides the window without destroying it" window [handle!]]
 	poll-events:  ["Dispatches pending OS messages and returns the collected events"]
 	add-button: [
-		"Creates a native push button inside a window and returns its handle"
-		parent [handle!] "Window or panel to put it in"
+		"Creates a native push button and returns its handle"
+		parent [handle!] "Window, panel or image widget to put it in"
 		text   [string!] "Label"
-		offset [pair!]   "Position inside the client area"
+		offset [pair!]   "Position inside the parent"
 		size   [pair!]   "Size of the button"
 	]
 	remove-widget: ["Destroys a widget" widget [handle!]]
 	add-image: [
-		"Creates an image widget inside a window and returns its handle"
-		parent [handle!] "Window or panel to put it in"
+		"Creates an image widget and returns its handle"
+		parent [handle!] "Window, panel or image widget to put it in"
 		image  [image!]  "Shown as is; the widget keeps a reference, not a copy"
-		offset [pair!]   "Position inside the client area"
+		offset [pair!]   "Position inside the parent"
 		/size sz [pair!] "Scales the image to this size (default: the image's own)"
 	]
 	redraw: [
@@ -464,70 +465,70 @@ commands: [
 		target [handle!]
 	]
 	add-text: [
-		"Creates a static label inside a window and returns its handle"
-		parent [handle!] "Window or panel to put it in"
+		"Creates a static label and returns its handle"
+		parent [handle!] "Window, panel or image widget to put it in"
 		text   [string!]
-		offset [pair!]   "Position inside the client area"
+		offset [pair!]   "Position inside the parent"
 		size   [pair!]
 	]
 	add-field: [
-		"Creates a one-line text entry inside a window and returns its handle"
-		parent [handle!] "Window or panel to put it in"
+		"Creates a one-line text entry and returns its handle"
+		parent [handle!] "Window, panel or image widget to put it in"
 		text   [string!] "Initial contents"
-		offset [pair!]   "Position inside the client area"
+		offset [pair!]   "Position inside the parent"
 		size   [pair!]
 		/flat "Without the border - a plain box of text"
 		/secure "Masks what is typed, for a password; copying out of it is refused"
 	]
 	add-area: [
-		"Creates a multi-line text entry inside a window and returns its handle"
-		parent [handle!] "Window or panel to put it in"
+		"Creates a multi-line text entry and returns its handle"
+		parent [handle!] "Window, panel or image widget to put it in"
 		text   [string!] "Initial contents"
-		offset [pair!]   "Position inside the client area"
+		offset [pair!]   "Position inside the parent"
 		size   [pair!]
 		/flat "Without the border - a plain box of text"
 	]
 	add-check: [
-		"Creates a checkbox inside a window and returns its handle"
-		parent [handle!] "Window or panel to put it in"
+		"Creates a checkbox and returns its handle"
+		parent [handle!] "Window, panel or image widget to put it in"
 		text   [string!] "Label"
-		offset [pair!]   "Position inside the client area"
+		offset [pair!]   "Position inside the parent"
 		size   [pair!]
 	]
 	add-radio: [
-		"Creates a radio button inside a window and returns its handle"
-		parent [handle!] "Window or panel to put it in"
+		"Creates a radio button and returns its handle"
+		parent [handle!] "Window, panel or image widget to put it in"
 		text   [string!] "Label"
-		offset [pair!]   "Position inside the client area"
+		offset [pair!]   "Position inside the parent"
 		size   [pair!]
 		/group id [integer!] {Radios sharing an id turn each other off (default: 0)}
 	]
 	add-slider: [
-		"Creates a slider inside a window and returns its handle"
-		parent [handle!] "Window or panel to put it in"
-		offset [pair!] "Position inside the client area"
+		"Creates a slider and returns its handle"
+		parent [handle!] "Window, panel or image widget to put it in"
+		offset [pair!] "Position inside the parent"
 		size   [pair!] "Taller than wide makes it vertical"
 		/value val [percent! decimal!] "Initial position (default: 0%)"
 	]
 	add-progress: [
-		"Creates a progress bar inside a window and returns its handle"
-		parent [handle!] "Window or panel to put it in"
-		offset [pair!] "Position inside the client area"
+		"Creates a progress bar and returns its handle"
+		parent [handle!] "Window, panel or image widget to put it in"
+		offset [pair!] "Position inside the parent"
 		size   [pair!]
 		/value val [percent! decimal!] "Initial position (default: 0%)"
 	]
 	add-drop-list: [
-		"Creates a drop-down list inside a window and returns its handle"
-		parent [handle!] "Window or panel to put it in"
+		"Creates a drop-list - pick one of a list behind a button - and returns its handle"
+		parent [handle!] "Window, panel or image widget to put it in"
 		items  [block!] "Strings to offer"
-		offset [pair!]  "Position inside the client area"
+		offset [pair!]  "Position inside the parent"
 		size   [pair!]  "Of the closed control; room for the list is added"
 		/index n [integer!] "Item picked to start with, 1-based (default: none)"
 	]
 	add-panel: [
 		"Creates a panel - a widget which holds other widgets - and returns its handle"
-		parent [handle!] "Window or panel to put it in"
-		offset [pair!]   "Position inside the client area"
+		parent [handle!] "Window, panel or image widget to put it in"
+		offset [pair!]   "Position inside the parent"
 		size   [pair!]
 		/border "Draws a frame around it"
 		/title text [string!] "Caption set into the frame; implies /border"
@@ -567,15 +568,15 @@ commands: [
 		"Creates a toggle - a push button which stays pushed - and returns its handle"
 		parent [handle!] "Window, panel or image widget to put it in"
 		text   [string!] "Label"
-		offset [pair!]   "Position inside the client area"
+		offset [pair!]   "Position inside the parent"
 		size   [pair!]
 	]
 
 	add-text-list: [
 		"Creates a list of strings in a fixed box, which scrolls when they do not fit, and returns its handle"
-		parent [handle!] "Window or panel to put it in"
+		parent [handle!] "Window, panel or image widget to put it in"
 		items  [block!]  "Strings to show"
-		offset [pair!]   "Position inside the client area"
+		offset [pair!]   "Position inside the parent"
 		size   [pair!]
 		/index n [integer!] "Item picked to start with, 1-based (default: none)"
 		/flat "Without the border"
@@ -583,18 +584,18 @@ commands: [
 
 	add-date-field: [
 		"Creates an entry for a date, and optionally a time of day, and returns its handle"
-		parent [handle!] "Window or panel to put it in"
-		offset [pair!]   "Position inside the client area"
+		parent [handle!] "Window, panel or image widget to put it in"
+		offset [pair!]   "Position inside the parent"
 		size   [pair!]
 		/date  when [date!] "Date (and time) to start with (default: now)"
 		/time  "Shows and edits the time of day as well"
 	]
 
 	add-drop-down: [
-		"Creates an editable combo box - a drop-down list which also takes typed text - inside a window and returns its handle"
-		parent [handle!] "Window or panel to put it in"
+		"Creates an editable combo box - a drop-down list which also takes typed text - and returns its handle"
+		parent [handle!] "Window, panel or image widget to put it in"
 		items  [block!] "Strings to offer"
-		offset [pair!]  "Position inside the client area"
+		offset [pair!]  "Position inside the parent"
 		size   [pair!]  "Of the closed control; room for the list is added"
 		/index n [integer!] "Item picked to start with, 1-based (default: none)"
 	]
