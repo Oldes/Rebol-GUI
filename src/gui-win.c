@@ -142,9 +142,61 @@ static WCHAR* To_Wide(const REBYTE *utf8, REBCNT len)
 	return out;
 }
 
+/***********************************************************************
+**  Line breaks in an `area`.
+**
+**  A multi-line EDIT breaks lines at CR LF only: a lone LF - which is
+**  what a Rebol string holds - shows as nothing, and the lines run
+**  together. So text going INTO an area has each lone LF made CR LF,
+**  and text coming OUT has each CR LF made LF again - the control's
+**  own, and the user's Enter, which the control stores as CR LF too.
+**  A script sees LF only, the same as on macOS.
+**
+**  A CR LF already in the string is left as it is on the way in, and
+**  comes back as LF.
+***********************************************************************/
+static WCHAR* To_Wide_Lines(const REBYTE *utf8, REBCNT len)
+{
+	WCHAR *wide = To_Wide(utf8, len);
+	WCHAR *out, *d;
+	const WCHAR *s;
+	size_t n = 0, lone = 0;
+
+	if (!wide) return NULL;
+	for (s = wide; *s; s++, n++)
+		if (*s == L'\n' && (s == wide || s[-1] != L'\r')) lone++;
+	if (!lone) return wide;
+
+	out = (WCHAR*)MAKE_MEM((n + lone + 1) * sizeof(WCHAR));
+	if (!out) return wide;   // the lines run together, nothing worse
+	for (s = wide, d = out; *s; s++) {
+		if (*s == L'\n' && (s == wide || s[-1] != L'\r')) *d++ = L'\r';
+		*d++ = *s;
+	}
+	*d = 0;
+	FREE_MEM(wide);
+	return out;
+}
+
+// CR LF -> LF, in place. Returns the new length.
+static int Collapse_CRLF(WCHAR *buf, int len)
+{
+	int i, o = 0;
+	for (i = 0; i < len; i++) {
+		if (buf[i] == L'\r' && i + 1 < len && buf[i + 1] == L'\n') continue;
+		buf[o++] = buf[i];
+	}
+	buf[o] = 0;
+	return o;
+}
+
 // Window text -> a fresh Rebol string series. Shared by the window title and
-// the widget label, which are the same Win32 call underneath.
-static REBSER* Text_Of(HWND hwnd)
+// the widget label, which are the same Win32 call underneath. `lines` is
+// for an area - see To_Wide_Lines().
+static REBSER* Text_Of_Ex(HWND hwnd, REBOOL lines);
+static REBSER* Text_Of(HWND hwnd) { return Text_Of_Ex(hwnd, FALSE); }
+
+static REBSER* Text_Of_Ex(HWND hwnd, REBOOL lines)
 {
 	int    len;
 	WCHAR *buf;
@@ -159,6 +211,7 @@ static REBSER* Text_Of(HWND hwnd)
 	if (!buf) return NULL;
 
 	len = GetWindowTextW(hwnd, buf, len + 1);
+	if (lines) len = Collapse_CRLF(buf, len);
 
 	// REBUNI is 16 bits, so the wide buffer is passed through as is.
 	str = RL_ENCODE_UTF8_STRING(buf, (REBCNT)len, TRUE, 0);
@@ -166,14 +219,20 @@ static REBSER* Text_Of(HWND hwnd)
 	return str;
 }
 
+static REBOOL Set_Text_Of_Ex(HWND hwnd, const REBYTE *utf8, REBCNT len, REBOOL lines);
 static REBOOL Set_Text_Of(HWND hwnd, const REBYTE *utf8, REBCNT len)
+{
+	return Set_Text_Of_Ex(hwnd, utf8, len, FALSE);
+}
+
+static REBOOL Set_Text_Of_Ex(HWND hwnd, const REBYTE *utf8, REBCNT len, REBOOL lines)
 {
 	WCHAR *wide;
 	BOOL ok;
 
 	if (!hwnd) return FALSE;
 
-	wide = To_Wide(utf8, len);
+	wide = lines ? To_Wide_Lines(utf8, len) : To_Wide(utf8, len);
 	Setting_Text = TRUE;
 	ok = SetWindowTextW(hwnd, wide ? wide : L"");
 	Setting_Text = FALSE;
@@ -4508,7 +4567,8 @@ REBOOL Gui_Create_Text_Control(GUIWIDGET *wid, GUIWIN *owner,
 		return FALSE;
 	}
 
-	wide = To_Wide(text, len);
+	// An area breaks lines at CR LF only - see To_Wide_Lines().
+	wide = (wid->kind == W_GUI_WIDGET_AREA) ? To_Wide_Lines(text, len) : To_Wide(text, len);
 	hwnd = CreateWindowExW(
 		exstyle,
 		class_name,
@@ -4696,14 +4756,14 @@ REBSER* Gui_Widget_Get_Tip(GUIWIDGET *wid)
 REBSER* Gui_Widget_Get_Text(GUIWIDGET *wid)
 {
 	if (!wid || !wid->handle) return NULL;
-	return Text_Of(HWND_OF_WID(wid));
+	return Text_Of_Ex(HWND_OF_WID(wid), wid->kind == W_GUI_WIDGET_AREA);
 }
 
 
 REBOOL Gui_Widget_Set_Text(GUIWIDGET *wid, const REBYTE *utf8, REBCNT len)
 {
 	if (!wid || !wid->handle) return FALSE;
-	return Set_Text_Of(HWND_OF_WID(wid), utf8, len);
+	return Set_Text_Of_Ex(HWND_OF_WID(wid), utf8, len, wid->kind == W_GUI_WIDGET_AREA);
 }
 
 

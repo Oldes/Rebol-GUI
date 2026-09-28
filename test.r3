@@ -33,7 +33,9 @@ if modules-dir: get-env 'REBOL_MODULES_DIR [
 gui: import 'gui
 ? gui
 
-NL: either system/platform = 'Windows [CRLF][LF]
+;; An area's text is plain LF on every platform: on Windows the extension
+;; turns it into the CR LF the control needs, and back.
+NL: LF
 
 ;;=============================================================================
 print as-yellow "^/== Opening a window"
@@ -212,6 +214,7 @@ print ["a field does not scroll:" mold name/scroll]
 
 ;; Enough lines to need the scrollbar, then the three ways of moving it.
 loop 40 [log/text: append log/text join NL "filler"]
+print ["an area reads back LF, not CR LF:" not find log/text CR]
 log/scroll: 'end
 print ["after scrolling to the end:" log/scroll]
 log/scroll: 'top
