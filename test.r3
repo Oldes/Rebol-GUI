@@ -971,6 +971,7 @@ area in the "Fixed size" window: its text must not change.
 TAB and Shift-TAB also leave the drop-down's typed text.
 CTRL+R, CTRL+W and SHIFT+CTRL+L are the menu shortcuts.
 The arrows move within a radio group; SPACE presses what is focused.
+Paste (Ctrl+V) into the field puts the text in ONCE; typed keys come once too.
 ENTER in the field reports a click; ESCAPE is deliberately ignored.
 "Click me" counts clicks and repaints the image.
 The checkbox enables and disables it; the radios come in two groups.

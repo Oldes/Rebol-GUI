@@ -4002,6 +4002,23 @@ static REBOOL Handle_Key(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, REBOOL dialo
 	*******************************************************************/
 	if (In_Dialog_Message || !dialog) return FALSE;
 
+	/*******************************************************************
+	**  ... but ONLY the keys it is here for.
+	**
+	**  A key the dialog manager does not navigate with, it TRANSLATES and
+	**  dispatches itself - and the host has translated it already, so the
+	**  control gets its character twice. Ctrl+V's character is paste to
+	**  an EDIT, which is how a paste into a field came out doubled.
+	**
+	**  So it is asked about the arrows (moving within a radio group) and
+	**  WM_SYSCHAR (Alt+mnemonic), neither of which makes a WM_CHAR, and
+	**  nothing else. Space presses a button by the button's own handling.
+	*******************************************************************/
+	if (!(msg == WM_SYSCHAR
+	      || (msg == WM_KEYDOWN && (wp == VK_LEFT || wp == VK_RIGHT
+	                                || wp == VK_UP || wp == VK_DOWN))))
+		return FALSE;
+
 	In_Dialog_Message = TRUE;
 	taken = IsDialogMessageW(root, &m) ? TRUE : FALSE;
 	In_Dialog_Message = FALSE;
