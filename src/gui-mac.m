@@ -1240,6 +1240,11 @@ TEXT_FIELD_BODY
 	                Modifier_Bits([NSEvent modifierFlags]));
 }
 
+// Tab moves on, as it does out of every other control - and out of an
+// `area` on Windows - rather than typing a tab into the text.
+- (void)insertTab:(id)sender     { [[self window] selectNextKeyView:self]; }
+- (void)insertBacktab:(id)sender { [[self window] selectPreviousKeyView:self]; }
+
 - (void)textDidChange:(NSNotification*)note       { [self queue:EVT_CHANGE]; }
 - (void)textDidBeginEditing:(NSNotification*)note { [self queue:EVT_FOCUS]; }
 - (void)textDidEndEditing:(NSNotification*)note   { [self queue:EVT_UNFOCUS]; }
@@ -1774,6 +1779,11 @@ REBOOL Gui_Open_Window(GUIWIN *win, REBINT x, REBINT y, REBINT w, REBINT h,
 		// Ours to release, not AppKit's to drop on close.
 		[window setReleasedWhenClosed:NO];
 		[window setAcceptsMouseMovedEvents:YES];
+		// Tab and Shift-Tab between controls. Controls added from code are
+		// in no key view loop unless the window works one out - without
+		// this, Tab ended a field's editing and the focus went nowhere.
+		// Worked out again as widgets come and go, in position order.
+		[window setAutorecalculatesKeyViewLoop:YES];
 
 		name = To_NSString(title, title_len);
 		[window setTitle:(name ? name : @"Rebol")];

@@ -972,6 +972,9 @@ TAB and Shift-TAB also leave the drop-down's typed text.
 CTRL+R, CTRL+W and SHIFT+CTRL+L are the menu shortcuts.
 The arrows move within a radio group; SPACE presses what is focused.
 Paste (Ctrl+V) into the field puts the text in ONCE; typed keys come once too.
+On macOS too, TAB and Shift-TAB move between the fields, areas and lists;
+buttons, checks and radios join in only with Keyboard navigation on in the
+system settings, as in any Mac app.
 On macOS: Cmd+X, Cmd+C, Cmd+V, Cmd+A and Cmd+Z / Shift+Cmd+Z work in the
 fields and in the areas - copying out of the read-only log too.
 ENTER in the field reports a click; ESCAPE is deliberately ignored.
