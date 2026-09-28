@@ -159,6 +159,25 @@ REBCNT Gui_Event_Count(void);
     ((k) == W_GUI_WIDGET_PANEL || (k) == W_GUI_WIDGET_IMAGE \
      || (k) == W_GUI_WIDGET_TAB_PANEL)
 
+/***********************************************************************
+**  Modal dialogs.
+**
+**  The shared layer keeps a stack of the open modal windows; the newest
+**  is the only window taking input. Gui_Apply_Modal() is how a backend
+**  hears that it changed: `top` is that newest one, or NULL when none
+**  is open and every window is free again. It is called BEFORE a modal
+**  window is destroyed, so a backend can give input back first.
+**
+**  Gui_Window_Blocked() is the question a backend asks of input it gets
+**  for a window anyway - macOS has no disabled window.
+**
+**  A modal window's `modal_owner` is set before Gui_Open_Window(), which
+**  keeps it above that window.
+***********************************************************************/
+void    Gui_Apply_Modal(GUIWIN *top);
+REBOOL  Gui_Window_Blocked(GUIWIN *win);
+GUIWIN* Gui_Modal_Top(void);
+
 // Called by the backend once a native window has really gone away, however
 // that happened: drops the queued events which point at the handle context
 // and releases the GC lock that an open window holds on it.

@@ -831,6 +831,26 @@ the menu closes, and reports no event; anything else that happens meanwhile
 comes out of the next `poll-events`. Shortcuts are shown but do not work as
 keys in a context menu.
 
+## Modal dialogs
+
+`open-window/modal owner` opens a dialog that blocks **every** other window of
+the program until it closes. The owner only decides placement: the dialog is
+centred on it (unless `/at` is given) and kept above it. The dialog has no
+minimise button.
+
+- Dialogs nest; only the newest takes input.
+- `win/modal?` is read-only.
+- Input events from blocked windows are dropped; `theme-change`, `resize` and
+  `leave` still arrive.
+- The user cannot close an owner while its dialog is open, and
+  `close-window owner` errors with *The window has a modal dialog open!*.
+- `release owner` closes its dialogs first (newest first).
+
+```rebol
+dlg: open-window/modal/title 260x100 win "Confirm"
+do-events dlg :handler   ;; returns once the dialog is closed
+```
+
 ## Keyboard focus
 
 ```rebol
@@ -939,6 +959,8 @@ Creates a window and returns its handle
 * `/fixed` The user cannot resize it
 * `/borderless` No title bar and no frame - see the note in the README
 * `/transparent` The client area is see-through to whatever is behind the window
+* `/modal`
+* `owner` `[handle!]` A dialog: every other window is blocked until it closes; centred on and kept above `owner`
 
 #### `close-window` `:window`
 Destroys the window
@@ -1169,6 +1191,7 @@ Shows a context menu and returns the word of the item picked, or none
 /scale            decimal!            none                          "Device pixels per unit of size - 1.0 at 100%, 1.75 at 175%, 2.0 on a Retina Mac"
 /screen           handle!             none                          "The screen most of the window is on"
 /dark?            logic!              none                          "Whether the system shows it in the dark appearance; a `theme-change` event reports when this changes"
+/modal?           logic!              none                          "Whether it was opened with `/modal` - while it is open, every other window is blocked"
 /dark-controls?   logic!              logic!                        "Whether its controls and default colours follow the dark appearance on Windows (macOS always does); off by default"
 /keys?            logic!              logic!                        "Whether every key pressed in it is reported as `key`/`key-up` (a char!) or `named-key`/`named-key-up` (a word); off by default"
 /resizable?       logic!              logic!                        "Whether the user can resize it"

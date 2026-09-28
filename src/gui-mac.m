@@ -185,9 +185,51 @@ static void Apply_Button_Color(GUIWIDGET *wid);
 @interface RebolGuiWindow : NSWindow
 @end
 
+// The GUIWIN behind a window; defined with the content view, below.
+static GUIWIN *Window_Context(NSWindow *window);
+
 @implementation RebolGuiWindow
 - (BOOL)canBecomeKeyWindow  { return YES; }
 - (BOOL)canBecomeMainWindow { return YES; }
+
+/***********************************************************************
+**  Blocked by a modal dialog.
+**
+**  AppKit has no disabled window, so the input a blocked window gets
+**  is taken here, before any view sees it - which is what keeps its
+**  controls from reacting at all, not just from reporting. A click
+**  brings the dialog forward instead, which is what the user is after.
+**  Everything else (moves, redraws, activation) goes on as normal; the
+**  moves' events are dropped at the queue.
+***********************************************************************/
+- (void)sendEvent:(NSEvent*)evt
+{
+	GUIWIN *win = Window_Context(self);
+
+	if (Gui_Window_Blocked(win)) {
+		switch ([evt type]) {
+		case NSEventTypeLeftMouseDown:
+		case NSEventTypeRightMouseDown:
+		case NSEventTypeOtherMouseDown: {
+			GUIWIN *top = Gui_Modal_Top();
+			if (top && top->handle) [NSWINDOW_OF(top) makeKeyAndOrderFront:nil];
+			return; }
+		case NSEventTypeLeftMouseUp:
+		case NSEventTypeRightMouseUp:
+		case NSEventTypeOtherMouseUp:
+		case NSEventTypeLeftMouseDragged:
+		case NSEventTypeRightMouseDragged:
+		case NSEventTypeOtherMouseDragged:
+		case NSEventTypeScrollWheel:
+		case NSEventTypeKeyDown:
+		case NSEventTypeKeyUp:
+			return;
+		default:
+			break;
+		}
+	}
+	[super sendEvent:evt];
+}
 
 /***********************************************************************
 **  Cut, copy, paste, select all, undo and redo - without an Edit menu.
@@ -1767,6 +1809,9 @@ REBOOL Gui_Open_Window(GUIWIN *win, REBINT x, REBINT y, REBINT w, REBINT h,
 		                 | NSWindowStyleMaskMiniaturizable
 		                 | NSWindowStyleMaskResizable;
 
+		// A dialog is not minimised on its own.
+		if (win->modal_owner) style &= ~NSWindowStyleMaskMiniaturizable;
+
 		if (![NSThread isMainThread]) return FALSE;
 
 		// Borderless is a mask of its own, not the absence of bits: with
@@ -1793,6 +1838,11 @@ REBOOL Gui_Open_Window(GUIWIN *win, REBINT x, REBINT y, REBINT w, REBINT h,
 		// this, Tab ended a field's editing and the focus went nowhere.
 		// Worked out again as widgets come and go, in position order.
 		[window setAutorecalculatesKeyViewLoop:YES];
+
+		// A dialog is a CHILD window of its owner: kept above it, and
+		// moved with it.
+		if (win->modal_owner && ((GUIWIN*)win->modal_owner)->handle)
+			[NSWINDOW_OF((GUIWIN*)win->modal_owner) addChildWindow:window ordered:NSWindowAbove];
 
 		name = To_NSString(title, title_len);
 		[window setTitle:(name ? name : @"Rebol")];
@@ -1828,6 +1878,28 @@ REBOOL Gui_Open_Window(GUIWIN *win, REBINT x, REBINT y, REBINT w, REBINT h,
 }
 
 
+// See the forward declaration above RebolGuiWindow.
+static GUIWIN *Window_Context(NSWindow *window)
+{
+	id view = [window contentView];
+	if (![view respondsToSelector:@selector(windowContext)]) return NULL;
+	return [(RebolGuiView*)view windowContext];
+}
+
+/***********************************************************************
+**  Modal dialogs - see gui.h. Nothing is disabled (see -sendEvent:
+**  above); the dialog is only brought forward, as a window which has
+**  just taken the input should be.
+***********************************************************************/
+void Gui_Apply_Modal(GUIWIN *top)
+{
+	@autoreleasepool {
+		if (top && top->handle && (top->flags & GUIW_VISIBLE))
+			[NSWINDOW_OF(top) makeKeyAndOrderFront:nil];
+	}
+}
+
+
 void Gui_Close_Window(GUIWIN *win)
 {
 	@autoreleasepool {
@@ -1835,6 +1907,9 @@ void Gui_Close_Window(GUIWIN *win)
 
 		if (!win || !win->handle) return;
 		window = NSWINDOW_OF(win);
+
+		// A dialog is a child of its owner; the tie is cut before it goes.
+		if ([window parentWindow]) [[window parentWindow] removeChildWindow:window];
 
 		// Cleared first: the delegate callbacks must not find a window which
 		// is half torn down.

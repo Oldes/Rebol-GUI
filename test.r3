@@ -1253,7 +1253,9 @@ if all [type = 'alt-down  source == canvas] [
 		switch event/code [
 			reset     [clicks: 0  counter/text: "Click me"]
 			note      [note "a note"]
-			quit      [close-window win  exit]
+			;; WATCH: the dialog blocks the main window until answered;
+			;; the window's own close box can't close it meanwhile.
+			quit      [if confirm-quit [close-window win  exit]]
 			repaint   [paint pic random 400  redraw canvas]
 			clear-log [logged: copy ""  log/text: ""]
 			;; Re-fit after the font change, which is what makes the
@@ -1371,6 +1373,45 @@ if all [type = 'alt-down  source == canvas] [
 			true [mold event/flags]
 		]
 	]
+]
+
+;;- modal dialogs ------------------------------------------------------------
+;; `/modal owner` blocks every other window until the dialog closes; the owner
+;; only decides placement (centred on it). Dialogs nest - only the newest one
+;; takes input.
+dlg: open-window/modal/title 260x100 win "Confirm"
+add-text dlg "A modal dialog" 10x10 0x0
+print ["dialog modal?:" dlg/modal? "(expected true)  main modal?:" win/modal? "(expected false)"]
+print ["closing the owner:" either error? try [close-window win] ["refused (expected)"]["closed!?"]]
+inner: open-window/modal/title 200x80 dlg "Nested"
+print ["closing a nested owner:" either error? try [close-window dlg] ["refused (expected)"]["closed!?"]]
+close-window inner
+close-window dlg
+print ["after the dialogs, main still open?:" win/open? "(expected true)"]
+;; WATCH: while a dialog was up nothing else took clicks or keys; a
+;; theme-change still arrives from blocked windows.
+
+;; release on an owner cannot be refused - it closes its dialogs first.
+spare: open-window/title 200x80 "Spare owner"
+dlg2: open-window/modal 160x60 spare
+release spare
+print ["dialog after owner release - open?:" dlg2/open? "(expected false)"]
+
+;; A modal Yes/No dialog run by a nested `do-events` - returns true for Yes.
+confirm-quit: function [][
+	answer: false
+	dlg: open-window/modal/title 240x100 win "Quit?"
+	add-text dlg "Close the test window?" 20x16 0x0
+	yes: add-button dlg "Yes" 20x52 90x30
+	no:  add-button dlg "No" 130x52 90x30
+	do-events dlg func [event][
+		if event/type == 'click [
+			answer: event/source == yes
+			close-window dlg
+		]
+	]
+	release dlg
+	answer
 ]
 
 ;; Pumps the OS queue, hands every event! to `report`, and returns once the

@@ -2728,6 +2728,8 @@ REBOOL Gui_Open_Window(GUIWIN *win, REBINT x, REBINT y, REBINT w, REBINT h,
 	} else if (flags & GUI_WIN_FIXED) {
 		style &= ~WINDOW_RESIZE_BITS;
 	}
+	// A dialog is not minimised on its own - it goes with its owner.
+	if (win->modal_owner) style &= ~WS_MINIMIZEBOX;
 
 	// Logical in, device out - see the note on logical units. The sentinel
 	// is not a coordinate and must not be scaled.
@@ -2770,7 +2772,10 @@ REBOOL Gui_Open_Window(GUIWIN *win, REBINT x, REBINT y, REBINT w, REBINT h,
 		(y == GUI_DEFAULT_POS) ? CW_USEDEFAULT : y,
 		rect.right - rect.left,
 		rect.bottom - rect.top,
-		NULL, NULL, App_Instance,
+		// A dialog is OWNED by its owner: Windows keeps it above it, and
+		// minimises and restores it along with it.
+		win->modal_owner ? HWND_OF((GUIWIN*)win->modal_owner) : NULL,
+		NULL, App_Instance,
 		win // arrives as lpCreateParams in WM_NCCREATE
 	);
 
@@ -3252,6 +3257,34 @@ static GUIWIN* Our_Window(HWND hwnd)
 	if (!GetClassNameW(hwnd, cls, 64)) return NULL;
 	if (lstrcmpW(cls, Class_Name) != 0) return NULL;
 	return GUIWIN_OF(hwnd);
+}
+
+
+/***********************************************************************
+**  Modal dialogs - see gui.h.
+**
+**  Every other top-level window of ours is DISABLED while a modal one
+**  is up: it takes no input at all, a click on it beeps and brings the
+**  dialog forward, and its menu bar and close box do nothing - which is
+**  also what keeps the owner from being closed by the user.
+**
+**  Called before the dialog is destroyed, so the owner is enabled again
+**  in time for Windows to activate it; enabling it after would leave
+**  Windows to activate some other application's window instead.
+***********************************************************************/
+static BOOL CALLBACK Apply_Modal_To(HWND hwnd, LPARAM lp)
+{
+	GUIWIN *top = (GUIWIN*)lp;
+	GUIWIN *win = Our_Window(hwnd);
+	if (win && win->handle) EnableWindow(hwnd, (!top || win == top) ? TRUE : FALSE);
+	return TRUE;
+}
+
+void Gui_Apply_Modal(GUIWIN *top)
+{
+	EnumThreadWindows(GetCurrentThreadId(), Apply_Modal_To, (LPARAM)top);
+	if (top && top->handle && (top->flags & GUIW_VISIBLE))
+		SetForegroundWindow(HWND_OF(top));
 }
 
 

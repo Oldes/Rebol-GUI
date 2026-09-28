@@ -126,6 +126,11 @@ typedef struct Gui_Window_Context {
 	// stay free of windows.h, and macOS has no counterpart: AppKit
 	// registers the content view itself and keeps nothing of its own.
 	void   *droptarget;
+
+	// A modal dialog's owner (GUIWIN*), NULL for any other window. Only
+	// where it is placed and what it stays above - the blocking is of
+	// every other window. See the modal stack in gui-commands.c.
+	void   *modal_owner;
 } GUIWIN;
 
 // An image widget holds no pixels of its own: the image! it was given lives in
@@ -188,6 +193,7 @@ typedef struct Gui_Widget_Context {
 #define GUIW_DARK_CONTROLS 8   // `dark-controls?`: defaults follow the dark appearance
 #define GUIW_BORDER        16  // `border?`: without a title bar, still a thin outline and a shadow
 #define GUIW_KEYS          32  // `keys?`: every key pressed in the window is reported
+#define GUIW_MODAL         64  // opened with `/modal`
 
 // Passed to Gui_Open_Window(). Everything a window's frame can be is
 // decided at creation and changeable afterwards through `resizable?` and
@@ -355,6 +361,7 @@ handles: [
 		scale    decimal!  none      "Device pixels per unit of size - 1.0 at 100%, 1.75 at 175%, 2.0 on a Retina Mac"
 		screen   handle!   none      "The screen most of the window is on"
 		dark?    logic!    none      "Whether the system shows it in the dark appearance; a `theme-change` event reports when this changes"
+		modal?   logic!    none      "Whether it was opened with `/modal` - while it is open, every other window is blocked"
 		dark-controls? logic! logic! "Whether its controls and default colours follow the dark appearance on Windows (macOS always does); off by default"
 		keys?      logic!  logic!    "Whether every key pressed in it is reported as `key`/`key-up` (a char!) or `named-key`/`named-key-up` (a word); off by default"
 		resizable? logic!  logic!    "Whether the user can resize it"
@@ -442,6 +449,7 @@ commands: [
 		/fixed  "The user cannot resize it"
 		/borderless "No title bar and no frame - see the note in the README"
 		/transparent "The client area is see-through to whatever is behind the window"
+		/modal owner [handle!] "A dialog: every other window is blocked until it closes; centred on and kept above `owner`"
 	]
 	close-window: ["Destroys the window" window [handle!]]
 	show-window:  ["Makes the window visible" window [handle!]]

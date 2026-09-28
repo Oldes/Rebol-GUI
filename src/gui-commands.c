@@ -28,6 +28,8 @@ static const REBYTE* ERR_NO_WIDGET      = (const REBYTE*)"Failed to create the w
 static const REBYTE* ERR_BAD_IMAGE      = (const REBYTE*)"Empty or invalid image!";
 static const REBYTE* ERR_NO_PORT_STATE  = (const REBYTE*)"Not a usable port!";
 static const REBYTE* ERR_DEVICE_FAIL    = (const REBYTE*)"GUI device command failed!";
+static const REBYTE* ERR_HAS_MODAL      = (const REBYTE*)"The window has a modal dialog open!";
+static const REBYTE* ERR_MODAL_DEPTH    = (const REBYTE*)"Too many modal dialogs open!";
 
 // The device request behind a port. A port's state field is where the host
 // keeps it, and this is the only way an extension can reach the device it
@@ -80,10 +82,83 @@ static REBOOL Same_Source(const GUIEVT *evt, REBHOB *source, const REBYTE *scree
 	    && strncmp((const char*)evt->screen, (const char*)screen, GUI_SCREEN_KEY) == 0;
 }
 
+/***********************************************************************
+**  The modal stack.
+**
+**  Every window opened with `/modal`, oldest first. While it is not
+**  empty, the newest is the only window taking input: every other one
+**  is blocked, and its events are dropped here, at the queue - so this
+**  holds for `do-events` and for a loop of a script's own alike.
+**
+**  Three kinds still get through from a blocked window: `theme-change`
+**  and `resize`, which a script needs to keep that window right, and
+**  `leave`, so that what the pointer was over is still let go of.
+***********************************************************************/
+#define GUI_MODAL_MAX 16
+static GUIWIN *Modal_Stack[GUI_MODAL_MAX];
+static REBCNT  Modal_Depth = 0;
+
+GUIWIN* Gui_Modal_Top(void)
+{
+	return Modal_Depth ? Modal_Stack[Modal_Depth - 1] : NULL;
+}
+
+REBOOL Gui_Window_Blocked(GUIWIN *win)
+{
+	return (win && Modal_Depth && win != Gui_Modal_Top()) ? TRUE : FALSE;
+}
+
+// Takes a window off the stack, wherever it is, and tells the backend -
+// before the window goes, so that input can be given back first.
+static void Modal_Remove(GUIWIN *win)
+{
+	REBCNT n, kept = 0;
+	REBOOL found = FALSE;
+
+	for (n = 0; n < Modal_Depth; n++) {
+		if (Modal_Stack[n] == win) { found = TRUE; continue; }
+		Modal_Stack[kept++] = Modal_Stack[n];
+	}
+	if (!found) return;
+	Modal_Depth = kept;
+	Gui_Apply_Modal(Gui_Modal_Top());
+}
+
+// Whether a modal dialog is open on `win` - directly, or through a dialog
+// opened on one of those.
+static REBOOL Has_Modal(GUIWIN *win)
+{
+	REBCNT n;
+	for (n = 0; n < Modal_Depth; n++) {
+		GUIWIN *owner = (GUIWIN*)Modal_Stack[n]->modal_owner;
+		for (; owner; owner = (GUIWIN*)owner->modal_owner)
+			if (owner == win) return TRUE;
+	}
+	return FALSE;
+}
+
+// The window an event source belongs to, or NULL for a screen.
+static GUIWIN* Window_Of_Source(REBHOB *source)
+{
+	if (!source || !source->data) return NULL;
+	if (source->sym == Handle_GuiWindow) return (GUIWIN*)source->data;
+	if (source->sym == Handle_GuiWidget) return ((GUIWIDGET*)source->data)->owner;
+	return NULL;
+}
+
+static REBOOL Modal_Drops(REBHOB *source, REBCNT type)
+{
+	if (!Modal_Depth) return FALSE;
+	if (type == EVT_THEME_CHANGE || type == EVT_RESIZE || type == EVT_LEAVE) return FALSE;
+	return Gui_Window_Blocked(Window_Of_Source(source));
+}
+
 static void Append_Event(REBHOB *source, const REBYTE *screen, REBCNT type,
                          REBINT x, REBINT y, REBINT value)
 {
 	GUIEVT *evt;
+
+	if (Modal_Drops(source, type)) return;
 
 	if (type == EVT_MOVE && QUEUE_COUNT() > 0) {
 		evt = QUEUE_AT(QUEUE_COUNT() - 1);
@@ -317,7 +392,8 @@ void Gui_Queue_Drop(REBHOB *target, GUIDROPDATA *data, REBINT x, REBINT y)
 	GUIEVT *evt;
 
 	if (!data) return;
-	if (!target || QUEUE_COUNT() >= GUI_QUEUE_SIZE) {
+	if (!target || QUEUE_COUNT() >= GUI_QUEUE_SIZE
+	    || Modal_Drops(target, EVT_DROP_FILE)) {
 		Event_Dropped++;
 		Gui_Drop_Free(data);
 		return;
@@ -781,6 +857,8 @@ void Gui_Window_Closed(REBHOB *window)
 		}
 		win->widgets = NULL;
 	}
+	// Closed by the system rather than by us: off the stack all the same.
+	if (win) Modal_Remove(win);
 	if (Open_Windows > 0) Open_Windows--;
 	Release_Handle(window);
 }
@@ -1583,6 +1661,29 @@ COMMAND cmd_gui_open_window(RXIFRM *frm, void *ctx)
 	win = (GUIWIN*)hob->data;
 	win->hob = hob; // the window procedure tags its events with it
 
+	/*******************************************************************
+	**  `/modal owner`: centred on the owner unless placed, and kept above
+	**  it by the backend. The window is created before it joins the
+	**  stack, so nothing is blocked if it fails.
+	*******************************************************************/
+	if (RXA_REF(frm, 10)) {
+		GUIWIN *owner = Frm_Window(frm, 11);
+		REBINT  ox, oy, ow, oh;
+		if (!owner || !owner->handle) {
+			RL_FREE_HANDLE_CONTEXT(hob);
+			RETURN_ERROR(ERR_INVALID_HANDLE);
+		}
+		if (Modal_Depth >= GUI_MODAL_MAX) {
+			RL_FREE_HANDLE_CONTEXT(hob);
+			RETURN_ERROR(ERR_MODAL_DEPTH);
+		}
+		win->modal_owner = owner;
+		if (!RXA_REF(frm, 4) && Gui_Get_Offset(owner, &ox, &oy) && Gui_Get_Size(owner, &ow, &oh)) {
+			x = ox + (ow - w) / 2;
+			y = oy + (oh - h) / 2;
+		}
+	}
+
 	if (!Gui_Open_Window(win, x, y, w, h, title, title_len, flags)) {
 		RL_FREE_HANDLE_CONTEXT(hob);
 		RETURN_ERROR(ERR_NO_WINDOW);
@@ -1603,6 +1704,12 @@ COMMAND cmd_gui_open_window(RXIFRM *frm, void *ctx)
 	hob->flags |= HANDLE_CONTEXT_LOCKED;
 
 	Open_Windows++; // the device poll pumps only while one of these exists
+
+	if (win->modal_owner) {
+		win->flags |= GUIW_MODAL;
+		Modal_Stack[Modal_Depth++] = win;
+		Gui_Apply_Modal(win);
+	}
 
 	if (!RXA_REF(frm, 6)) Gui_Show_Window(win, TRUE); // /hidden
 
@@ -1708,7 +1815,14 @@ COMMAND cmd_gui_close_window(RXIFRM *frm, void *ctx)
 
 	// Closing an already closed window is not an error - it is what a
 	// `close` event handler ends up doing when the user was quicker.
-	if (win->handle) Gui_Close_Window(win); // -> Gui_Window_Closed()
+	if (!win->handle) return RXR_TRUE;
+
+	// Not while a dialog is open on it: the dialog is waiting for an
+	// answer about this very window.
+	if (Has_Modal(win)) RETURN_ERROR(ERR_HAS_MODAL);
+
+	Modal_Remove(win);       // input back to the rest BEFORE it goes
+	Gui_Close_Window(win);   // -> Gui_Window_Closed()
 
 	return RXR_TRUE;
 }
@@ -2809,8 +2923,24 @@ int GuiWindow_free(void *hndl)
 
 	// Reached through an explicit `release`, or at shutdown. A window still
 	// open at this point has to go; Gui_Window_Closed() then drops whatever
-	// it had queued.
-	if (win->handle) Gui_Close_Window(win);
+	// it had queued. This cannot be refused, so any dialog open on it goes
+	// first, newest first.
+	if (win->handle) {
+		REBCNT n = Modal_Depth;
+		while (n-- > 0) {
+			GUIWIN *dlg = Modal_Stack[n];
+			GUIWIN *owner;
+			if (n >= Modal_Depth) continue;   // the stack shrank meanwhile
+			for (owner = (GUIWIN*)dlg->modal_owner; owner; owner = (GUIWIN*)owner->modal_owner) {
+				if (owner != win) continue;
+				Modal_Remove(dlg);
+				if (dlg->handle) Gui_Close_Window(dlg);
+				break;
+			}
+		}
+		Modal_Remove(win);
+		Gui_Close_Window(win);
+	}
 
 	debug_print("releasing GUI window handle: %p\n", (void*)win);
 	// The default font's family name and the menu's word table are plain
@@ -2886,6 +3016,11 @@ int GuiWindow_get_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 	case W_GUI_ARG_DARK_CONTROLSQ:
 		*type = RXT_LOGIC;
 		arg->int32a = (win->flags & GUIW_DARK_CONTROLS) ? 1 : 0;
+		break;
+
+	case W_GUI_ARG_MODALQ:
+		*type = RXT_LOGIC;
+		arg->int32a = (win->flags & GUIW_MODAL) ? 1 : 0;
 		break;
 
 	case W_GUI_ARG_KEYSQ:
