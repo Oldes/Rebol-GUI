@@ -2723,6 +2723,25 @@ COMMAND cmd_gui_add_tab_panel(RXIFRM *frm, void *ctx)
 }
 
 
+/***********************************************************************
+**  within? point offset size
+**
+**  Whether a point is in a box: the left and top edges in, the right and
+**  bottom out, so boxes laid edge to edge never both claim a point. The
+**  question every mouse handler asks - `within? evt/offset w/at w/size`.
+**  A pair! holds floats, so the compare is on those as they are.
+***********************************************************************/
+COMMAND cmd_gui_withinq(RXIFRM *frm, void *ctx)
+{
+	REBXYF p = RXA_PAIR(frm, 1);
+	REBXYF o = RXA_PAIR(frm, 2);
+	REBXYF s = RXA_PAIR(frm, 3);
+
+	return (p.x >= o.x && p.y >= o.y && p.x < o.x + s.x && p.y < o.y + s.y)
+		? RXR_TRUE : RXR_FALSE;
+}
+
+
 //== handle callbacks =========================================================
 
 int GuiWindow_free(void *hndl)

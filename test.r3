@@ -10,15 +10,6 @@ Rebol [
 	}
 ]
 
-;; Temporary. Provide as native.
-within?: func[point offset size][
-	did all [
-		point/x >= offset/x
-		point/y >= offset/y
-		point/x < (offset/x + size/x)
-		point/y < (offset/y + size/y)
-	]
-]
 
 print ["Running test on Rebol build:" mold to-block system/build]
 
@@ -31,6 +22,14 @@ if modules-dir: get-env 'REBOL_MODULES_DIR [
 ]
 
 gui: import 'gui
+
+;; `within?` - the box test every mouse handler below uses. Left and top
+;; edges are in, right and bottom out.
+print ["within? inside:        " within? 15x15 10x10 20x20]
+print ["within? top-left edge: " within? 10x10 10x10 20x20]
+print ["within? right edge out:" not within? 30x15 10x10 20x20]
+print ["within? bottom edge out:" not within? 15x30 10x10 20x20]
+print ["within? empty box:     " not within? 10x10 10x10 0x0]
 ? gui
 
 ;; An area's text is plain LF on every platform: on Windows the extension

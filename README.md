@@ -151,6 +151,13 @@ evt/offset - evt/source/at    ;; the position within the source
 evt/offset - canvas/at        ;; the position on a particular widget
 ```
 
+`within?` tells whether a point is in a box - left and top edges in, right
+and bottom out:
+
+```rebol
+if within? evt/offset canvas/at canvas/size [...]
+```
+
 **Comparing handles:** use `==` to ask "is this that widget?". `=` on two
 handles compares their type only.
 
@@ -1108,6 +1115,12 @@ Creates a tab-panel - a page per tab, only the picked one shown - and returns it
 * `size` `[pair!]` Of the whole control, tabs included
 * `/index`
 * `n` `[integer!]` Tab shown to start with, 1-based (default: 1)
+
+#### `within?` `:point` `:offset` `:size`
+Returns TRUE if the point is inside the box given by its offset and size
+* `point` `[pair!]` Say an event's `offset`
+* `offset` `[pair!]` Top-left corner of the box, say a widget's `at`
+* `size` `[pair!]` Size of the box; the right and bottom edges are outside it
 
 
 ## Used handles and its getters / setters

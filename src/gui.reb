@@ -11,7 +11,7 @@ REBOL [
 		add-button add-image add-text add-field add-area
 		add-check add-radio add-slider add-progress add-drop-down add-drop-list add-panel
 		remove-widget redraw set-focus screens track-mouse add-toggle
-		add-text-list add-date-field add-line add-tab-panel
+		add-text-list add-date-field add-line add-tab-panel within?
 		gui-device gui-device-polls gui-device-events
 		gui-device-pumps gui-device-messages
 		poll-events do-events
@@ -616,6 +616,13 @@ commands: [
 		offset [pair!]   "Position inside the parent"
 		size   [pair!]   "Of the whole control, tabs included"
 		/index n [integer!] "Tab shown to start with, 1-based (default: 1)"
+	]
+
+	within?: [
+		"Returns TRUE if the point is inside the box given by its offset and size"
+		point  [pair!] "Say an event's `offset`"
+		offset [pair!] "Top-left corner of the box, say a widget's `at`"
+		size   [pair!] "Size of the box; the right and bottom edges are outside it"
 	]
 ]
 
