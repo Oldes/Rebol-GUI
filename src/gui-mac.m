@@ -3875,7 +3875,11 @@ REBSER* Gui_Widget_Get_Item(GUIWIDGET *wid, REBCNT n)
 		}
 		if (wid->kind == W_GUI_WIDGET_DROP_DOWN) {
 			if ((NSInteger)n >= [NSCOMBO_OF(wid) numberOfItems]) return NULL;
-			return From_NSString([NSCOMBO_OF(wid) objectValueOfItemAtIndex:(NSInteger)n]);
+			// The item is whatever object was added - always an NSString
+			// here, but asked for its description rather than trusted.
+			id item = [NSCOMBO_OF(wid) itemObjectValueAtIndex:(NSInteger)n];
+			return From_NSString([item isKindOfClass:[NSString class]]
+				? (NSString*)item : [item description]);
 		}
 		if ((NSInteger)n >= [NSPOPUP_OF(wid) numberOfItems]) return NULL;
 		return From_NSString([NSPOPUP_OF(wid) itemTitleAtIndex:(NSInteger)n]);
