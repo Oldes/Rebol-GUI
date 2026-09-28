@@ -3759,9 +3759,17 @@ static void Report_Key(HWND hwnd, GUIWIN *win, UINT msg, WPARAM wp, LPARAM lp)
 	last_msg = msg; last_wp = wp; last_lp = lp; last_time = now;
 
 	// The widget it went to, or the window when nothing inside has focus.
+	// Asked up the parent chain: a key typed into a drop-down arrives at
+	// the edit INSIDE the combo box, which is not on the widget list.
 	source = win->hob;
-	for (w = (GUIWIDGET*)win->widgets; w; w = (GUIWIDGET*)w->next)
-		if ((HWND)w->handle == hwnd) { if (w->hob) source = w->hob; break; }
+	{	HWND at;
+		for (at = hwnd; at && at != (HWND)win->handle; at = GetParent(at)) {
+			if ((w = Widget_Of(win, at)) != NULL) {
+				if (w->hob) source = w->hob;
+				break;
+			}
+		}
+	}
 
 	named = Named_Key_Of(wp);
 	if (named) {
@@ -3786,7 +3794,57 @@ static void Report_Key(HWND hwnd, GUIWIN *win, UINT msg, WPARAM wp, LPARAM lp)
 	if (code) Gui_Queue_Key(source, up ? EVT_KEY_UP : EVT_KEY, code, Modifiers());
 }
 
+/***********************************************************************
+**  The character of a Tab that already moved the focus.
+**
+**  The host translates before it dispatches (Query_Events and
+**  Poll_Events in dev-event.c), so by the time the control sees Tab's
+**  WM_KEYDOWN, a WM_CHAR '\t' is already queued for it. Taking the key
+**  down does not take that character: without this, Tab out of an
+**  `area` also types a tab into it.
+**
+**  Set only when Tab navigated, and cleared by the next key down, so a
+**  Tab that did NOT navigate (nothing else to go to) still types, and a
+**  key down which was never translated (the fallback pump) leaves
+**  nothing stale behind.
+***********************************************************************/
+static REBOOL Eat_Tab_Char = FALSE;
+
+/***********************************************************************
+**  The dialog item a window belongs to, as the dialog manager sees it.
+**
+**  The focus is not always on one of our controls: in a drop-down it is
+**  on the EDIT the combo box made inside itself. GetNextDlgTabItem only
+**  knows the items it walks - children of the root, and of anything
+**  with WS_EX_CONTROLPARENT (a panel, an image widget) - so the search
+**  has to start from the combo box, or it goes nowhere.
+***********************************************************************/
+static HWND Dialog_Item_Of(HWND root, HWND hwnd)
+{
+	HWND parent;
+	while (hwnd && (parent = GetParent(hwnd)) != NULL && parent != root
+	       && !(GetWindowLongPtrW(parent, GWL_EXSTYLE) & WS_EX_CONTROLPARENT))
+		hwnd = parent;
+	return hwnd;
+}
+
+/***********************************************************************
+**  `dialog` FALSE leaves the dialog manager out.
+**
+**  IsDialogMessage does not only navigate: a key it has no use for it
+**  TRANSLATES and dispatches itself. The host has translated that key
+**  already, so the edit inside a drop-down got every character twice.
+**  That edit needs nothing the dialog manager offers - arrows belong to
+**  it, and Tab is done above - so it asks without.
+***********************************************************************/
+static REBOOL Handle_Key(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, REBOOL dialog);
+
 static REBOOL Gui_Handle_Key(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
+{
+	return Handle_Key(hwnd, msg, wp, lp, TRUE);
+}
+
+static REBOOL Handle_Key(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, REBOOL dialog)
 {
 	HWND    root = GetAncestor(hwnd, GA_ROOT);
 	GUIWIN *win  = Our_Window(root);
@@ -3795,8 +3853,14 @@ static REBOOL Gui_Handle_Key(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 
 	if (!win || !win->handle) return FALSE;
 	if (!In_Dialog_Message) Report_Key(hwnd, win, msg, wp, lp);
+
+	if (msg == WM_CHAR && wp == '\t' && Eat_Tab_Char) {
+		Eat_Tab_Char = FALSE;
+		return TRUE;
+	}
 	if (msg != WM_KEYDOWN && msg != WM_SYSKEYDOWN && msg != WM_SYSCHAR)
 		return FALSE;
+	if (msg != WM_SYSCHAR) Eat_Tab_Char = FALSE;
 
 	m.hwnd    = hwnd;
 	m.message = msg;
@@ -3822,10 +3886,12 @@ static REBOOL Gui_Handle_Key(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 	**  as the dialog manager does, without asking that question.
 	*******************************************************************/
 	if (msg == WM_KEYDOWN && wp == VK_TAB) {
-		HWND next = GetNextDlgTabItem(root, GetFocus(),
+		HWND here = Dialog_Item_Of(root, GetFocus());
+		HWND next = GetNextDlgTabItem(root, here,
 			(GetKeyState(VK_SHIFT) & 0x8000) ? TRUE : FALSE);
-		if (next && next != GetFocus()) {
+		if (next && next != here) {
 			SetFocus(next);
+			Eat_Tab_Char = TRUE;
 			return TRUE;
 		}
 		return FALSE;
@@ -3843,7 +3909,7 @@ static REBOOL Gui_Handle_Key(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 	**  the second visit into "not mine", which hands the key to the
 	**  control's own procedure, which is exactly what it asked for.
 	*******************************************************************/
-	if (In_Dialog_Message) return FALSE;
+	if (In_Dialog_Message || !dialog) return FALSE;
 
 	In_Dialog_Message = TRUE;
 	taken = IsDialogMessageW(root, &m) ? TRUE : FALSE;
@@ -5336,12 +5402,20 @@ void Gui_Widget_Set_Value(GUIWIDGET *wid, REBDEC value)
 **  created, and Enter is caught there the same way a field's is: the key
 **  and the WM_CHAR the default procedure would otherwise beep on are
 **  both swallowed, and a `click` is reported instead.
+**
+**  Everything Nav_Proc does with the keyboard has to happen here as
+**  well, for the same reason - Tab and Shift-Tab, the menu shortcuts,
+**  `keys?`. Handle_Key goes first, so Enter is reported to `keys?`
+**  too; it never takes Enter itself.
 ***********************************************************************/
 static WNDPROC ComboEdit_Proc = NULL;
 
 static LRESULT CALLBACK Combo_Edit_Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
 	GUIWIDGET *wid = (GUIWIDGET*)GetWindowLongPtrW(hwnd, GWLP_USERDATA);
+
+	// Without the dialog manager - see Handle_Key().
+	if (wid && Handle_Key(hwnd, msg, wp, lp, FALSE)) return 0;
 
 	if (wid && wp == VK_RETURN && (msg == WM_KEYDOWN || msg == WM_CHAR)) {
 		if (msg == WM_KEYDOWN && wid->hob) {

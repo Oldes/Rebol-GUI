@@ -436,6 +436,10 @@ print as-yellow "^/== Drop-down"
 
 ;; The editable one - a combo box: pick from the list, or type free text.
 ;; `text` is both readable and writable here, unlike a drop-list's.
+;; WATCH (Windows): click into the typed text and press Tab - the focus
+;; moves on. The typed part is an edit the combo box makes inside itself,
+;; so it has to do the keyboard handling every other control does. With
+;; `keys?` on, the keys typed there name the drop-down as their source.
 combo: add-drop-down/index win
 	["Small" "Medium" "Large"] 410x350 100x0 1
 
@@ -759,6 +763,10 @@ print ["client size:" fixed/size]
 ;;
 ;; WATCH: in the "Fixed size" window, a field and an area with no border.
 plain: add-field/flat fixed "a flat field" 10x10 220x0
+;; WATCH (Windows): Tab from the flat field into this area and out again -
+;; the focus moves on and no tab character is typed into it. The host
+;; translates keys before dispatching them, so Tab's character is already
+;; queued for the area when the key moves the focus away.
 sheet: add-area/flat  fixed "a flat area^/with two lines" 10x44 220x66
 print ["flat field - border?" plain/border? " area:" sheet/border? "(expected false false)"]
 print ["a normal field has one:" name/border? "(expected true)"]
@@ -907,6 +915,9 @@ print as-yellow "^/== Events"
 print {
 Move the mouse over the window, click, use the wheel, resize it.
 TAB and Shift-TAB move between controls - including into the panel.
+TAB out of an area moves on WITHOUT typing a tab into it - try the flat
+area in the "Fixed size" window: its text must not change.
+TAB and Shift-TAB also leave the drop-down's typed text.
 CTRL+R, CTRL+W and SHIFT+CTRL+L are the menu shortcuts.
 The arrows move within a radio group; SPACE presses what is focused.
 ENTER in the field reports a click; ESCAPE is deliberately ignored.
