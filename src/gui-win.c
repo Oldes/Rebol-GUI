@@ -5414,6 +5414,31 @@ static LRESULT CALLBACK Combo_Edit_Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
 {
 	GUIWIDGET *wid = (GUIWIDGET*)GetWindowLongPtrW(hwnd, GWLP_USERDATA);
 
+	/*******************************************************************
+	**  The mouse, for the same reason as the keyboard: the edit covers
+	**  most of the combo box, and what it covers the combo box never
+	**  hears about - so no `move`, no `enter`/`leave` and no tooltip
+	**  over the typed text. Reported here as the combo box's own, with
+	**  the point moved into its coordinates, since everything below -
+	**  the event, the clamp, the tooltip tool - is keyed by the combo.
+	*******************************************************************/
+	if (wid && wid->handle && msg >= WM_MOUSEFIRST && msg <= WM_MOUSELAST
+	    && msg != WM_MOUSEWHEEL) {
+		POINT p;
+		LPARAM at;
+		p.x = GET_X_LPARAM(lp);
+		p.y = GET_Y_LPARAM(lp);
+		MapWindowPoints(hwnd, HWND_OF_WID(wid), &p, 1);
+		at = MAKELPARAM((WORD)(SHORT)p.x, (WORD)(SHORT)p.y);
+		Tip_Relay(HWND_OF_WID(wid), msg, wp, at);
+		if (msg == WM_MOUSEMOVE) {
+			Track_Leave(hwnd);
+			Queue_Widget_Mouse(wid, EVT_MOVE, at, 0);
+		}
+	}
+	// Handed on as well: the edit tracks the pointer for itself too.
+	if (wid && msg == WM_MOUSELEAVE) Mouse_Left(hwnd);
+
 	// Without the dialog manager - see Handle_Key().
 	if (wid && Handle_Key(hwnd, msg, wp, lp, FALSE)) return 0;
 

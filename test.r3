@@ -440,6 +440,9 @@ print as-yellow "^/== Drop-down"
 ;; moves on. The typed part is an edit the combo box makes inside itself,
 ;; so it has to do the keyboard handling every other control does. With
 ;; `keys?` on, the keys typed there name the drop-down as their source.
+;; WATCH (Windows): move the pointer over the typed text - the title bar
+;; says "over drop-down", the log reports no `!!` line, and the tooltip
+;; set below shows up there just as it does over the arrow button.
 combo: add-drop-down/index win
 	["Small" "Medium" "Large"] 410x350 100x0 1
 
@@ -532,6 +535,7 @@ label/tip:   "Greets whoever types in the field below"
 level/tip:   "Drives the progress bar below it"
 name/tip:    "Type your name - Enter reports a click"
 log/tip:     "Read-only: select and copy, but no typing"
+combo/tip:   "Pick one, or type your own"
 print ["and read back:       " mold counter/tip]
 print ["a label has one too: " mold label/tip]
 
