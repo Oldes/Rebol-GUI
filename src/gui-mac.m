@@ -183,6 +183,48 @@ static void Apply_Button_Color(GUIWIDGET *wid);
 @implementation RebolGuiWindow
 - (BOOL)canBecomeKeyWindow  { return YES; }
 - (BOOL)canBecomeMainWindow { return YES; }
+
+/***********************************************************************
+**  Cut, copy, paste, select all, undo and redo - without an Edit menu.
+**
+**  A text field does not handle Cmd+C itself: the standard Edit menu's
+**  items have those key equivalents and send copy: and friends down the
+**  responder chain to the field editor. This extension installs no Edit
+**  menu, so the keys went nowhere, in every field and area.
+**
+**  So a Command key the views did not take is mapped to its action here
+**  and sent to the first responder, which does exactly what the menu
+**  item would. The script's own menu bar is asked FIRST, so a menu item
+**  on one of these keys still wins. Whatever the first responder cannot
+**  do (paste into a label, copy out of a `/secure` field) it refuses,
+**  and the key is passed on as unhandled.
+***********************************************************************/
+- (BOOL)performKeyEquivalent:(NSEvent*)evt
+{
+	NSEventModifierFlags mods;
+	NSString *key;
+	SEL       action = NULL;
+	BOOL      shift;
+
+	if ([super performKeyEquivalent:evt]) return YES;
+	if ([evt type] != NSEventTypeKeyDown) return NO;
+
+	mods  = [evt modifierFlags] & (NSEventModifierFlagCommand | NSEventModifierFlagShift
+	                             | NSEventModifierFlagOption  | NSEventModifierFlagControl);
+	shift = (mods & NSEventModifierFlagShift) ? YES : NO;
+	if ((mods & ~NSEventModifierFlagShift) != NSEventModifierFlagCommand) return NO;
+
+	key = [[evt charactersIgnoringModifiers] lowercaseString];
+	if      ([key isEqualToString:@"x"] && !shift) action = @selector(cut:);
+	else if ([key isEqualToString:@"c"] && !shift) action = @selector(copy:);
+	else if ([key isEqualToString:@"v"] && !shift) action = @selector(paste:);
+	else if ([key isEqualToString:@"a"] && !shift) action = @selector(selectAll:);
+	else if ([key isEqualToString:@"z"]) action = shift ? @selector(redo:) : @selector(undo:);
+	if (!action) return NO;
+
+	if ([[NSApp mainMenu] performKeyEquivalent:evt]) return YES;
+	return [NSApp sendAction:action to:nil from:self];
+}
 @end
 
 
