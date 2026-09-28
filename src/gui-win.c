@@ -107,6 +107,11 @@ static void Gui_Window_Revoke_Drop(GUIWIN *win);
 // Defined with the keyboard handling, below; installed by every control
 // creation, which comes first in the file.
 static void   Subclass_For_Nav(GUIWIDGET *wid);
+
+// The tab-panel's own handling inside the panel procedure; defined with
+// the rest of the tab-panel, far below.
+static void   Tab_Layout(GUIWIDGET *wid);
+static REBOOL Tab_Notify(GUIWIDGET *wid, NMHDR *nm);
 static REBOOL Gui_Handle_Key(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);
 
 // Whether OLE came up on this thread, decided once in Gui_Init_Platform,
@@ -765,19 +770,37 @@ static void Clamp_Into(REBINT *x, REBINT *y, REBINT ax, REBINT ay, REBINT w, REB
 	if (h > 0) { if (*y < ay) *y = ay; else if (*y > ay + h - 1) *y = ay + h - 1; }
 }
 
-static void Clamp_To_Widget(GUIWIDGET *wid, REBINT *x, REBINT *y)
+/***********************************************************************
+**  `widget/at`: the offsets up the chain of containers, added.
+**
+**  Summed in LOGICAL units rather than mapped once in device pixels,
+**  because that is how a script sees them: `at` is then exactly
+**  `offset` plus the parents' `offset`s, and the clamp below agrees with
+**  it to the unit. Every container here places its children itself, so
+**  the sum is the geometry.
+***********************************************************************/
+REBOOL Gui_Widget_Get_At(GUIWIDGET *wid, REBINT *x, REBINT *y)
 {
 	GUIWIDGET *at;
-	REBINT ax = 0, ay = 0, w = 0, h = 0, bx, by, bw, bh;
+	REBINT ax = 0, ay = 0, bx, by, bw, bh;
 
-	if (GetCapture() || !Gui_Widget_Get_Box(wid, &bx, &by, &w, &h)) return;
-	// Its top-left corner in the window - the same sum `widget/at` makes,
-	// so the clamped position and `at` agree to the unit.
 	for (at = wid; at; at = (GUIWIDGET*)at->parent) {
-		if (!Gui_Widget_Get_Box(at, &bx, &by, &bw, &bh)) return;
+		if (!Gui_Widget_Get_Box(at, &bx, &by, &bw, &bh)) return FALSE;
 		ax += bx;
 		ay += by;
 	}
+	*x = ax;
+	*y = ay;
+	return TRUE;
+}
+
+static void Clamp_To_Widget(GUIWIDGET *wid, REBINT *x, REBINT *y)
+{
+	REBINT ax = 0, ay = 0, w = 0, h = 0, bx, by;
+
+	if (GetCapture() || !Gui_Widget_Get_Box(wid, &bx, &by, &w, &h)) return;
+	// The same corner `widget/at` reports, so the two agree to the unit.
+	if (!Gui_Widget_Get_At(wid, &ax, &ay)) return;
 	Clamp_Into(x, y, ax, ay, w, h);
 }
 
@@ -2317,6 +2340,14 @@ static void Paint_Panel(HWND hwnd, HDC dc)
 
 static LRESULT CALLBACK Gui_Panel_Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
+	// A tab-panel is a panel holding a tab control and the pages: the
+	// tab control's own notification and a new size are its business.
+	GUIWIDGET *tab = (GUIWIDGET*)GetWindowLongPtrW(hwnd, GWLP_USERDATA);
+	if (tab && tab->kind == W_GUI_WIDGET_TAB_PANEL) {
+		if (msg == WM_NOTIFY && Tab_Notify(tab, (NMHDR*)lp)) return 0;
+		if (msg == WM_SIZE) { Tab_Layout(tab); return 0; }
+	}
+
 	switch (msg) {
 
 	case WM_COMMAND:
@@ -2472,7 +2503,7 @@ void Gui_Init_Platform(void)
 	// have to be registered before either can be created.
 	controls.dwSize = sizeof(controls);
 	controls.dwICC  = ICC_BAR_CLASSES | ICC_PROGRESS_CLASS | ICC_STANDARD_CLASSES
-	                | ICC_DATE_CLASSES;
+	                | ICC_DATE_CLASSES | ICC_TAB_CLASSES;
 	InitCommonControlsEx(&controls);
 
 	/*******************************************************************
@@ -5411,34 +5442,42 @@ void Gui_Widget_Set_Value(GUIWIDGET *wid, REBDEC value)
 ***********************************************************************/
 static WNDPROC ComboEdit_Proc = NULL;
 
-static LRESULT CALLBACK Combo_Edit_Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
+/***********************************************************************
+**  The mouse over a window a control made INSIDE itself - a drop-down's
+**  edit, a tab-panel's tab control - reported as the widget's own.
+**
+**  What the inner window covers, the widget never hears about: no
+**  `move`, no `enter`/`leave`, no tooltip. So the point is moved into
+**  the widget's coordinates and handled as if the widget had it, since
+**  everything downstream - the event, the clamp, the tooltip tool - is
+**  keyed by the widget. The message still goes on to the inner window,
+**  which tracks the pointer for itself too.
+***********************************************************************/
+static void Relay_Inner_Mouse(HWND inner, GUIWIDGET *wid, UINT msg, WPARAM wp, LPARAM lp)
 {
-	GUIWIDGET *wid = (GUIWIDGET*)GetWindowLongPtrW(hwnd, GWLP_USERDATA);
-
-	/*******************************************************************
-	**  The mouse, for the same reason as the keyboard: the edit covers
-	**  most of the combo box, and what it covers the combo box never
-	**  hears about - so no `move`, no `enter`/`leave` and no tooltip
-	**  over the typed text. Reported here as the combo box's own, with
-	**  the point moved into its coordinates, since everything below -
-	**  the event, the clamp, the tooltip tool - is keyed by the combo.
-	*******************************************************************/
-	if (wid && wid->handle && msg >= WM_MOUSEFIRST && msg <= WM_MOUSELAST
-	    && msg != WM_MOUSEWHEEL) {
+	if (!wid || !wid->handle) return;
+	if (msg >= WM_MOUSEFIRST && msg <= WM_MOUSELAST && msg != WM_MOUSEWHEEL) {
 		POINT p;
 		LPARAM at;
 		p.x = GET_X_LPARAM(lp);
 		p.y = GET_Y_LPARAM(lp);
-		MapWindowPoints(hwnd, HWND_OF_WID(wid), &p, 1);
+		MapWindowPoints(inner, HWND_OF_WID(wid), &p, 1);
 		at = MAKELPARAM((WORD)(SHORT)p.x, (WORD)(SHORT)p.y);
 		Tip_Relay(HWND_OF_WID(wid), msg, wp, at);
 		if (msg == WM_MOUSEMOVE) {
-			Track_Leave(hwnd);
+			Track_Leave(inner);
 			Queue_Widget_Mouse(wid, EVT_MOVE, at, 0);
 		}
 	}
-	// Handed on as well: the edit tracks the pointer for itself too.
-	if (wid && msg == WM_MOUSELEAVE) Mouse_Left(hwnd);
+	if (msg == WM_MOUSELEAVE) Mouse_Left(inner);
+}
+
+static LRESULT CALLBACK Combo_Edit_Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
+{
+	GUIWIDGET *wid = (GUIWIDGET*)GetWindowLongPtrW(hwnd, GWLP_USERDATA);
+
+	// The mouse over the typed text - see Relay_Inner_Mouse().
+	Relay_Inner_Mouse(hwnd, wid, msg, wp, lp);
 
 	// Without the dialog manager - see Handle_Key().
 	if (wid && Handle_Key(hwnd, msg, wp, lp, FALSE)) return 0;
@@ -5676,6 +5715,156 @@ REBOOL Gui_Create_Line(GUIWIDGET *wid, GUIWIN *owner,
 }
 
 
+//-- tab-panel ----------------------------------------------------------------
+
+/***********************************************************************
+**  A tab-panel is THREE kinds of window, and deliberately so.
+**
+**  The widget's handle is one of our PANELS - the host. Inside it are a
+**  SysTabControl32, which only draws the tabs and their frame, and the
+**  pages, which are panels too, SIBLINGS of the tab control placed over
+**  its display area. The pages are not the tab control's children: a
+**  tab control does not forward WM_COMMAND, WM_NOTIFY or WM_CTLCOLOR*
+**  from what it holds, and the panel class already does - so every
+**  control on a page reports to the window like any other.
+**
+**  Which page shows is ShowWindow. The tab control's HWND is kept as a
+**  property of the host; it is not a widget and is on no list.
+***********************************************************************/
+static const WCHAR *Tabs_Prop = L"RebolGuiTabs";
+static WNDPROC      TabCtrl_Proc = NULL;
+
+static HWND Tabs_Of(GUIWIDGET *wid)
+{
+	if (!wid || !wid->handle || wid->kind != W_GUI_WIDGET_TAB_PANEL) return NULL;
+	return (HWND)GetPropW(HWND_OF_WID(wid), Tabs_Prop);
+}
+
+// The display area, in the host's device coordinates (the tab control
+// fills the host from 0x0, so its coordinates are the host's).
+static void Tab_Page_Rect(HWND tabs, RECT *r)
+{
+	GetClientRect(tabs, r);
+	SendMessageW(tabs, TCM_ADJUSTRECT, FALSE, (LPARAM)r);
+	if (r->right < r->left) r->right = r->left;
+	if (r->bottom < r->top) r->bottom = r->top;
+}
+
+// Shows page `n` (0-based) and hides the rest.
+static void Tab_Show(GUIWIDGET *wid, REBINT n)
+{
+	GUIWIDGET *w;
+	if (!wid || !wid->owner) return;
+	for (w = (GUIWIDGET*)wid->owner->widgets; w; w = (GUIWIDGET*)w->next) {
+		if ((GUIWIDGET*)w->parent != wid || !w->handle) continue;
+		ShowWindow(HWND_OF_WID(w), ((REBINT)w->group == n + 1) ? SW_SHOW : SW_HIDE);
+	}
+}
+
+// The tab control over the whole host, and every page over its display
+// area - after any resize of the host, a DPI change included, which is
+// also why the font is given again here.
+static void Tab_Layout(GUIWIDGET *wid)
+{
+	HWND       tabs = Tabs_Of(wid);
+	GUIWIDGET *w;
+	RECT       host, r;
+
+	if (!tabs || !GetClientRect(HWND_OF_WID(wid), &host)) return;
+	SendMessageW(tabs, WM_SETFONT, (WPARAM)Default_Font_At(Dpi_Of(tabs)), FALSE);
+	MoveWindow(tabs, 0, 0, host.right, host.bottom, TRUE);
+	Tab_Page_Rect(tabs, &r);
+	for (w = (GUIWIDGET*)wid->owner->widgets; w; w = (GUIWIDGET*)w->next) {
+		if ((GUIWIDGET*)w->parent != wid || !w->handle) continue;
+		MoveWindow(HWND_OF_WID(w), r.left, r.top, r.right - r.left, r.bottom - r.top, TRUE);
+	}
+}
+
+// TCN_SELCHANGE comes only from the user; TCM_SETCURSEL notifies no one,
+// so `tabs/index:` is not reported back.
+static REBOOL Tab_Notify(GUIWIDGET *wid, NMHDR *nm)
+{
+	REBINT x = 0, y = 0, w = 0, h = 0;
+	if (!nm || nm->hwndFrom != Tabs_Of(wid) || nm->code != TCN_SELCHANGE) return FALSE;
+	Tab_Show(wid, (REBINT)SendMessageW(nm->hwndFrom, TCM_GETCURSEL, 0, 0));
+	if (wid->hob) {
+		Gui_Widget_Get_Box(wid, &x, &y, &w, &h);
+		Gui_Queue_Event(wid->hob, EVT_CHANGE, x, y, Modifiers());
+	}
+	return TRUE;
+}
+
+// The tab control is not a widget, so it gets what Nav_Proc would give
+// one: the keyboard (Tab, shortcuts, `keys?`) and the mouse, both as the
+// tab-panel's. Without the dialog manager, which would translate every
+// key a second time - see Handle_Key(); the arrows are the control's own.
+static LRESULT CALLBACK Tab_Ctrl_Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
+{
+	GUIWIDGET *wid = (GUIWIDGET*)GetWindowLongPtrW(hwnd, GWLP_USERDATA);
+
+	Relay_Inner_Mouse(hwnd, wid, msg, wp, lp);
+	if (wid && Handle_Key(hwnd, msg, wp, lp, FALSE)) return 0;
+
+	return TabCtrl_Proc ? CallWindowProcW(TabCtrl_Proc, hwnd, msg, wp, lp)
+	                    : DefWindowProcW(hwnd, msg, wp, lp);
+}
+
+REBOOL Gui_Create_Tab_Panel(GUIWIDGET *wid, GUIWIN *owner,
+                            REBINT x, REBINT y, REBINT w, REBINT h)
+{
+	HWND host, tabs;
+	RECT r;
+
+	// The host is a plain, frameless panel: userdata, Nav_Proc, and
+	// WS_EX_CONTROLPARENT so that Tab reaches into the pages.
+	if (!Gui_Create_Panel(wid, owner, x, y, w, h, NULL, 0)) return FALSE;
+	host = HWND_OF_WID(wid);
+	GetClientRect(host, &r);
+
+	tabs = CreateWindowExW(0, WC_TABCONTROLW, L"",
+		WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_CLIPSIBLINGS,
+		0, 0, r.right, r.bottom, host, NULL, App_Instance, NULL);
+	if (!tabs) {
+		DestroyWindow(host);
+		wid->handle = NULL;
+		return FALSE;
+	}
+	SetPropW(host, Tabs_Prop, tabs);
+	SendMessageW(tabs, WM_SETFONT, (WPARAM)Default_Font_At(Dpi_Of(tabs)), FALSE);
+
+	SetWindowLongPtrW(tabs, GWLP_USERDATA, (LONG_PTR)wid);
+	if (!TabCtrl_Proc) TabCtrl_Proc = (WNDPROC)GetWindowLongPtrW(tabs, GWLP_WNDPROC);
+	SetWindowLongPtrW(tabs, GWLP_WNDPROC, (LONG_PTR)Tab_Ctrl_Proc);
+	return TRUE;
+}
+
+REBOOL Gui_Create_Tab_Page(GUIWIDGET *page, GUIWIDGET *tabs, GUIWIN *owner)
+{
+	HWND   ctl = Tabs_Of(tabs);
+	RECT   r;
+	REBINT x, y, w, h;
+	int    dpi;
+
+	if (!ctl || !page || !owner) return FALSE;
+	Tab_Page_Rect(ctl, &r);
+	dpi = Dpi_Of(ctl);
+	x = r.left; y = r.top; w = r.right - r.left; h = r.bottom - r.top;
+	if (w < 1) w = 1;
+	if (h < 1) h = 1;
+	Box_To_Logical(dpi, &x, &y, &w, &h);   // Gui_Create_Panel converts back
+
+	// page->parent is the tab-panel, so the host is what it attaches to.
+	if (!Gui_Create_Panel(page, owner, x, y, w, h, NULL, 0)) return FALSE;
+
+	// Over the tab control, and shown only if its tab is the current one.
+	SetWindowPos(HWND_OF_WID(page), HWND_TOP, 0, 0, 0, 0,
+	             SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+	if ((REBINT)page->group != (REBINT)SendMessageW(ctl, TCM_GETCURSEL, 0, 0) + 1)
+		ShowWindow(HWND_OF_WID(page), SW_HIDE);
+	return TRUE;
+}
+
+
 REBOOL Gui_Create_Text_List(GUIWIDGET *wid, GUIWIN *owner,
                             REBINT x, REBINT y, REBINT w, REBINT h)
 {
@@ -5722,6 +5911,10 @@ REBCNT Gui_Widget_Count_Items(GUIWIDGET *wid)
 {
 	LRESULT count;
 	if (!wid || !wid->handle) return 0;
+	if (wid->kind == W_GUI_WIDGET_TAB_PANEL) {
+		count = Tabs_Of(wid) ? SendMessageW(Tabs_Of(wid), TCM_GETITEMCOUNT, 0, 0) : 0;
+		return (count < 0) ? 0 : (REBCNT)count;
+	}
 	count = SendMessageW(HWND_OF_WID(wid), IS_LIST(wid) ? LB_GETCOUNT : CB_GETCOUNT, 0, 0);
 	return (count < 0) ? 0 : (REBCNT)count;
 }
@@ -5736,6 +5929,19 @@ REBSER* Gui_Widget_Get_Item(GUIWIDGET *wid, REBCNT n)
 
 	if (!wid || !wid->handle) return NULL;
 	hwnd = HWND_OF_WID(wid);
+
+	if (wid->kind == W_GUI_WIDGET_TAB_PANEL) {
+		WCHAR   text[256];
+		TCITEMW item;
+		if (!Tabs_Of(wid)) return NULL;
+		ZeroMemory(&item, sizeof(item));
+		item.mask       = TCIF_TEXT;
+		item.pszText    = text;
+		item.cchTextMax = 256;
+		text[0] = 0;
+		if (!SendMessageW(Tabs_Of(wid), TCM_GETITEMW, (WPARAM)n, (LPARAM)&item)) return NULL;
+		return RL_ENCODE_UTF8_STRING(text, (REBCNT)wcslen(text), TRUE, 0);
+	}
 
 	len = SendMessageW(hwnd, IS_LIST(wid) ? LB_GETTEXTLEN : CB_GETLBTEXTLEN, (WPARAM)n, 0);
 	if (len < 0) return NULL;
@@ -5761,6 +5967,20 @@ REBOOL Gui_Widget_Add_Item(GUIWIDGET *wid, const REBYTE *utf8, REBCNT len)
 	if (!wid || !wid->handle) return FALSE;
 
 	wide = To_Wide(utf8, len);
+	if (wid->kind == W_GUI_WIDGET_TAB_PANEL) {
+		TCITEMW item;
+		HWND    tabs = Tabs_Of(wid);
+		ZeroMemory(&item, sizeof(item));
+		item.mask    = TCIF_TEXT;
+		item.pszText = wide ? wide : L"";
+		res = tabs ? SendMessageW(tabs, TCM_INSERTITEMW,
+		                          (WPARAM)SendMessageW(tabs, TCM_GETITEMCOUNT, 0, 0),
+		                          (LPARAM)&item) : -1;
+		if (wide) FREE_MEM(wide);
+		// The first tab changes the display area's height.
+		if (res == 0) Tab_Layout(wid);
+		return (res < 0) ? FALSE : TRUE;
+	}
 	res = SendMessageW(HWND_OF_WID(wid), IS_LIST(wid) ? LB_ADDSTRING : CB_ADDSTRING, 0,
 	                   (LPARAM)(wide ? wide : L""));
 	if (wide) FREE_MEM(wide);
@@ -5771,6 +5991,10 @@ REBOOL Gui_Widget_Add_Item(GUIWIDGET *wid, const REBYTE *utf8, REBCNT len)
 void Gui_Widget_Clear_Items(GUIWIDGET *wid)
 {
 	if (!wid || !wid->handle) return;
+	if (wid->kind == W_GUI_WIDGET_TAB_PANEL) {
+		if (Tabs_Of(wid)) SendMessageW(Tabs_Of(wid), TCM_DELETEALLITEMS, 0, 0);
+		return;
+	}
 	SendMessageW(HWND_OF_WID(wid), IS_LIST(wid) ? LB_RESETCONTENT : CB_RESETCONTENT, 0, 0);
 }
 
@@ -5779,6 +6003,9 @@ REBINT Gui_Widget_Get_Index(GUIWIDGET *wid)
 {
 	LRESULT n;
 	if (!wid || !wid->handle) return -1;
+	if (wid->kind == W_GUI_WIDGET_TAB_PANEL)
+		n = Tabs_Of(wid) ? SendMessageW(Tabs_Of(wid), TCM_GETCURSEL, 0, 0) : -1;
+	else
 	n = SendMessageW(HWND_OF_WID(wid), IS_LIST(wid) ? LB_GETCURSEL : CB_GETCURSEL, 0, 0);
 	return (n < 0) ? -1 : (REBINT)n;
 }
@@ -5787,6 +6014,14 @@ REBINT Gui_Widget_Get_Index(GUIWIDGET *wid)
 void Gui_Widget_Set_Index(GUIWIDGET *wid, REBINT n)
 {
 	if (!wid || !wid->handle) return;
+	if (wid->kind == W_GUI_WIDGET_TAB_PANEL) {
+		// Always one page: out of range changes nothing.
+		HWND tabs = Tabs_Of(wid);
+		if (!tabs || n < 0 || n >= (REBINT)SendMessageW(tabs, TCM_GETITEMCOUNT, 0, 0)) return;
+		SendMessageW(tabs, TCM_SETCURSEL, (WPARAM)n, 0);
+		Tab_Show(wid, n);
+		return;
+	}
 	// -1 clears the selection, for both, which is what an index out of
 	// range means here. A list box also scrolls the pick into view.
 	SendMessageW(HWND_OF_WID(wid), IS_LIST(wid) ? LB_SETCURSEL : CB_SETCURSEL, (WPARAM)n, 0);

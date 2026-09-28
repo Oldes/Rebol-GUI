@@ -20,9 +20,9 @@ in [INTERNALS.md](INTERNALS.md).
 - no DRAW dialect, no compositor - just the image widget
 - keyboard events only per window, with `keys?`, and observed rather than taken
 - no checkable menu items, and no popup (context) menus
-- sixteen native controls: button, image, text, field, area, check, radio,
+- seventeen native controls: button, image, text, field, area, check, radio,
   toggle, slider, progress, drop-list, drop-down, text-list, date-field, panel,
-  line
+  line, tab-panel
 - Windows and macOS only; there is no X11/Wayland backend yet
 
 ## Build
@@ -320,6 +320,7 @@ pic:   add-image  win some-image       340x20
 | `date-field` | a date, and optionally a time of day | `change` `click` `focus` `unfocus` |
 | `panel`     | holds other widgets | nothing |
 | `line`      | separator rule | nothing |
+| `tab-panel` | tabs, a page (a panel) for each | `change` |
 | `image`     | shows an `image!` | its own mouse events |
 
 Buttons, checks, radios and sliders report the left mouse button going
@@ -671,6 +672,27 @@ leave room for it yourself.
 
 A panel is not transparent to the mouse: clicks on its background are not
 reported to the window. Removing a panel removes everything in it.
+
+### Tab-panels
+
+```rebol
+tabs: add-tab-panel win ["General" "Advanced"] 20x20 300x200
+general: first tabs/children          ;; a page per tab - a panel each
+add-check general "Enabled" 10x10 0x0
+
+tabs/index                ;; 1 - which tab is shown
+tabs/index: 2             ;; shows the second page, without a `change`
+tabs/text                 ;; "Advanced" - the label shown
+```
+
+The pages are made for you, one per label, and are in `children` in tab
+order; each page's `group` is its tab. Put widgets on a page as on any
+panel - not on the tab-panel itself. The size includes the tabs; a page
+fills the rest. `change` is reported when the user picks a tab. `/index n`
+picks the one shown first; an index out of range changes nothing, since one
+page is always shown. `items` (the labels) and `text` are read-only for now,
+and the tabs keep the platform's font and colours. On Windows the tabs do not
+follow `dark-controls?` yet.
 
 ### Separator lines
 
@@ -1078,6 +1100,15 @@ Creates a separator line - a static etched rule - and returns its handle
 * `offset` `[pair!]` Position inside the parent
 * `size` `[pair!]` Wider than tall makes it horizontal; a zero axis is the line's own thickness
 
+#### `add-tab-panel` `:parent` `:labels` `:offset` `:size`
+Creates a tab-panel - a page per tab, only the picked one shown - and returns its handle
+* `parent` `[handle!]` Window, panel or image widget to put it in
+* `labels` `[block!]` Tab labels; a page (a panel) is made for each, in `children`
+* `offset` `[pair!]` Position inside the parent
+* `size` `[pair!]` Of the whole control, tabs included
+* `/index`
+* `n` `[integer!]` Tab shown to start with, 1-based (default: 1)
+
 
 ## Used handles and its getters / setters
 
@@ -1127,14 +1158,14 @@ Creates a separator line - a static etched rule - and returns its handle
 ```rebol
 ;Refinement       Gets                Sets                          Description
 /text             string!             string!                       "Label or contents; the caption of a framed panel; the selected item of a drop-list or a text-list, which is read-only; the typed value of a drop-down, which can be set; none for an image"
-/items            block!              block!                        "Strings a drop-list, a drop-down or a text-list offers; none for other kinds"
-/index            integer!            integer!                      "Which item is picked, 1-based; 0 for none"
+/items            block!              block!                        "Strings a drop-list, a drop-down or a text-list offers, or a tab-panel's tab labels (read-only there); none for other kinds"
+/index            integer!            integer!                      "Which item is picked, or which tab is shown, 1-based; 0 for none"
 /image            image!              image!                        "Image shown by an image widget, none for other kinds"
 /size             pair!               pair!                         "Size of the control; a zero axis asks it what that axis needs, the same as at creation"
 /offset           pair!               pair!                         "Position inside whatever holds it - a window or a panel"
 /at               pair!               none                          "Top-left corner in its window's client area, however deeply nested - what a mouse event's offset is measured from"
 /id               integer!            none                          "Native control handle as an integer"
-/kind             word!               none                          "What the control is: button, image, text, field, area, check, radio, toggle, slider, progress, drop-list, drop-down, text-list, date-field, panel or line"
+/kind             word!               none                          "What the control is: button, image, text, field, area, check, radio, toggle, slider, progress, drop-list, drop-down, text-list, date-field, panel, line or tab-panel"
 /value            [percent! date!]    [percent! decimal! date!]     "Position of a slider or a progress bar; the date of a date-field, with its time of day when made with `/time`; none for other kinds"
 /state            logic!              logic!                        "Whether a check, a radio or a toggle is on; none for other kinds"
 /border?          logic!              logic!                        "Whether a panel draws a frame around itself, or a field, an area or a text-list its border; none for other kinds"
@@ -1149,7 +1180,7 @@ Creates a separator line - a static etched rule - and returns its handle
 /read-only?       logic!              logic!                        "Whether a field or an area refuses to be edited while staying selectable; none for other kinds"
 /focused?         logic!              none                          "Whether it currently has the keyboard focus"
 /scroll           percent!            [percent! decimal! word! integer!]"How far an area or a text-list is scrolled; set a percent, or one of top, bottom and end; an integer brings that text-list item into view; none for kinds which do not scroll"
-/group            integer!            none                          "Which radio group it belongs to; 0 for everything else"
+/group            integer!            none                          "Which radio group it belongs to; for a tab-panel's page, which tab it is; 0 for everything else"
 /enabled?         logic!              logic!                        "Whether the control responds to the user"
 /tip              string!             [string! none!]               "Text the platform shows when the pointer rests on it; none for no tip"
 /parent           handle!             none                          "Whatever holds it - a window, or a panel; none once gone"

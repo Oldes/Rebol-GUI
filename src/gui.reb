@@ -11,7 +11,7 @@ REBOL [
 		add-button add-image add-text add-field add-area
 		add-check add-radio add-slider add-progress add-drop-down add-drop-list add-panel
 		remove-widget redraw set-focus screens track-mouse add-toggle
-		add-text-list add-date-field add-line
+		add-text-list add-date-field add-line add-tab-panel
 		gui-device gui-device-polls gui-device-events
 		gui-device-pumps gui-device-messages
 		poll-events do-events
@@ -332,6 +332,7 @@ words: [
 		date-field      ;; a date, and optionally a time of day; reports `change`
 		drop-down       ;; an editable combo box - drop-list plus a typed value; reports `change`
 		line            ;; a static separator, horizontal or vertical; reports nothing
+		tab-panel       ;; tabs, each with a page (a panel) of its own; reports `change`
 	]
 	;; What a `theme-change` event carries in `code`.
 	theme: [
@@ -384,14 +385,14 @@ handles: [
 		"GUI widget handle - a native control inside a window"
 		;NAME    GET       SET       DESCRIPTION
 		text     string!   string!   "Label or contents; the caption of a framed panel; the selected item of a drop-list or a text-list, which is read-only; the typed value of a drop-down, which can be set; none for an image"
-		items    block!    block!    "Strings a drop-list, a drop-down or a text-list offers; none for other kinds"
-		index    integer!  integer!  "Which item is picked, 1-based; 0 for none"
+		items    block!    block!    "Strings a drop-list, a drop-down or a text-list offers, or a tab-panel's tab labels (read-only there); none for other kinds"
+		index    integer!  integer!  "Which item is picked, or which tab is shown, 1-based; 0 for none"
 		image    image!    image!    "Image shown by an image widget, none for other kinds"
 		size     pair!     pair!     "Size of the control; a zero axis asks it what that axis needs, the same as at creation"
 		offset   pair!     pair!     "Position inside whatever holds it - a window or a panel"
 		at       pair!     none      "Top-left corner in its window's client area, however deeply nested - what a mouse event's offset is measured from"
 		id       integer!  none      "Native control handle as an integer"
-		kind     word!     none      "What the control is: button, image, text, field, area, check, radio, toggle, slider, progress, drop-list, drop-down, text-list, date-field, panel or line"
+		kind     word!     none      "What the control is: button, image, text, field, area, check, radio, toggle, slider, progress, drop-list, drop-down, text-list, date-field, panel, line or tab-panel"
 		value    [percent! date!] [percent! decimal! date!] "Position of a slider or a progress bar; the date of a date-field, with its time of day when made with `/time`; none for other kinds"
 		state    logic!    logic!    "Whether a check, a radio or a toggle is on; none for other kinds"
 		border?  logic!    logic!    "Whether a panel draws a frame around itself, or a field, an area or a text-list its border; none for other kinds"
@@ -407,7 +408,7 @@ handles: [
 		read-only? logic!  logic!    "Whether a field or an area refuses to be edited while staying selectable; none for other kinds"
 		focused?  logic!   none      "Whether it currently has the keyboard focus"
 		scroll    percent!  [percent! decimal! word! integer!] "How far an area or a text-list is scrolled; set a percent, or one of top, bottom and end; an integer brings that text-list item into view; none for kinds which do not scroll"
-		group    integer!  none      "Which radio group it belongs to; 0 for everything else"
+		group    integer!  none      "Which radio group it belongs to; for a tab-panel's page, which tab it is; 0 for everything else"
 		enabled? logic!    logic!    "Whether the control responds to the user"
 		tip      string!   [string! none!] "Text the platform shows when the pointer rests on it; none for no tip"
 		parent   handle!   none      "Whatever holds it - a window, or a panel; none once gone"
@@ -606,6 +607,15 @@ commands: [
 		parent [handle!] "Window, panel or image widget to put it in"
 		offset [pair!]   "Position inside the parent"
 		size   [pair!]   "Wider than tall makes it horizontal; a zero axis is the line's own thickness"
+	]
+
+	add-tab-panel: [
+		"Creates a tab-panel - a page per tab, only the picked one shown - and returns its handle"
+		parent [handle!] "Window, panel or image widget to put it in"
+		labels [block!]  "Tab labels; a page (a panel) is made for each, in `children`"
+		offset [pair!]   "Position inside the parent"
+		size   [pair!]   "Of the whole control, tabs included"
+		/index n [integer!] "Tab shown to start with, 1-based (default: 1)"
 	]
 ]
 

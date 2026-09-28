@@ -156,7 +156,8 @@ REBCNT Gui_Event_Count(void);
 **  the children in every repaint to reach them again.
 ***********************************************************************/
 #define Kind_Is_Container(k) \
-    ((k) == W_GUI_WIDGET_PANEL || (k) == W_GUI_WIDGET_IMAGE)
+    ((k) == W_GUI_WIDGET_PANEL || (k) == W_GUI_WIDGET_IMAGE \
+     || (k) == W_GUI_WIDGET_TAB_PANEL)
 
 // Called by the backend once a native window has really gone away, however
 // that happened: drops the queued events which point at the handle context
@@ -626,6 +627,12 @@ REBOOL  Gui_Widget_Set_Color(GUIWIDGET *wid);
 REBOOL  Gui_Widget_Get_Box(GUIWIDGET *wid, REBINT *x, REBINT *y, REBINT *w, REBINT *h);
 REBOOL  Gui_Widget_Set_Box(GUIWIDGET *wid, REBINT x, REBINT y, REBINT w, REBINT h);
 
+// Where the widget's top-left corner is in its WINDOW's client area,
+// however deeply nested - what `widget/at` reports, and what every mouse
+// position is measured against. FALSE when the widget or something
+// holding it is gone.
+REBOOL  Gui_Widget_Get_At(GUIWIDGET *wid, REBINT *x, REBINT *y);
+
 REBOOL  Gui_Widget_Get_Enabled(GUIWIDGET *wid);
 REBOOL  Gui_Widget_Set_Enabled(GUIWIDGET *wid, REBOOL enabled);
 
@@ -694,6 +701,27 @@ typedef struct Gui_Date {
     REBINT year, month, day;
     REBI64 ns;
 } GUIDATE;
+
+/***********************************************************************
+**  tab-panel
+**
+**  The tabs, and a page for each. Gui_Create_Tab_Panel makes the frame
+**  with no tabs; the shared layer then adds each label with
+**  Gui_Widget_Add_Item and makes its page with Gui_Create_Tab_Page.
+**
+**  A page is an ordinary PANEL widget whose `parent` is the tab-panel
+**  and whose `group` is its tab, 1-based - which is how a backend finds
+**  the pages: on the window's widget list, by parent and group. Where
+**  a page sits and whether it shows is the backend's business; the
+**  count, labels and index go through the item functions, like a
+**  drop-list's. Gui_Widget_Set_Index shows the page it picks, raises
+**  no event, and ignores an index out of range - a tab-panel always
+**  shows one page. A pick by the USER shows the page and queues `change`
+**  on the tab-panel.
+***********************************************************************/
+REBOOL  Gui_Create_Tab_Panel(GUIWIDGET *wid, GUIWIN *owner,
+                             REBINT x, REBINT y, REBINT w, REBINT h);
+REBOOL  Gui_Create_Tab_Page(GUIWIDGET *page, GUIWIDGET *tabs, GUIWIN *owner);
 
 // A separator: an etched rule, horizontal when the box is wider than it
 // is tall. Static - it takes no input and reports nothing.

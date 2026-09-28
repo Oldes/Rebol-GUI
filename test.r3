@@ -835,7 +835,7 @@ print ["client size:" bare/size "(unchanged by having no frame)"]
 
 ;; A borderless window has no close box and nothing to drag, so the program
 ;; is the only thing that can move or close it. Give this one a way out.
-add-text   bare "No border - and no way to close me" 10x10 220x0
+add-text   bare "No title - and no way to close me" 10x10 220x0
 back-again: add-button bare "Give me a frame" 10x50 0x0
 ;; `/borderless` means nothing around it at all - no outline, no shadow -
 ;; and that is kept when the button gives the title bar back and takes it
@@ -867,6 +867,35 @@ release plain-date
 ;; properties, and this window never had the second one.
 fixed/resizable?: true
 print ["... and now the fixed one is resizable?" fixed/resizable?]
+
+;;=============================================================================
+print as-yellow "^/== Tab-panel"
+;;=============================================================================
+
+;; A page per tab, made for you: a panel each, in `children`, with `group`
+;; saying which tab it is. Widgets go on the pages like on any panel.
+;;
+;; WATCH: a "Tabs" window with three tabs. Clicking one shows its page and
+;; logs `change on tab-panel`; Tab reaches the tabs and the arrows switch.
+tabbed: open-window/title/at 300x180 "Tabs" 1000x120
+tabs:   add-tab-panel/index tabbed ["General" "Advanced" "About"] 10x10 280x160 2
+pages:  tabs/children
+print ["tab-panel:" tabs/kind "items:" mold tabs/items]
+print ["shown:" tabs/index mold tabs/text {(expected 2 "Advanced")}]
+print ["pages:" length? pages "the second is tab" pages/2/group "a" pages/2/kind]
+print ["a page's parent is the tab-panel:" pages/1/parent = tabs]
+
+add-check pages/1 "Enabled" 10x10 0x0
+add-field pages/2 "on the second page" 10x10 200x0
+add-text  pages/3 "Rebol/GUI" 10x10 0x0
+
+tabs/index: 1
+print ["switched from Rebol:" tabs/index mold tabs/text "(no `change` is reported)"]
+tabs/index: 9
+print ["out of range keeps it:" tabs/index]
+print ["the labels are read-only:" error? try [tabs/items: ["x"]]]
+print ["and so is the text:      " error? try [tabs/text: "x"]]
+print ["an empty block is refused:" error? try [add-tab-panel tabbed [] 0x0 10x10]]
 
 ;;=============================================================================
 print as-yellow "^/== Menu bar"
@@ -1327,7 +1356,7 @@ print ["a radio inside the panel:" warm "parent:" warm/parent]
 
 ;; The extra windows go too - a `close` on the main one ends the loop, and
 ;; these two have nothing watching them.
-foreach extra reduce [fixed bare tinted ghost] [
+foreach extra reduce [fixed bare tinted ghost tabbed] [
 	if extra/open? [close-window extra]
 ]
 
@@ -1339,7 +1368,7 @@ print ["the image survives:" type? pic pic/size]
 ;; optional - the recycler would do it too.
 foreach handle reduce [
 	canvas counter closer label name log styled
-	toggle box warm cool slow fast level meter picker combo trees rule hr
+	toggle box warm cool slow fast level meter picker combo trees rule hr tabs
 	fixed bare back-again bordered
 ][	release handle ]
 ;; Screen handles lock nothing native, so they need no release - the

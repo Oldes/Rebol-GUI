@@ -816,7 +816,9 @@ static REBOOL Kind_Has_Text(REBCNT kind)
 	     // drop-down: readable AND writable - it is the typed value.
 	     || kind == W_GUI_WIDGET_DROP_LIST
 	     || kind == W_GUI_WIDGET_DROP_DOWN
-	     || kind == W_GUI_WIDGET_TEXT_LIST) ? TRUE : FALSE;
+	     || kind == W_GUI_WIDGET_TEXT_LIST
+	     // the label of the tab shown; read-only, like a drop-list's
+	     || kind == W_GUI_WIDGET_TAB_PANEL) ? TRUE : FALSE;
 }
 
 // Which kinds have a native border that `border?` and `/flat` switch off. A
@@ -878,7 +880,7 @@ static REBOOL Date_From_Arg(GUIWIDGET *wid, u32 bits, i64 time, GUIDATE *d)
 // Which kinds hold a list of strings, and pick one of them by `index`.
 #define Kind_Has_Items(kind) \
 	((kind) == W_GUI_WIDGET_DROP_LIST || (kind) == W_GUI_WIDGET_DROP_DOWN \
-	 || (kind) == W_GUI_WIDGET_TEXT_LIST)
+	 || (kind) == W_GUI_WIDGET_TEXT_LIST || (kind) == W_GUI_WIDGET_TAB_PANEL)
 
 // Which kinds are on or off.
 static REBOOL Kind_Has_State(REBCNT kind)
@@ -907,6 +909,7 @@ static REBOOL Kind_Takes_Focus(REBCNT kind)
 	     || kind == W_GUI_WIDGET_IMAGE     // pixels, and a container
 	     || kind == W_GUI_WIDGET_PANEL     // a container
 	     || kind == W_GUI_WIDGET_LINE      // decoration
+	     || kind == W_GUI_WIDGET_TAB_PANEL // a container; its tabs are reached with Tab
 	     || kind == W_GUI_WIDGET_PROGRESS) // shows a value, takes no input
 		? FALSE : TRUE;
 }
@@ -1235,6 +1238,7 @@ static REBOOL Kind_Has_Enabled(REBCNT kind)
 	return (kind != W_GUI_WIDGET_IMAGE
 	     && kind != W_GUI_WIDGET_PROGRESS
 	     && kind != W_GUI_WIDGET_LINE      // decoration, nothing to operate
+	     && kind != W_GUI_WIDGET_TAB_PANEL // a container, as a panel
 	     && kind != W_GUI_WIDGET_PANEL) ? TRUE : FALSE;
 }
 
@@ -1267,6 +1271,7 @@ static const char* Kind_Name(REBCNT kind)
 	case W_GUI_WIDGET_DATE_FIELD: return "date-field";
 	case W_GUI_WIDGET_PANEL:     return "panel";
 	case W_GUI_WIDGET_LINE:      return "line";
+	case W_GUI_WIDGET_TAB_PANEL: return "tab-panel";
 	default:                 return "button";
 	}
 }
@@ -1339,7 +1344,11 @@ static GUIWIN* Frm_Parent(RXIFRM *frm, REBCNT n, GUIWIDGET **container)
 // kinds which have `text` - if there is nothing to read, there is nothing
 // to style - so the two questions share one answer rather than drifting
 // apart as kinds are added.
-#define Kind_Has_Font(kind) Kind_Has_Text(kind)
+// ... except a tab-panel, whose text is only the label of a tab: its
+// font, colours and background are not something both platforms let a
+// script change.
+#define Kind_Has_Font(kind) \
+	(Kind_Has_Text(kind) && (kind) != W_GUI_WIDGET_TAB_PANEL)
 
 /***********************************************************************
 **  Gives a widget the size its own content asks for, on the axes named.
@@ -2621,6 +2630,99 @@ COMMAND cmd_gui_add_line(RXIFRM *frm, void *ctx)
 }
 
 
+/***********************************************************************
+**  add-tab-panel parent labels [block!] offset size /index n
+**
+**  The frame first, then a tab and a page for each label, in order.
+**  The pages are PANEL widgets like any other - they go on the window's
+**  list and into the tab-panel's `children`, and a script puts widgets
+**  on them as on a panel - with `group` saying which tab each is.
+**
+**  Anything in the block which is not a string is skipped, as for a
+**  drop-list; a block with no string at all is refused, since a
+**  tab-panel with nothing to show is not a useful thing to make.
+***********************************************************************/
+COMMAND cmd_gui_add_tab_panel(RXIFRM *frm, void *ctx)
+{
+	REBHOB    *hob;
+	GUIWIDGET *wid;
+	GUIWIDGET *panel = NULL;
+	GUIWIN    *win = Frm_Parent(frm, 1, &panel);
+	REBSER    *labels = RXA_SERIES(frm, 2);
+	REBINT     x, y, w, h;
+	REBCNT     n, t, pages = 0;
+	RXIARG     val;
+
+	if (!win || !win->handle) RETURN_ERROR(ERR_INVALID_HANDLE);
+
+	x = (REBINT)RXA_PAIR(frm, 3).x;
+	y = (REBINT)RXA_PAIR(frm, 3).y;
+	w = (REBINT)RXA_PAIR(frm, 4).x;
+	h = (REBINT)RXA_PAIR(frm, 4).y;
+	if (w <= 0 || h <= 0) RETURN_ERROR(ERR_BAD_SIZE);
+
+	hob = RL_MAKE_HANDLE_CONTEXT(Handle_GuiWidget);
+	if (hob == NULL) RETURN_ERROR(ERR_NO_HANDLE);
+
+	wid = (GUIWIDGET*)hob->data;
+	CLEARS(wid);
+	wid->hob    = hob;
+	wid->kind   = W_GUI_WIDGET_TAB_PANEL;
+	wid->owner  = win;
+	wid->parent = panel;
+
+	if (!Gui_Create_Tab_Panel(wid, win, x, y, w, h)) {
+		wid->owner  = NULL;
+		wid->parent = NULL;
+		RL_FREE_HANDLE_CONTEXT(hob);
+		RETURN_ERROR(ERR_NO_WIDGET);
+	}
+	// Attached before the pages, so that they land in ITS children.
+	Attach_Widget(wid, win, w, h);
+
+	for (n = RXA_INDEX(frm, 2); (t = RL_GET_VALUE(labels, n, &val)) != 0; n++) {
+		REBYTE    *utf8 = NULL;
+		int        len;
+		REBHOB    *page_hob;
+		GUIWIDGET *page;
+
+		if (t == RXT_END) break;
+		if (t != RXT_STRING) continue;
+		len = RL_GET_UTF8_STRING((REBSER*)val.series, val.index, (void**)&utf8);
+		if (len < 0 || !Gui_Widget_Add_Item(wid, utf8, (REBCNT)len)) continue;
+
+		page_hob = RL_MAKE_HANDLE_CONTEXT(Handle_GuiWidget);
+		if (!page_hob) break;
+		page = (GUIWIDGET*)page_hob->data;
+		CLEARS(page);
+		page->hob    = page_hob;
+		page->kind   = W_GUI_WIDGET_PANEL;
+		page->owner  = win;
+		page->parent = wid;
+		page->group  = ++pages;   // its tab, 1-based
+
+		if (!Gui_Create_Tab_Page(page, wid, win)) {
+			page->owner  = NULL;
+			page->parent = NULL;
+			RL_FREE_HANDLE_CONTEXT(page_hob);
+			break;
+		}
+		// Any non-zero size: a page's box is the backend's, never fitted.
+		Attach_Widget(page, win, 1, 1);
+	}
+
+	if (pages == 0) {
+		Gui_Destroy_Widget(wid);
+		Gui_Widget_Closed(wid);
+		RETURN_ERROR(ERR_NO_WIDGET);
+	}
+
+	Gui_Widget_Set_Index(wid, RXA_REF(frm, 5) ? (REBINT)RXA_INT32(frm, 6) - 1 : 0);
+
+	RETURN_HANDLE(hob);
+}
+
+
 //== handle callbacks =========================================================
 
 int GuiWindow_free(void *hndl)
@@ -3133,7 +3235,8 @@ int GuiWidget_get_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 	case W_GUI_ARG_TEXT: {
 		REBSER *str;
 		if (!Kind_Has_Text(wid->kind)) { *type = RXT_NONE; break; }
-		if (wid->kind == W_GUI_WIDGET_TEXT_LIST || wid->kind == W_GUI_WIDGET_DROP_LIST) {
+		if (wid->kind == W_GUI_WIDGET_TEXT_LIST || wid->kind == W_GUI_WIDGET_DROP_LIST
+		 || wid->kind == W_GUI_WIDGET_TAB_PANEL) {
 			// A list box, or a non-editable drop-down, has no text of its
 			// own - the picked item is it, and nothing picked reads as
 			// none, not as an empty string.
@@ -3363,22 +3466,18 @@ int GuiWidget_get_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 		*type = RXT_PAIR;
 		break;
 
-	// Where it sits in its WINDOW rather than in its container: the offsets
-	// up the chain of containers, added. Mouse events report window client
-	// coordinates, so `evt/offset - canvas/at` is where on the canvas.
-	case W_GUI_ARG_AT: {
-		REBINT ax = 0, ay = 0;
-		GUIWIDGET *at;
-		for (at = wid; at; at = (GUIWIDGET*)at->parent) {
-			if (!Gui_Widget_Get_Box(at, &x, &y, &w, &h)) break;
-			ax += x;
-			ay += y;
-		}
-		if (at) { *type = RXT_NONE; break; }  // something up the chain is gone
-		arg->pair.x = (float)ax;
-		arg->pair.y = (float)ay;
+	// Where it sits in its WINDOW rather than in its container. Mouse
+	// events report window client coordinates, so `evt/offset - canvas/at`
+	// is where on the canvas. Asked of the backend: a sum of `offset`s up
+	// the chain is only right where every container places its children
+	// itself - an NSTabView puts a page inside views of its own. See
+	// Gui_Widget_Get_At().
+	case W_GUI_ARG_AT:
+		if (!Gui_Widget_Get_At(wid, &x, &y)) { *type = RXT_NONE; break; }
+		arg->pair.x = (float)x;
+		arg->pair.y = (float)y;
 		*type = RXT_PAIR;
-		break; }
+		break;
 
 	case W_GUI_ARG_ID:
 		*type = RXT_INTEGER;
@@ -3469,6 +3568,9 @@ int GuiWidget_set_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 	switch (word) {
 	case W_GUI_ARG_ITEMS:
 		if (!Kind_Has_Items(wid->kind)) return PE_BAD_SET;
+		// A tab-panel's labels come with pages, which scripts hold on to;
+		// replacing them is not supported (yet).
+		if (wid->kind == W_GUI_WIDGET_TAB_PANEL) return PE_BAD_SET;
 		if (*type != RXT_BLOCK) return PE_BAD_SET_TYPE;
 		Block_To_Items(wid, (REBSER*)arg->series);
 		break;
@@ -3488,7 +3590,8 @@ int GuiWidget_set_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 		// `index` chooses it. A drop-down is the one list-like kind
 		// whose text CAN be set - it is the typed value, not a pick.
 		if (wid->kind == W_GUI_WIDGET_DROP_LIST
-		 || wid->kind == W_GUI_WIDGET_TEXT_LIST) return PE_BAD_SET;
+		 || wid->kind == W_GUI_WIDGET_TEXT_LIST
+		 || wid->kind == W_GUI_WIDGET_TAB_PANEL) return PE_BAD_SET;
 		if (*type != RXT_STRING) return PE_BAD_SET_TYPE;
 		len = RL_GET_UTF8_STRING((REBSER*)arg->series, arg->index, (void**)&utf8);
 		if (len < 0) return PE_BAD_SET;

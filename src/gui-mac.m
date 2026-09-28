@@ -87,6 +87,7 @@
 #define RebolGuiList      GUI_CLASS(List)
 #define RebolGuiDatePicker GUI_CLASS(DatePicker)
 #define RebolGuiPanel     GUI_CLASS(Panel)
+#define RebolGuiTabView   GUI_CLASS(TabView)
 #define RebolGuiWindow    GUI_CLASS(Window)
 #define NSWINDOW_OF(win) ((NSWindow*)((win)->handle))
 #define NSPANEL_OF(wid)  ((RebolGuiPanel*)((wid)->handle))
@@ -402,6 +403,11 @@ static GUIWIDGET *Widget_Under_Point(GUIWIN *win, NSView *root, NSPoint inRoot)
 		for (wid = (GUIWIDGET*)win->widgets; wid; wid = (GUIWIDGET*)wid->next) {
 			NSView *view = (NSView*)wid->handle;
 			if ((GUIWIDGET*)wid->parent != found || !view || [view isHidden]) continue;
+			// Not on screen at all: a page of a tab-panel whose tab is not
+			// the one shown is taken out of the window, not hidden - and a
+			// view outside the window converts points by its own frame
+			// alone, so it would "contain" points it is nowhere near.
+			if ([view window] != [root window]) continue;
 			// A line likewise: a Win32 static, see-through to the mouse.
 			if (wid->kind == W_GUI_WIDGET_TEXT || wid->kind == W_GUI_WIDGET_LINE) continue;
 			if ([view isKindOfClass:[NSControl class]] && ![(NSControl*)view isEnabled]) continue;
@@ -797,6 +803,42 @@ TEXT_FIELD_BODY
 		[caption drawAtPoint:NSMakePoint((CGFloat)PANEL_CAPTION_X, 0.0)
 		      withAttributes:attrs];
 	}
+}
+
+@end
+
+
+/***********************************************************************
+**  A tab-panel: NSTabView, which is its own delegate.
+**
+**  Each tab's view is one of our flipped panels - the page widget - so
+**  NSTabView does the placing and the showing, and a page lays out its
+**  children from the top-left like any panel. `quiet` keeps a selection
+**  made by the script (or by adding the first tab) from being reported
+**  as the user's.
+***********************************************************************/
+@interface RebolGuiTabView : NSTabView <NSTabViewDelegate>
+{
+	GUIWIDGET *context;
+	BOOL       quiet;
+}
+- (void)setContext:(GUIWIDGET*)ctx;
+- (void)setQuiet:(BOOL)on;
+@end
+
+@implementation RebolGuiTabView
+
+- (void)setContext:(GUIWIDGET*)ctx { context = ctx; }
+- (void)setQuiet:(BOOL)on { quiet = on; }
+
+- (void)tabView:(NSTabView*)view didSelectTabViewItem:(NSTabViewItem*)item
+{
+	NSRect frame;
+	if (quiet || !context || !context->hob) return;
+	frame = [self frame];
+	Gui_Queue_Event(context->hob, EVT_CHANGE,
+	                (REBINT)frame.origin.x, (REBINT)frame.origin.y,
+	                Modifier_Bits([NSEvent modifierFlags]));
 }
 
 @end
@@ -1311,6 +1353,7 @@ static GUIWIDGET *Widget_At_Point(GUIWIN *win, NSView *root, NSPoint inRoot)
 	for (wid = (GUIWIDGET*)win->widgets; wid; wid = (GUIWIDGET*)wid->next) {
 		NSView *view = (NSView*)wid->handle;
 		if (wid->parent || !view || [view isHidden]) continue;
+		if ([view window] != [root window]) continue;   // see Widget_Under_Point
 		if (NSPointInRect([view convertPoint:inRoot fromView:root],
 		                  [view bounds])) return wid;
 	}
@@ -3547,6 +3590,39 @@ REBOOL Gui_Widget_Get_Box(GUIWIDGET *wid, REBINT *x, REBINT *y, REBINT *w, REBIN
 }
 
 
+/***********************************************************************
+**  `widget/at`, asked of AppKit rather than added up.
+**
+**  A sum of frames is only right where every container places its
+**  children directly - and an NSTabView does not: a page is put inside
+**  views of the tab view's own, so its frame is measured from one of
+**  those, and the sum came out wherever that happened to be. Moves the
+**  content view reported over a page then looked like moves outside it.
+**
+**  So the widget's top-left corner is converted into the content view,
+**  which is flipped - the window's client coordinates. The corner is
+**  (0,0) in a flipped view and (0,height) in one which is not.
+***********************************************************************/
+REBOOL Gui_Widget_Get_At(GUIWIDGET *wid, REBINT *x, REBINT *y)
+{
+	@autoreleasepool {
+		NSView *view, *content;
+		NSPoint corner;
+
+		if (!wid || !wid->handle || !wid->owner || !wid->owner->handle) return FALSE;
+		view    = NSVIEW_OF(wid);
+		content = [NSWINDOW_OF(wid->owner) contentView];
+		if (!content || [view window] != [content window]) return FALSE;
+
+		corner = NSMakePoint(0, [view isFlipped] ? 0 : [view bounds].size.height);
+		corner = [view convertPoint:corner toView:content];
+		*x = (REBINT)floor(corner.x + 0.5);
+		*y = (REBINT)floor(corner.y + 0.5);
+		return TRUE;
+	}
+}
+
+
 REBOOL Gui_Widget_Set_Box(GUIWIDGET *wid, REBINT x, REBINT y, REBINT w, REBINT h)
 {
 	@autoreleasepool {
@@ -3798,6 +3874,61 @@ void Gui_Widget_Set_Date(GUIWIDGET *wid, const GUIDATE *in)
 }
 
 
+//-- tab-panel ----------------------------------------------------------------
+
+#define NSTABS_OF(wid) ((RebolGuiTabView*)((wid)->handle))
+
+REBOOL Gui_Create_Tab_Panel(GUIWIDGET *wid, GUIWIN *owner,
+                            REBINT x, REBINT y, REBINT w, REBINT h)
+{
+	@autoreleasepool {
+		RebolGuiTabView *tabs;
+		NSView *content;
+
+		if (!wid || !owner || !owner->handle) return FALSE;
+		if (![NSThread isMainThread]) return FALSE;
+
+		content = Parent_View(wid, owner);
+		if (!content) return FALSE;
+
+		tabs = [[RebolGuiTabView alloc] initWithFrame:
+			NSMakeRect((CGFloat)x, (CGFloat)y, (CGFloat)w, (CGFloat)h)];
+		if (!tabs) return FALSE;
+		[tabs setContext:wid];
+		[tabs setDelegate:tabs];
+
+		[content addSubview:tabs];
+		wid->handle = (void*)tabs;
+		return TRUE;
+	}
+}
+
+// The page is the tab's view; NSTabView sizes it to its content area and
+// shows it with its tab. The item retains it as well as this file does.
+REBOOL Gui_Create_Tab_Page(GUIWIDGET *page, GUIWIDGET *tabs, GUIWIN *owner)
+{
+	@autoreleasepool {
+		RebolGuiTabView *view;
+		RebolGuiPanel   *panel;
+		NSInteger        n;
+
+		if (!page || !tabs || !tabs->handle) return FALSE;
+		view = NSTABS_OF(tabs);
+		n = (NSInteger)page->group - 1;
+		if (n < 0 || n >= [view numberOfTabViewItems]) return FALSE;
+
+		panel = [[RebolGuiPanel alloc] initWithFrame:[view contentRect]];
+		if (!panel) return FALSE;
+		[panel setContext:page];
+		[[view tabViewItemAtIndex:n] setView:panel];
+
+		page->handle = (void*)panel;
+		Display_Pending = TRUE;
+		return TRUE;
+	}
+}
+
+
 //-- line ---------------------------------------------------------------------
 
 /***********************************************************************
@@ -3891,6 +4022,8 @@ REBCNT Gui_Widget_Count_Items(GUIWIDGET *wid)
 {
 	@autoreleasepool {
 		if (!wid || !wid->handle) return 0;
+		if (wid->kind == W_GUI_WIDGET_TAB_PANEL)
+			return (REBCNT)[NSTABS_OF(wid) numberOfTabViewItems];
 		if (wid->kind == W_GUI_WIDGET_TEXT_LIST)
 			return (REBCNT)[[List_View_Of(wid) items] count];
 		if (wid->kind == W_GUI_WIDGET_DROP_DOWN)
@@ -3904,6 +4037,10 @@ REBSER* Gui_Widget_Get_Item(GUIWIDGET *wid, REBCNT n)
 {
 	@autoreleasepool {
 		if (!wid || !wid->handle) return NULL;
+		if (wid->kind == W_GUI_WIDGET_TAB_PANEL) {
+			if ((NSInteger)n >= [NSTABS_OF(wid) numberOfTabViewItems]) return NULL;
+			return From_NSString([[NSTABS_OF(wid) tabViewItemAtIndex:(NSInteger)n] label]);
+		}
 		if (wid->kind == W_GUI_WIDGET_TEXT_LIST) {
 			NSMutableArray *items = [List_View_Of(wid) items];
 			if (n >= (REBCNT)[items count]) return NULL;
@@ -3931,6 +4068,17 @@ REBOOL Gui_Widget_Add_Item(GUIWIDGET *wid, const REBYTE *utf8, REBCNT len)
 		if (!wid || !wid->handle) return FALSE;
 		title = To_NSString(utf8, len);
 		if (!title) title = @"";
+
+		if (wid->kind == W_GUI_WIDGET_TAB_PANEL) {
+			RebolGuiTabView *tabs = NSTABS_OF(wid);
+			NSTabViewItem   *item = [[[NSTabViewItem alloc] initWithIdentifier:nil] autorelease];
+			[item setLabel:title];
+			// Adding the first tab selects it - not the user's doing.
+			[tabs setQuiet:YES];
+			[tabs addTabViewItem:item];
+			[tabs setQuiet:NO];
+			return TRUE;
+		}
 
 		if (wid->kind == W_GUI_WIDGET_TEXT_LIST) {
 			RebolGuiList *list = List_View_Of(wid);
@@ -3960,6 +4108,14 @@ void Gui_Widget_Clear_Items(GUIWIDGET *wid)
 {
 	@autoreleasepool {
 		if (!wid || !wid->handle) return;
+		if (wid->kind == W_GUI_WIDGET_TAB_PANEL) {
+			RebolGuiTabView *tabs = NSTABS_OF(wid);
+			[tabs setQuiet:YES];
+			while ([tabs numberOfTabViewItems] > 0)
+				[tabs removeTabViewItem:[tabs tabViewItemAtIndex:0]];
+			[tabs setQuiet:NO];
+			return;
+		}
 		if (wid->kind == W_GUI_WIDGET_TEXT_LIST) {
 			RebolGuiList *list = List_View_Of(wid);
 			[list setQuiet:YES];
@@ -3982,6 +4138,10 @@ REBINT Gui_Widget_Get_Index(GUIWIDGET *wid)
 {
 	@autoreleasepool {
 		if (!wid || !wid->handle) return -1;
+		if (wid->kind == W_GUI_WIDGET_TAB_PANEL) {
+			NSTabViewItem *item = [NSTABS_OF(wid) selectedTabViewItem];
+			return item ? (REBINT)[NSTABS_OF(wid) indexOfTabViewItem:item] : -1;
+		}
 		if (wid->kind == W_GUI_WIDGET_TEXT_LIST)
 			return (REBINT)[List_View_Of(wid) selectedRow]; // -1 for none
 		if (wid->kind == W_GUI_WIDGET_DROP_DOWN)
@@ -3997,6 +4157,16 @@ void Gui_Widget_Set_Index(GUIWIDGET *wid, REBINT n)
 		RebolGuiPopUp *popup;
 
 		if (!wid || !wid->handle) return;
+		if (wid->kind == W_GUI_WIDGET_TAB_PANEL) {
+			RebolGuiTabView *tabs = NSTABS_OF(wid);
+			// Always one page: out of range changes nothing.
+			if (n < 0 || n >= [tabs numberOfTabViewItems]) return;
+			[tabs setQuiet:YES];
+			[tabs selectTabViewItemAtIndex:(NSInteger)n];
+			[tabs setQuiet:NO];
+			Display_Pending = TRUE;
+			return;
+		}
 		if (wid->kind == W_GUI_WIDGET_TEXT_LIST) {
 			RebolGuiList *list = List_View_Of(wid);
 			// Quiet, so a pick made by the script is not reported back as
