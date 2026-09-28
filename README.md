@@ -888,10 +888,10 @@ Hides the window without destroying it
 Dispatches pending OS messages and returns the collected events
 
 #### `add-button` `:parent` `:text` `:offset` `:size`
-Creates a native push button inside a window and returns its handle
-* `parent` `[handle!]` Window or panel to put it in
+Creates a native push button and returns its handle
+* `parent` `[handle!]` Window, panel or image widget to put it in
 * `text` `[string!]` Label
-* `offset` `[pair!]` Position inside the client area
+* `offset` `[pair!]` Position inside the parent
 * `size` `[pair!]` Size of the button
 
 #### `remove-widget` `:widget`
@@ -899,10 +899,10 @@ Destroys a widget
 * `widget` `[handle!]`
 
 #### `add-image` `:parent` `:image` `:offset`
-Creates an image widget inside a window and returns its handle
-* `parent` `[handle!]` Window or panel to put it in
+Creates an image widget and returns its handle
+* `parent` `[handle!]` Window, panel or image widget to put it in
 * `image` `[image!]` Shown as is; the widget keeps a reference, not a copy
-* `offset` `[pair!]` Position inside the client area
+* `offset` `[pair!]` Position inside the parent
 * `/size`
 * `sz` `[pair!]` Scales the image to this size (default: the image's own)
 
@@ -911,74 +911,74 @@ Repaints a window or a widget - use after drawing into a displayed image
 * `target` `[handle!]`
 
 #### `add-text` `:parent` `:text` `:offset` `:size`
-Creates a static label inside a window and returns its handle
-* `parent` `[handle!]` Window or panel to put it in
+Creates a static label and returns its handle
+* `parent` `[handle!]` Window, panel or image widget to put it in
 * `text` `[string!]`
-* `offset` `[pair!]` Position inside the client area
+* `offset` `[pair!]` Position inside the parent
 * `size` `[pair!]`
 
 #### `add-field` `:parent` `:text` `:offset` `:size`
-Creates a one-line text entry inside a window and returns its handle
-* `parent` `[handle!]` Window or panel to put it in
+Creates a one-line text entry and returns its handle
+* `parent` `[handle!]` Window, panel or image widget to put it in
 * `text` `[string!]` Initial contents
-* `offset` `[pair!]` Position inside the client area
+* `offset` `[pair!]` Position inside the parent
 * `size` `[pair!]`
 * `/flat` Without the border - a plain box of text
 * `/secure` Masks what is typed, for a password; copying out of it is refused
 
 #### `add-area` `:parent` `:text` `:offset` `:size`
-Creates a multi-line text entry inside a window and returns its handle
-* `parent` `[handle!]` Window or panel to put it in
+Creates a multi-line text entry and returns its handle
+* `parent` `[handle!]` Window, panel or image widget to put it in
 * `text` `[string!]` Initial contents
-* `offset` `[pair!]` Position inside the client area
+* `offset` `[pair!]` Position inside the parent
 * `size` `[pair!]`
 * `/flat` Without the border - a plain box of text
 
 #### `add-check` `:parent` `:text` `:offset` `:size`
-Creates a checkbox inside a window and returns its handle
-* `parent` `[handle!]` Window or panel to put it in
+Creates a checkbox and returns its handle
+* `parent` `[handle!]` Window, panel or image widget to put it in
 * `text` `[string!]` Label
-* `offset` `[pair!]` Position inside the client area
+* `offset` `[pair!]` Position inside the parent
 * `size` `[pair!]`
 
 #### `add-radio` `:parent` `:text` `:offset` `:size`
-Creates a radio button inside a window and returns its handle
-* `parent` `[handle!]` Window or panel to put it in
+Creates a radio button and returns its handle
+* `parent` `[handle!]` Window, panel or image widget to put it in
 * `text` `[string!]` Label
-* `offset` `[pair!]` Position inside the client area
+* `offset` `[pair!]` Position inside the parent
 * `size` `[pair!]`
 * `/group`
 * `id` `[integer!]` Radios sharing an id turn each other off (default: 0)
 
 #### `add-slider` `:parent` `:offset` `:size`
-Creates a slider inside a window and returns its handle
-* `parent` `[handle!]` Window or panel to put it in
-* `offset` `[pair!]` Position inside the client area
+Creates a slider and returns its handle
+* `parent` `[handle!]` Window, panel or image widget to put it in
+* `offset` `[pair!]` Position inside the parent
 * `size` `[pair!]` Taller than wide makes it vertical
 * `/value`
 * `val` `[percent! decimal!]` Initial position (default: 0%)
 
 #### `add-progress` `:parent` `:offset` `:size`
-Creates a progress bar inside a window and returns its handle
-* `parent` `[handle!]` Window or panel to put it in
-* `offset` `[pair!]` Position inside the client area
+Creates a progress bar and returns its handle
+* `parent` `[handle!]` Window, panel or image widget to put it in
+* `offset` `[pair!]` Position inside the parent
 * `size` `[pair!]`
 * `/value`
 * `val` `[percent! decimal!]` Initial position (default: 0%)
 
 #### `add-drop-list` `:parent` `:items` `:offset` `:size`
-Creates a drop-down list inside a window and returns its handle
-* `parent` `[handle!]` Window or panel to put it in
+Creates a drop-list - pick one of a list behind a button - and returns its handle
+* `parent` `[handle!]` Window, panel or image widget to put it in
 * `items` `[block!]` Strings to offer
-* `offset` `[pair!]` Position inside the client area
+* `offset` `[pair!]` Position inside the parent
 * `size` `[pair!]` Of the closed control; room for the list is added
 * `/index`
 * `n` `[integer!]` Item picked to start with, 1-based (default: none)
 
 #### `add-panel` `:parent` `:offset` `:size`
 Creates a panel - a widget which holds other widgets - and returns its handle
-* `parent` `[handle!]` Window or panel to put it in
-* `offset` `[pair!]` Position inside the client area
+* `parent` `[handle!]` Window, panel or image widget to put it in
+* `offset` `[pair!]` Position inside the parent
 * `size` `[pair!]`
 * `/border` Draws a frame around it
 * `/title`
@@ -1026,14 +1026,14 @@ Reports `move` over the screens outside this program's windows, with the screen 
 Creates a toggle - a push button which stays pushed - and returns its handle
 * `parent` `[handle!]` Window, panel or image widget to put it in
 * `text` `[string!]` Label
-* `offset` `[pair!]` Position inside the client area
+* `offset` `[pair!]` Position inside the parent
 * `size` `[pair!]`
 
 #### `add-text-list` `:parent` `:items` `:offset` `:size`
 Creates a list of strings in a fixed box, which scrolls when they do not fit, and returns its handle
-* `parent` `[handle!]` Window or panel to put it in
+* `parent` `[handle!]` Window, panel or image widget to put it in
 * `items` `[block!]` Strings to show
-* `offset` `[pair!]` Position inside the client area
+* `offset` `[pair!]` Position inside the parent
 * `size` `[pair!]`
 * `/index`
 * `n` `[integer!]` Item picked to start with, 1-based (default: none)
@@ -1041,18 +1041,18 @@ Creates a list of strings in a fixed box, which scrolls when they do not fit, an
 
 #### `add-date-field` `:parent` `:offset` `:size`
 Creates an entry for a date, and optionally a time of day, and returns its handle
-* `parent` `[handle!]` Window or panel to put it in
-* `offset` `[pair!]` Position inside the client area
+* `parent` `[handle!]` Window, panel or image widget to put it in
+* `offset` `[pair!]` Position inside the parent
 * `size` `[pair!]`
 * `/date`
 * `when` `[date!]` Date (and time) to start with (default: now)
 * `/time` Shows and edits the time of day as well
 
 #### `add-drop-down` `:parent` `:items` `:offset` `:size`
-Creates an editable combo box - a drop-down list which also takes typed text - inside a window and returns its handle
-* `parent` `[handle!]` Window or panel to put it in
+Creates an editable combo box - a drop-down list which also takes typed text - and returns its handle
+* `parent` `[handle!]` Window, panel or image widget to put it in
 * `items` `[block!]` Strings to offer
-* `offset` `[pair!]` Position inside the client area
+* `offset` `[pair!]` Position inside the parent
 * `size` `[pair!]` Of the closed control; room for the list is added
 * `/index`
 * `n` `[integer!]` Item picked to start with, 1-based (default: none)
@@ -1065,7 +1065,7 @@ Creates an editable combo box - a drop-down list which also takes typed text - i
 ```rebol
 ;Refinement       Gets                Sets                          Description
 /title            string!             string!                       "Text shown in the title bar"
-/size             pair!               pair!                         "Size of the client area in pixels"
+/size             pair!               pair!                         "Size of the client area, in logical units (see `scale`)"
 /offset           pair!               pair!                         "Position of the top-left corner on the screen"
 /at               pair!               none                          "Always 0x0 - a window's client area is where mouse offsets are measured from; here so that `evt/offset - evt/source/at` works for any source"
 /id               integer!            none                          "Native window handle as an integer"
@@ -1114,7 +1114,7 @@ Creates an editable combo box - a drop-down list which also takes typed text - i
 /at               pair!               none                          "Top-left corner in its window's client area, however deeply nested - what a mouse event's offset is measured from"
 /id               integer!            none                          "Native control handle as an integer"
 /kind             word!               none                          "What the control is: button, image, text, field, area, check, radio, toggle, slider, progress, drop-list, drop-down, text-list, date-field or panel"
-/value            percent!            [percent! decimal!]           "Position of a slider or a progress bar; the date of a date-field, with its time of day when made with `/time`; none for other kinds"
+/value            [percent! date!]    [percent! decimal! date!]     "Position of a slider or a progress bar; the date of a date-field, with its time of day when made with `/time`; none for other kinds"
 /state            logic!              logic!                        "Whether a check, a radio or a toggle is on; none for other kinds"
 /border?          logic!              logic!                        "Whether a panel draws a frame around itself, or a field, an area or a text-list its border; none for other kinds"
 /font             string!             [string! none!]               "Font family; none puts it back to the system font"
