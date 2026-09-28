@@ -11,7 +11,7 @@ REBOL [
 		add-button add-image add-text add-field add-area
 		add-check add-radio add-slider add-progress add-drop-down add-drop-list add-panel
 		remove-widget redraw set-focus screens track-mouse add-toggle
-		add-text-list add-date-field add-line add-tab-panel within?
+		add-text-list add-date-field add-line add-tab-panel within? popup-menu
 		gui-device gui-device-polls gui-device-events
 		gui-device-pumps gui-device-messages
 		poll-events do-events
@@ -623,6 +623,13 @@ commands: [
 		point  [pair!] "Say an event's `offset`"
 		offset [pair!] "Top-left corner of the box, say a widget's `at`"
 		size   [pair!] "Size of the box; the right and bottom edges are outside it"
+	]
+
+	popup-menu: [
+		"Shows a context menu and returns the word of the item picked, or none"
+		target [handle!] "The window, or a widget in it"
+		items  [block!]  "The same dialect as a window's `menu`"
+		/at offset [pair!] "Where it opens, in the window's client coordinates (default: at the pointer)"
 	]
 ]
 

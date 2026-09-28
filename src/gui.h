@@ -407,6 +407,22 @@ void    Gui_Menu_Free(GUIWIN *win);
 // this only applies it.
 void    Gui_Menu_Enable(GUIWIN *win, REBCNT item_id, REBOOL enabled);
 
+/***********************************************************************
+**  Context menus.
+**
+**  Built with the same Gui_Menu_Add_* calls as the bar, under the root
+**  that Gui_Popup_Begin returns - the shared layer always passes a
+**  parent, so nothing lands on the bar. Shortcuts are only labels here.
+**
+**  Gui_Popup_Track shows it and does not return until it is closed:
+**  the item id picked, or 0. It reports NO event and must not queue a
+**  `menu-select` - the answer is the return value. `at` FALSE opens it
+**  at the pointer; TRUE at x, y in the window's client coordinates.
+***********************************************************************/
+void*   Gui_Popup_Begin(GUIWIN *win);
+REBCNT  Gui_Popup_Track(GUIWIN *win, void *root, REBOOL at, REBINT x, REBINT y);
+void    Gui_Popup_Free(GUIWIN *win, void *root);
+
 // Called BY a backend when an item is picked - it queues the `menu` event
 // with the item's word, which is the shared layer's business.
 void    Gui_Menu_Picked(GUIWIN *win, REBCNT id);

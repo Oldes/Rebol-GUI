@@ -30,6 +30,7 @@ print ["within? top-left edge: " within? 10x10 10x10 20x20]
 print ["within? right edge out:" not within? 30x15 10x10 20x20]
 print ["within? bottom edge out:" not within? 15x30 10x10 20x20]
 print ["within? empty box:     " not within? 10x10 10x10 0x0]
+print ["popup-menu needs a window or widget:" error? try [popup-menu 42 []]]
 ? gui
 
 ;; An area's text is plain LF on every platform: on Windows the extension
@@ -981,6 +982,7 @@ On macOS: Cmd+X, Cmd+C, Cmd+V, Cmd+A and Cmd+Z / Shift+Cmd+Z work in the
 fields and in the areas - copying out of the read-only log too.
 ENTER in the field reports a click; ESCAPE is deliberately ignored.
 "Click me" counts clicks and repaints the image.
+Right-click the image for its context menu.
 The checkbox enables and disables it; the radios come in two groups.
 Dragging the slider drives the progress bar below it.
 Picking from the drop-list shows up in the label; the drop-down lets you
@@ -1141,7 +1143,24 @@ report: func [event /local type source position kind][
 		]
 	]
 
-	;; Key downs only - the ups would double the log.
+	;; WATCH: a right click on the picture opens a context menu; what is picked
+;; is logged, and dismissing it logs `none`. The window keeps reporting while
+;; the menu is up - its events arrive at the next poll.
+if all [type = 'alt-down  source == canvas] [
+	picked: popup-menu canvas [
+		"Repaint"     repaint  #"P"
+		"Clear log"   clear-log
+		---
+		"More" ["Say hello" hello  "Say goodbye" goodbye]
+	]
+	note ajoin ["context menu: " mold picked]
+	switch picked [
+		repaint   [paint pic random 400  redraw canvas]
+		clear-log [logged: copy ""  log/text: ""]
+	]
+]
+
+;; Key downs only - the ups would double the log.
 	if find [key named-key] type [
 		note ajoin [type ": " mold event/key
 			either event/flags [join " " mold event/flags][""]

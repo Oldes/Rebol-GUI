@@ -2742,6 +2742,59 @@ COMMAND cmd_gui_withinq(RXIFRM *frm, void *ctx)
 }
 
 
+/***********************************************************************
+**  popup-menu target items /at offset
+**
+**  The dialect is walked by Block_To_Menu, which numbers the items in
+**  the window's id table - the one the menu bar uses. So that table is
+**  set aside for the popup's own and put back afterwards: the bar keeps
+**  its ids, and the popup's are gone the moment it closes.
+**
+**  The native menu runs a loop of its own until it closes. Events that
+**  arrive meanwhile are queued as usual - the queue never allocates -
+**  and come out of the next `poll-events`.
+***********************************************************************/
+COMMAND cmd_gui_popup_menu(RXIFRM *frm, void *ctx)
+{
+	GUIWIN    *win = Frm_Window(frm, 1);
+	GUIWIDGET *wid;
+	void      *root, *bar;
+	REBCNT    *ids;
+	REBYTE    *on;
+	REBCNT     count, id, word = 0;
+	REBOOL     at = RXA_REF(frm, 3) ? TRUE : FALSE;
+	REBINT     x = 0, y = 0;
+
+	if (!win && (wid = Frm_Widget(frm, 1)) != NULL && wid->handle) win = wid->owner;
+	if (!win || !win->handle) RETURN_ERROR(ERR_INVALID_HANDLE);
+	if (at) {
+		x = (REBINT)RXA_PAIR(frm, 4).x;
+		y = (REBINT)RXA_PAIR(frm, 4).y;
+	}
+
+	root = Gui_Popup_Begin(win);
+	if (!root) RETURN_ERROR(ERR_NO_WIDGET);
+
+	// The bar's table aside ...
+	bar = win->menu; ids = win->menu_ids; on = win->menu_on; count = win->menu_count;
+	win->menu = root; win->menu_ids = NULL; win->menu_on = NULL; win->menu_count = 0;
+
+	Block_To_Menu(win, RXA_SERIES(frm, 2), RXA_INDEX(frm, 2), root);
+	id = Gui_Popup_Track(win, root, at, x, y);
+	if (id > 0 && id <= win->menu_count) word = win->menu_ids[id - 1];
+
+	// ... and back.
+	Menu_Free_Ids(win);
+	win->menu = bar; win->menu_ids = ids; win->menu_on = on; win->menu_count = count;
+	Gui_Popup_Free(win, root);
+
+	if (!word) return RXR_NONE;
+	RXA_WORD(frm, 1) = (i32)word;
+	RXA_TYPE(frm, 1) = RXT_WORD;
+	return RXR_VALUE;
+}
+
+
 //== handle callbacks =========================================================
 
 int GuiWindow_free(void *hndl)

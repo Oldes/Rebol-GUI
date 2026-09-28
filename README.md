@@ -19,7 +19,7 @@ in [INTERNALS.md](INTERNALS.md).
 
 - no DRAW dialect, no compositor - just the image widget
 - keyboard events only per window, with `keys?`, and observed rather than taken
-- no checkable menu items, and no popup (context) menus
+- no checkable menu items
 - seventeen native controls: button, image, text, field, area, check, radio,
   toggle, slider, progress, drop-list, drop-down, text-list, date-field, panel,
   line, tab-panel
@@ -807,6 +807,30 @@ Platform differences:
   first; its Quit reports a `close` event for the window rather than ending
   the process.
 
+### Context menus
+
+`popup-menu` shows a menu and returns the word of the item picked, or `none`
+when it is dismissed. The block is the menu bar's dialect:
+
+```rebol
+if all [evt/type = 'alt-down  evt/source == canvas] [
+    switch popup-menu canvas [
+        "Copy" copy  #"C"
+        ---
+        "More" ["Rotate" rotate  "Flip" flip]
+    ][
+        copy   [...]
+        rotate [...]
+    ]
+]
+```
+
+It opens at the pointer, or with `/at` at an offset in the window's client
+coordinates. The target is the window or any widget in it. It returns when
+the menu closes, and reports no event; anything else that happens meanwhile
+comes out of the next `poll-events`. Shortcuts are shown but do not work as
+keys in a context menu.
+
 ## Keyboard focus
 
 ```rebol
@@ -1121,6 +1145,13 @@ Returns TRUE if the point is inside the box given by its offset and size
 * `point` `[pair!]` Say an event's `offset`
 * `offset` `[pair!]` Top-left corner of the box, say a widget's `at`
 * `size` `[pair!]` Size of the box; the right and bottom edges are outside it
+
+#### `popup-menu` `:target` `:items`
+Shows a context menu and returns the word of the item picked, or none
+* `target` `[handle!]` The window, or a widget in it
+* `items` `[block!]` The same dialect as a window's `menu`
+* `/at`
+* `offset` `[pair!]` Where it opens, in the window's client coordinates (default: at the pointer)
 
 
 ## Used handles and its getters / setters

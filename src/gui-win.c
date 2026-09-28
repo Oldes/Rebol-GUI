@@ -3699,6 +3699,54 @@ void Gui_Menu_Free(GUIWIN *win)
 }
 
 
+/***********************************************************************
+**  Context menus - see gui.h.
+**
+**  TPM_RETURNCMD hands the pick back as the return value, and
+**  TPM_NONOTIFY keeps it from arriving as a WM_COMMAND too, where it
+**  would look like a pick from the menu bar. The foreground window and
+**  the WM_NULL afterwards are what the documentation asks for, or the
+**  menu does not close when the user clicks elsewhere.
+***********************************************************************/
+void* Gui_Popup_Begin(GUIWIN *win)
+{
+	if (!win || !win->handle) return NULL;
+	Accel_Count = 0;   // the items' shortcuts are labels only
+	return (void*)CreatePopupMenu();
+}
+
+REBCNT Gui_Popup_Track(GUIWIN *win, void *root, REBOOL at, REBINT x, REBINT y)
+{
+	HWND  hwnd;
+	POINT p;
+	UINT  cmd;
+
+	if (!win || !win->handle || !root) return 0;
+	hwnd = HWND_OF(win);
+	Accel_Count = 0;
+	if (at) {
+		int dpi = Dpi_Of(hwnd);
+		p.x = To_Device(dpi, x);
+		p.y = To_Device(dpi, y);
+		ClientToScreen(hwnd, &p);
+	} else if (!GetCursorPos(&p)) {
+		return 0;
+	}
+	SetForegroundWindow(hwnd);
+	cmd = (UINT)TrackPopupMenu((HMENU)root,
+		TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON | TPM_LEFTALIGN | TPM_TOPALIGN,
+		p.x, p.y, 0, hwnd, NULL);
+	PostMessageW(hwnd, WM_NULL, 0, 0);
+	return (REBCNT)cmd;
+}
+
+void Gui_Popup_Free(GUIWIN *win, void *root)
+{
+	(void)win;
+	if (root) DestroyMenu((HMENU)root);
+}
+
+
 void Gui_Menu_Enable(GUIWIN *win, REBCNT item_id, REBOOL enabled)
 {
 	if (!win || !win->menu) return;

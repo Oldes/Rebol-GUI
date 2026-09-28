@@ -113,6 +113,11 @@
 // one redraw per poll in which something actually changed.
 static REBOOL Display_Pending = FALSE;
 
+// While a context menu is up, a pick is its answer rather than a
+// `menu-select` - see Gui_Popup_Track().
+static REBOOL Popup_Tracking = FALSE;
+static REBCNT Popup_Pick     = 0;
+
 
 //== helpers ==================================================================
 
@@ -1611,6 +1616,10 @@ static GUIWIDGET *Widget_At_Point(GUIWIN *win, NSView *root, NSPoint inRoot)
 
 - (void)menuPicked:(id)sender
 {
+	if (Popup_Tracking) {
+		Popup_Pick = (REBCNT)[(NSMenuItem*)sender tag];
+		return;
+	}
 	if (context) Gui_Menu_Picked(context, (REBCNT)[(NSMenuItem*)sender tag]);
 }
 
@@ -2058,6 +2067,54 @@ static NSMenuItem* Item_With_Tag(NSMenu *menu, NSInteger tag)
 		}
 	}
 	return nil;
+}
+
+
+/***********************************************************************
+**  Context menus - see gui.h.
+**
+**  The items are the bar's kind, targeting the content view, so a pick
+**  goes through -menuPicked: - which, while Popup_Tracking is set,
+**  records it instead of queueing `menu-select`.
+**  popUpMenuPositioningItem: tracks until the menu closes, and the
+**  action is sent before it returns.
+***********************************************************************/
+void* Gui_Popup_Begin(GUIWIN *win)
+{
+	NSMenu *menu;
+	if (!win || !win->handle) return NULL;
+	menu = [[NSMenu alloc] initWithTitle:@""];
+	[menu setAutoenablesItems:NO];
+	return (void*)menu;
+}
+
+REBCNT Gui_Popup_Track(GUIWIN *win, void *root, REBOOL at, REBINT x, REBINT y)
+{
+	@autoreleasepool {
+		NSWindow *window;
+		NSView   *content;
+		NSPoint   p;
+
+		if (!win || !win->handle || !root) return 0;
+		window  = NSWINDOW_OF(win);
+		content = [window contentView];
+		// The content view is flipped: client coordinates as they are.
+		p = at ? NSMakePoint((CGFloat)x, (CGFloat)y)
+		       : [content convertPoint:[window mouseLocationOutsideOfEventStream] fromView:nil];
+
+		Popup_Pick = 0;
+		Popup_Tracking = TRUE;
+		[(NSMenu*)root popUpMenuPositioningItem:nil atLocation:p inView:content];
+		Popup_Tracking = FALSE;
+		Display_Pending = TRUE;
+		return Popup_Pick;
+	}
+}
+
+void Gui_Popup_Free(GUIWIN *win, void *root)
+{
+	(void)win;
+	if (root) [(NSMenu*)root release];
 }
 
 
