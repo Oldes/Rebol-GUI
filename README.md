@@ -822,7 +822,9 @@ box/border?: false
 ```
 
 The frame is drawn inside the panel's box and never moves its children, so
-leave room for it yourself.
+leave room for it yourself. A framed panel's `background` fills the inside of the
+frame only; the strip above its top line, where the caption sits, shows
+whatever holds the panel.
 
 A panel is not transparent to the mouse: clicks on its background are not
 reported to the window. Removing a panel removes everything in it.

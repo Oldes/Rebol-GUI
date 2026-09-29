@@ -509,7 +509,9 @@ static gboolean Box_Draw(GtkWidget *widget, cairo_t *cr)
 			Fill_Box(cr, b->win->background, w, h);
 		break;
 	case ROLE_PANEL:
-		if (b->wid && GUI_COLOR_HAS(b->wid->background))
+		// A framed panel fills inside its frame only - see Draw_Panel_Frame.
+		if (b->wid && GUI_COLOR_HAS(b->wid->background)
+		    && !(b->wid->state & GUI_PANEL_BORDER))
 			Fill_Box(cr, b->wid->background, w, h);
 		if (b->wid) Draw_Panel_Frame(widget, cr, b->wid);
 		break;
@@ -626,6 +628,14 @@ static void Draw_Panel_Frame(GtkWidget *widget, cairo_t *cr, GUIWIDGET *wid)
 		gap1 = PANEL_CAPTION_X - 2.0;
 		gap2 = gap1 + logical.width + 4.0;
 		if (gap2 > w - 1.0) gap2 = w - 1.0;
+	}
+
+	// The panel's own colour, inside the frame only: the strip above its
+	// top line, where the caption sits, shows whatever holds the panel.
+	if (GUI_COLOR_HAS(wid->background) && h - inset > 0) {
+		Set_Source_Color(cr, wid->background);
+		cairo_rectangle(cr, 0, inset, w, h - inset);
+		cairo_fill(cr);
 	}
 
 	if (w > 1 && h - inset > 1) {

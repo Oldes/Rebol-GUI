@@ -2356,7 +2356,13 @@ static void Paint_Panel(HWND hwnd, HDC dc)
 			if (have) bg = CreateSolidBrush(rgb);
 		}
 		fill = bg ? bg : Default_Window_Brush(wid ? wid->owner : NULL);
-		FillRect(dc, &rect, fill);
+		// A framed panel with a colour of its own fills only the inside of
+		// its frame, further down - the strip the caption sits in, above
+		// the frame's top line, is the parent's.
+		if (GUI_COLOR_HAS(wid ? wid->background : 0) && (wid->state & GUI_PANEL_BORDER))
+			Paint_Parent_Background(hwnd, dc);
+		else
+			FillRect(dc, &rect, fill);
 	}
 
 	if (!wid || !(wid->state & GUI_PANEL_BORDER)) {
@@ -2394,6 +2400,7 @@ static void Paint_Panel(HWND hwnd, HDC dc)
 	// panel's box, which is why no child ever has to move for it.
 	frame = rect;
 	frame.top += inset;
+	if (bg && GUI_COLOR_HAS(wid->background)) FillRect(dc, &frame, bg);
 	DrawEdge(dc, &frame, EDGE_ETCHED, BF_RECT);
 
 	if (caption) {
@@ -2410,7 +2417,18 @@ static void Paint_Panel(HWND hwnd, HDC dc)
 		// so the caption is drawn over an unbroken frame instead. The
 		// alternative would be re-fetching the parent for one strip,
 		// which is a lot of work to hide four pixels of etching.
-		if (fill) FillRect(dc, &gap, fill);
+		if (bg && GUI_COLOR_HAS(wid->background)) {
+			// Two colours meet under the caption: the parent's above the
+			// line, the panel's below it. The etched line is two pixels.
+			RECT below = gap;
+			int  saved = SaveDC(dc);
+			below.top = frame.top + 2;
+			IntersectClipRect(dc, gap.left, gap.top, gap.right, below.top);
+			Paint_Parent_Background(hwnd, dc);
+			RestoreDC(dc, saved);
+			if (below.bottom > below.top) FillRect(dc, &below, bg);
+		}
+		else if (fill) FillRect(dc, &gap, fill);
 
 		SetBkMode(dc, TRANSPARENT);
 		SetTextColor(dc, GUI_COLOR_HAS(wid->color)

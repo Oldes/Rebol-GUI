@@ -783,6 +783,15 @@ TEXT_FIELD_BODY
 @end
 
 
+// A widget colour as an NSColor, for the panel's fill.
+static NSColor *Panel_Color(REBCNT c)
+{
+	return [NSColor colorWithSRGBRed:GUI_COLOR_R(c) / 255.0
+	                           green:GUI_COLOR_G(c) / 255.0
+	                            blue:GUI_COLOR_B(c) / 255.0
+	                           alpha:1.0];
+}
+
 @implementation RebolGuiPanel
 
 // The only thing this class adds to a plain NSView, and the only reason it
@@ -827,7 +836,9 @@ TEXT_FIELD_BODY
 // is fine.
 
 /***********************************************************************
-**  It draws the frame, and NOTHING ELSE - no background whatsoever.
+**  It draws the frame, and no background of its own - only a colour the
+**  script set, which fills the inside of the frame (or the whole panel
+**  when it has none).
 **
 **  That is a rule, not an implementation detail. An earlier version of
 **  this class filled its bounds with windowBackgroundColor, and adding
@@ -850,7 +861,18 @@ TEXT_FIELD_BODY
 	NSBezierPath *path;
 	NSDictionary *attrs = nil;
 
-	if (!context || !(context->state & GUI_PANEL_BORDER)) return;
+	if (!context) return;
+
+	// The panel's own colour. Filled here, not through the layer, so that a
+	// framed panel can keep it inside the frame: the strip above the top
+	// line, where the caption sits, shows whatever holds the panel. Only a
+	// colour the script set is filled - see the note above.
+	if (GUI_COLOR_HAS(context->background) && !(context->state & GUI_PANEL_BORDER)) {
+		[Panel_Color(context->background) setFill];
+		NSRectFill(bounds);
+	}
+
+	if (!(context->state & GUI_PANEL_BORDER)) return;
 
 	if (caption && [caption length] > 0) {
 		// -font answers the small system font when none was set, so the
@@ -877,6 +899,11 @@ TEXT_FIELD_BODY
 	                   bounds.size.width - 1.0,
 	                   bounds.size.height - inset - 1.0);
 	if (frame.size.width <= 0.0 || frame.size.height <= 0.0) return;
+
+	if (GUI_COLOR_HAS(context->background)) {
+		[Panel_Color(context->background) setFill];
+		NSRectFill(NSMakeRect(0.0, inset, bounds.size.width, bounds.size.height - inset));
+	}
 
 	// tertiaryLabelColor rather than a fixed grey: it follows the system
 	// appearance, so the frame is right in dark mode without asking.
@@ -3656,7 +3683,11 @@ void Gui_Widget_Set_Background(GUIWIDGET *wid)
 			// filling in -drawRect: has hidden widgets in this file
 			// before.
 			NSView *view = NSVIEW_OF(wid);
-			if (color) {
+			// A panel fills itself in -drawRect:, inside its frame when it
+			// has one - see RebolGuiPanel.
+			if (wid->kind == W_GUI_WIDGET_PANEL) {
+				if ([view layer]) [[view layer] setBackgroundColor:NULL];
+			} else if (color) {
 				[view setWantsLayer:YES];
 				[[view layer] setBackgroundColor:[color CGColor]];
 			} else if ([view layer]) {

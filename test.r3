@@ -347,6 +347,8 @@ box: add-panel/title win 20x285 260x60 "Temperature"
 ;; control fills with the WINDOW's colour by default, not its parent's.
 ;; WATCH: the two radios below must sit on the panel's colour, with no pale
 ;; rectangle around either of them.
+;; WATCH: the colour fills only the inside of the frame - the strip above
+;; its top line, where the caption "Temperature" sits, is the window's.
 ;; A colour a script sets is the script's to change - see `dark-controls?`
 ;; below, which leaves it alone - so it is picked from the appearance here,
 ;; and again on every `theme-change`.
