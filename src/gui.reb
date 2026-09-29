@@ -22,10 +22,11 @@ REBOL [
 
 		It opens native windows and puts native controls in them - eighteen
 		kinds, from a button to a list-view - with menus, drag and drop,
-		tooltips and screen information, on Windows and macOS. There is no
-		compositor, no DRAW dialect and no dependency on the host's View
-		sources: custom drawing is rendered into an image! by whatever draws
-		pixels (Blend2D is the intended one) and shown by an image widget.
+		tooltips and screen information, on Windows, macOS and Linux. There
+		is no compositor, no DRAW dialect and no dependency on the host's
+		View sources: custom drawing is rendered into an image! by whatever
+		draws pixels (Blend2D is the intended one) and shown by an image
+		widget.
 
 		GUI events are NOT posted to system/ports/event: the extension
 		keeps its own queue and `poll-events` drains it into a block of
@@ -394,7 +395,7 @@ handles: [
 		screen   handle!   none      "The screen most of the window is on"
 		dark?    logic!    none      "Whether the system shows it in the dark appearance; a `theme-change` event reports when this changes"
 		modal?   logic!    none      "Whether it was opened with `/modal` - while it is open, every other window is blocked"
-		dark-controls? logic! logic! "Whether its controls and default colours follow the dark appearance on Windows (macOS always does); off by default"
+		dark-controls? logic! logic! "Whether its controls and default colours follow the dark appearance on Windows (macOS and Linux always do); off by default"
 		keys?      logic!  logic!    "Whether every key pressed in it is reported as `key`/`key-up` (a char!) or `named-key`/`named-key-up` (a word); off by default"
 		resizable? logic!  logic!    "Whether the user can resize it"
 		title?     logic!  logic!    "Whether it has a title bar and a frame; without one the user cannot move or close it"
