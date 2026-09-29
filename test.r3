@@ -67,7 +67,6 @@ print ["resizable?" win/resizable? " title?" win/title?]
 ;; canvas's context menu or the menu bar swaps it for a coloured disc, and
 ;; back again.
 ico: make image! 32x32
-ico/rgb: red
 repeat y 32 [repeat x 32 [
 	d: (as-pair x y) - 16.5x16.5
 	ico/(as-pair x y): either 225 > ((d/x * d/x) + (d/y * d/y)) [230.120.30.255][0.0.0.0]
