@@ -904,6 +904,123 @@ print ["and so is the text:      " error? try [tabs/text: "x"]]
 print ["an empty block is refused:" error? try [add-tab-panel tabbed [] 0x0 10x10]]
 
 ;;=============================================================================
+print as-yellow "^/== List-view"
+;;=============================================================================
+
+;; A table: titles with optional widths, and the cells as one flat block, row
+;; by row. Any values - they are shown as FORM shows them, and only when they
+;; are about to be seen.
+;;
+;; WATCH: a "Table" window with three columns and five rows, the second one
+;; picked. Picking a row logs `change`; a double click or Enter logs `click`;
+;; clicking a header sorts by that column - again for descending - and shows
+;; the arrow. `none` in a row shows as an empty cell.
+files-data: [
+	"readme.txt"    1200  1-Jan-2026
+	"logo.png"     48213  2-Feb-2026
+	"build.r3"       640  3-Mar-2026
+	"notes"         none  4-Apr-2026
+	%data/file.bin 99999  5-May-2026/12:30
+]
+table: open-window/title/at 360x200 "Table" 1000x340
+files: add-list-view/with/index table ["Name" 140 "Size" 70 right "Date" none center] 10x10 340x180 files-data 2
+
+print ["list-view:" files/kind "columns:" mold files/columns]
+print [{  (expected ["Name" 140 "Size" 70 right "Date" none center] - the last fills)}]
+print ["rows: " (length? files/items) / 3 "the same block?" same? files/items files-data "(expected true)"]
+print ["picked:" files/index mold files/text {(expected 2 "logo.png")}]
+files/index: 5
+print ["a file! formed:" mold files/text {(expected "data/file.bin")}]
+files/index: 0
+print ["nothing picked:" files/index mold files/text "(expected 0 none)"]
+print ["half a row is refused:     " error? try [files/items: ["x" 1]]]
+print ["and so at creation:        " error? try [add-list-view/with table ["A" "B"] 0x0 10x10 [1 2 3]]]
+print ["no cells at all is fine:   " not error? try [remove-widget add-list-view table ["A" "B"] 0x0 10x10]]
+print ["a bad column spec:         " error? try [add-list-view table [10 "A"] 0x0 10x10]]
+;; `none` in a literal block is the word - accepted as "fit the title", like
+;; a reduced none! value.
+print ["word none as a width:      " not error? try [remove-widget add-list-view table ["A" none] 0x0 10x10]]
+print ["none! value as a width:    " not error? try [remove-widget add-list-view table reduce ["A" none] 0x0 10x10]]
+print ["another word is refused:   " error? try [add-list-view table ["A" auto] 0x0 10x10]]
+print ["text is read-only:         " error? try [files/text: "x"]]
+files/sort-column: -2
+print ["sort arrow:" files/sort-column "(expected -2)"]
+files/sort-column: none
+print ["no arrow:  " files/sort-column "(expected none)"]
+append files-data ["zzz.log" 1 6-Jun-2026]
+files/items: files-data
+print ["a row appended:" (length? files/items) / 3 "(expected 6)"]
+files/index: 6
+print ["scrolled to it, picked:" files/index]
+
+;; A number of columns set again keeps the cells when it is the same...
+files/columns: ["File" none "Bytes" 80 right "When" center 120]
+print ["renamed:" mold files/columns "rows kept:" (length? any [files/items []]) / 3]
+print [{  (expected ["File" <fits the title> "Bytes" 80 right "When" 120 center] - none on the last only fills)}]
+print ["read back and set again, same:" (mold files/columns) = (files/columns: files/columns  mold files/columns)]
+print ["two widths are refused:     " error? try [files/columns: ["A" 10 20]]]
+print ["two alignments are refused: " error? try [files/columns: ["A" left right]]]
+print ["an unknown word is refused: " error? try [files/columns: ["A" middle]]]
+;; WATCH (Windows): the Explorer look - the row under the pointer is
+;; highlighted, the picked row is a filled bar across all columns with no
+;; dotted focus rectangle in it.
+;; WATCH: Size right-aligned, Date centred, and the Date column reaching the
+;; right edge of the list; dragging the Size edge keeps it reaching it.
+files/columns: ["Name" 140 "Size" 70 right "Date" none center]
+
+;; Stripes are `background` with two colours - the rows alternate. One colour,
+;; or none, takes them off again. The first of the two may be none.
+files/background: [none 235.240.250]
+print ["stripes:" mold files/background "(expected [_ 235.240.250] - none molds as _)"]
+files/background: 250.250.250
+print ["one colour:" mold files/background "(expected 250.250.250)"]
+print ["three colours are refused:" error? try [files/background: [1.1.1 2.2.2 3.3.3]]]
+print ["reversed:" (files/background: [235.240.250 none]  mold files/background) "(expected [235.240.250 _])"]
+print ["none none is no stripes:" (files/background: [none none]  mold files/background) "(expected none)"]
+print ["one colour in a block is refused:" error? try [files/background: [1.1.1]]]
+print ["another word is refused: " error? try [files/background: [1.1.1 auto]]]
+print ["not on other kinds:       " error? try [counter/background: [1.1.1 2.2.2]]]
+;; WATCH (Windows, dark system theme): the table starts light, like the main
+;; window. "Dark controls" from the menu switches both: the table's rows go
+;; dark grey with light text, the header dark with light titles, the scroll
+;; bar dark - and back again.
+;; WATCH: the table's rows striped - light blue, or a lighter grey when dark;
+;; the picked row and the hover still show over the stripes.
+;; A stripe to suit the appearance, from the first row: the second colour
+;; none, so every other row keeps the platform's own - light or dark.
+stripes: func [dark [logic!]][either dark [[55.55.60 none]][[235.240.250 none]]]
+files/background: stripes did all [table/dark-controls? table/dark?]
+
+;; A width of 0 hides a column: its values stay in the rows - a row is as
+;; long as the whole spec - but nothing shows them. `text` is still the first
+;; value of the picked row, hidden or not, and `sort` reports positions in the
+;; row, hidden ones counted.
+hid: add-list-view/with table ["id" 0 "Name" 100 "path" 0] 0x0 10x10 [
+	101 "readme" %docs/readme.txt
+	102 "logo"   %img/logo.png
+]
+print ["hidden columns read back:" mold hid/columns]
+print [{  (expected ["id" 0 "Name" 100 "path" 0])}]
+print ["rows:" (length? hid/items) / 3 "(expected 2 - three values a row, two hidden)"]
+hid/index: 2
+print ["text is the hidden id:" mold hid/text {(expected "102")}]
+print ["half a row is still refused:" error? try [hid/items: [1 "x"]]]
+hid/columns: ["id" 0 "Name" none "path" 0]
+print ["fill skips hidden:" mold hid/columns]
+print [{  (expected ["id" 0 "Name" none "path" 0] - Name is the last SHOWN column)}]
+remove-widget hid
+
+;; No titles at all: no header row. The header comes back with a title.
+bare-lv: add-list-view/with table ["" 60 "" none] 0x0 10x10 [1 2]
+print ["untitled columns read back:" mold bare-lv/columns "(no header)"]
+remove-widget bare-lv
+;; ... and clears them when it is not.
+spare-lv: add-list-view/with table ["One" "Two"] 0x0 10x10 [1 2 3 4]
+spare-lv/columns: ["Only"]
+print ["columns changed, items:" mold spare-lv/items "(expected none)"]
+remove-widget spare-lv
+
+;;=============================================================================
 print as-yellow "^/== Menu bar"
 ;;=============================================================================
 
@@ -1008,7 +1125,7 @@ clicks: 0
 ;; handler reads what it needs by name instead of counting positions. `window`
 ;; is the window for window events and the WIDGET itself for a click, a change
 ;; or a focus change.
-report: func [event /local type source position kind][
+report: func [event /local type source position kind col dir][
 	type:     event/type
 	source:   event/source
 	position: event/offset
@@ -1182,6 +1299,9 @@ if all [type = 'alt-down  source == canvas] [
 				;; A new date or time, picked by the user.
 				note ajoin ["date-field: " source/value]
 			]
+			source == files [
+				note ajoin ["list-view row: " source/index " " mold source/text]
+			]
 			source == trees [
 				;; ... and so does picking from the text-list.
 				label/text: ajoin ["Tree: " source/text " (" source/index ")"]
@@ -1268,6 +1388,11 @@ if all [type = 'alt-down  source == canvas] [
 			dark-controls [
 				win/dark-controls?: not win/dark-controls?
 				box/background: panel-color did all [win/dark-controls? win/dark?]
+				;; The table window follows, and its stripe with it.
+				if table/open? [
+					table/dark-controls?: win/dark-controls?
+					files/background: stripes did all [table/dark-controls? table/dark?]
+				]
 				note ajoin ["dark controls: " win/dark-controls?]
 			]
 			track     [
@@ -1287,9 +1412,23 @@ if all [type = 'alt-down  source == canvas] [
 		close-window source
 	]
 
+	;; A header of the list-view was clicked: `code` is the column. Sorting is
+	;; ours - the same column again flips the direction.
+	if type == 'sort [
+		col: event/code
+		dir: either col = source/sort-column [negate col][col]
+		either dir > 0 [
+			sort/skip/compare source/items 3 col
+		][	sort/skip/compare/reverse source/items 3 col ]
+		source/items: source/items
+		source/sort-column: dir
+		note ajoin ["sort: column " col either dir > 0 [" up"][" down"]]
+	]
+
 	;; For a click the source is the widget, not the window.
 	if type == 'click [
 		case [
+			source == files [note ajoin ["list-view activated: " mold source/text]]
 			source == closer [
 				close-window win
 				exit
@@ -1432,7 +1571,7 @@ print ["a radio inside the panel:" warm "parent:" warm/parent]
 
 ;; The extra windows go too - a `close` on the main one ends the loop, and
 ;; these two have nothing watching them.
-foreach extra reduce [fixed bare tinted ghost tabbed] [
+foreach extra reduce [fixed bare tinted ghost tabbed table] [
 	if extra/open? [close-window extra]
 ]
 
@@ -1444,7 +1583,7 @@ print ["the image survives:" type? pic pic/size]
 ;; optional - the recycler would do it too.
 foreach handle reduce [
 	canvas counter closer label name log styled
-	toggle box warm cool slow fast level meter picker combo trees rule hr tabs keys-switch
+	toggle box warm cool slow fast level meter picker combo trees rule hr tabs keys-switch files
 	fixed bare back-again bordered
 ][	release handle ]
 ;; Screen handles lock nothing native, so they need no release - the

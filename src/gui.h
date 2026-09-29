@@ -501,6 +501,82 @@ REBOOL  Gui_Create_Text_List(GUIWIDGET *wid, GUIWIN *owner,
                              REBINT x, REBINT y, REBINT w, REBINT h);
 
 
+/***********************************************************************
+**  list-view - a table of rows under column headers.
+**
+**  The CELLS are not in the native control. The shared layer keeps a
+**  copy of the `items` block in the handle's payload slot, and the
+**  control is virtual: it is told only how many rows there are, and asks
+**  for each cell as it is about to show it (LVN_GETDISPINFO on Windows,
+**  the data source on macOS). Gui_List_Cell() forms that one cell into a
+**  scratch string the handle also keeps, so only visible cells are ever
+**  formed, and a long list costs nothing until it is scrolled.
+**
+**  Events: `change` when the user picks another row, `click` on a double
+**  click or Enter, and `sort` with the 1-based column number in `code`
+**  when a header is clicked. A backend reports a pick through
+**  Gui_List_Picked(), which does the filtering, not through
+**  Gui_Queue_Event() directly.
+**
+**  Index, scroll, border and the item count go through the ordinary
+**  Gui_Widget_* functions, which tell a list-view apart by `wid->kind`;
+**  a list-view's "items" there are its ROWS.
+***********************************************************************/
+REBOOL  Gui_Create_List_View(GUIWIDGET *wid, GUIWIN *owner,
+                             REBINT x, REBINT y, REBINT w, REBINT h);
+
+// Appends a column showing value `field` of each row (0-based) - which is
+// what Gui_List_Cell() is asked for, and what `sort` reports. Only SHOWN
+// columns reach a backend: a hidden one (width 0) is the shared layer's
+// alone, so native column n and field n differ once one is hidden.
+// `width` is in logical units, above zero; below zero fits the title (see
+// Gui_List_Fill for the last column). `align` is GUI_ALIGN_*, for the
+// title and the cells alike.
+REBOOL  Gui_List_Add_Column(GUIWIDGET *wid, REBCNT field, const REBYTE *utf8, REBCNT len,
+                            REBINT width, REBINT align);
+// With GUI_LIST_FILL in wid->state, makes the last column fill the width
+// the others leave - and the backend keeps it so as the list is resized or
+// its other columns are. Without it, the last column keeps its width.
+void    Gui_List_Fill(GUIWIDGET *wid);
+void    Gui_List_Clear_Columns(GUIWIDGET *wid);
+// How many columns are shown. (A row's length is wid->fields.)
+REBCNT  Gui_List_Column_Count(GUIWIDGET *wid);
+// The width of the column showing `field`, in logical units; -1 when no
+// column shows it. Asked, not kept: the user may have dragged it.
+REBINT  Gui_List_Column_Width(GUIWIDGET *wid, REBCNT field);
+
+// The number of rows changed, or their content did: show them again. The
+// selection is cleared. Called by the shared layer after `items` is set.
+void    Gui_List_Reload(GUIWIDGET *wid, REBCNT rows);
+
+// Shows `wid->sort` as the header's sort arrow (see GUIWIDGET.sort).
+void    Gui_List_Show_Sort(GUIWIDGET *wid);
+
+// Shows or hides the header row. Hidden when every title is empty.
+void    Gui_List_Show_Header(GUIWIDGET *wid, REBOOL show);
+
+// Stripes: `wid->rows[0]` is the colour of the even rows (the first, the
+// third...), `wid->rows[1]` that of the odd ones, each 0 for the
+// platform's own; GUI_LIST_STRIPED says whether there are any. The empty
+// part below the rows is `wid->background`, as for any widget - the shared
+// layer sets it to the even colour when both rows have one, and to 0
+// otherwise. All of it arrives through Gui_Widget_Set_Background(), which
+// repaints. Unstriped, no row is painted differently - on macOS too, where
+// the list would otherwise stripe with the system's own colours.
+
+// Provided by the SHARED layer, for the backends:
+//
+// How many rows there are - cells over columns.
+REBCNT  Gui_List_Rows(GUIWIDGET *wid);
+// One cell, formed. The UTF-8 is valid until the next call for any
+// list-view, and is NOT terminated at `*len` in general - copy it at once.
+// FALSE past the end.
+REBOOL  Gui_List_Cell(GUIWIDGET *wid, REBCNT row, REBCNT col, REBYTE **utf8, REBCNT *len);
+// The user picked row `n` (0-based, -1 for none): reports `change` when it
+// differs from the row last reported.
+void    Gui_List_Picked(GUIWIDGET *wid, REBINT n);
+
+
 //-- panel --------------------------------------------------------------------
 // A container. Everything a panel holds is positioned inside IT rather than
 // inside the window, which is what both platforms do natively for a child.

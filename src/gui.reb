@@ -2,7 +2,7 @@ REBOL [
 	Title:   "Rebol GUI extension"
 	Name:    gui
 	Version: 0.3.0
-	Needs:   3.22.9
+	Needs:   3.22.10
 	Author:  @Oldes
 	License: Apache-2.0
 	Options: [delay]
@@ -12,6 +12,7 @@ REBOL [
 		add-check add-radio add-slider add-progress add-drop-down add-drop-list add-panel
 		remove-widget redraw set-focus screens track-mouse add-toggle
 		add-text-list add-date-field add-line add-tab-panel within? popup-menu
+		add-list-view
 		gui-device gui-device-polls gui-device-events
 		gui-device-pumps gui-device-messages
 		poll-events do-events
@@ -19,8 +20,8 @@ REBOL [
 	Purpose: {
 		A minimal, GOB-free windowing extension.
 
-		It opens native windows and puts native controls in them - fifteen
-		kinds, from a button to a date-field - with menus, drag and drop,
+		It opens native windows and puts native controls in them - eighteen
+		kinds, from a button to a list-view - with menus, drag and drop,
 		tooltips and screen information, on Windows and macOS. There is no
 		compositor, no DRAW dialect and no dependency on the host's View
 		sources: custom drawing is rendered into an image! by whatever draws
@@ -185,6 +186,20 @@ typedef struct Gui_Widget_Context {
 	                 // control because Win32 does not store one: the PARENT
 	                 // is asked for it, message by message, as each control
 	                 // is about to paint
+	REBINT  picked;  // list-view: the row last reported (0-based, -1 none),
+	                 // so a selection made by the script is not reported
+	                 // back, and a deselect-then-select is one `change`
+	REBINT  sort;    // list-view: `sort-column` - 1-based, negative for
+	                 // descending, 0 for no arrow
+	REBCNT  fields;  // list-view: how many values make a row - one per column
+	                 // of its spec, the hidden ones (width 0) included
+	REBCNT  rows[2]; // list-view stripes: the colours of the even rows (the
+	                 // first, the third...) and of the odd ones, in the
+	                 // GUI_COLOR_* form, 0 for the platform's own. Striped
+	                 // when either has a colour - see GUI_LIST_STRIPED. Set
+	                 // with `background` given two colours; `background`
+	                 // itself then keeps what the empty part below the rows
+	                 // is painted with
 } GUIWIDGET;
 
 #define GUIW_VISIBLE       1
@@ -212,6 +227,18 @@ typedef struct Gui_Widget_Context {
 // wid->state of a text-list: `scrollable?` is off - no scroll bar, and the
 // wheel does not move it; `index` and `scroll` still do
 #define GUI_LIST_FIXED 1
+
+// wid->state of a list-view: its last column was given a width of none, so
+// it fills the room the others leave, and keeps filling it on a resize
+#define GUI_LIST_FILL 2
+
+// Whether a list-view's rows are striped - see GUIWIDGET.rows.
+#define GUI_LIST_STRIPED(wid) (GUI_COLOR_HAS((wid)->rows[0]) || GUI_COLOR_HAS((wid)->rows[1]))
+
+// A list-view column's alignment, as the backends take and give it.
+#define GUI_ALIGN_LEFT   0
+#define GUI_ALIGN_CENTER 1
+#define GUI_ALIGN_RIGHT  2
 
 // wid->state of a date-field made with `/time`: it shows and edits the time
 // of day as well as the date
@@ -339,10 +366,15 @@ words: [
 		drop-down       ;; an editable combo box - drop-list plus a typed value; reports `change`
 		line            ;; a static separator, horizontal or vertical; reports nothing
 		tab-panel       ;; tabs, each with a page (a panel) of its own; reports `change`
+		list-view       ;; a table of rows under column headers; reports `change`, `click` and `sort`
 	]
 	;; What a `theme-change` event carries in `code`.
 	theme: [
 		light dark
+	]
+	;; How a list-view column lines up its title and cells.
+	align: [
+		left center right
 	]
 ]
 
@@ -391,30 +423,30 @@ handles: [
 	widget: [
 		"GUI widget handle - a native control inside a window"
 		;NAME    GET       SET       DESCRIPTION
-		text     string!   string!   "Label or contents; the caption of a framed panel; the selected item of a drop-list or a text-list, which is read-only; the typed value of a drop-down, which can be set; none for an image"
-		items    block!    block!    "Strings a drop-list, a drop-down or a text-list offers, or a tab-panel's tab labels (read-only there); none for other kinds"
-		index    integer!  integer!  "Which item is picked, or which tab is shown, 1-based; 0 for none"
+		text     string!   string!   "Label or contents; the caption of a framed panel; the selected item of a drop-list or a text-list, or the first cell of a list-view's selected row, which are read-only; the typed value of a drop-down, which can be set; none for an image"
+		items    block!    block!    "Strings a drop-list, a drop-down or a text-list offers; a tab-panel's tab labels (read-only there); a list-view's cells, row by row in one flat block, any values; none for other kinds"
+		index    integer!  integer!  "Which item or list-view row is picked, or which tab is shown, 1-based; 0 for none"
 		image    image!    image!    "Image shown by an image widget, none for other kinds"
 		size     pair!     pair!     "Size of the control; a zero axis asks it what that axis needs, the same as at creation"
 		offset   pair!     pair!     "Position inside whatever holds it - a window or a panel"
 		at       pair!     none      "Top-left corner in its window's client area, however deeply nested - what a mouse event's offset is measured from"
 		id       integer!  none      "Native control handle as an integer"
-		kind     word!     none      "What the control is: button, image, text, field, area, check, radio, toggle, slider, progress, drop-list, drop-down, text-list, date-field, panel, line or tab-panel"
+		kind     word!     none      "What the control is: button, image, text, field, area, check, radio, toggle, slider, progress, drop-list, drop-down, text-list, date-field, panel, line, tab-panel or list-view"
 		value    [percent! date!] [percent! decimal! date!] "Position of a slider or a progress bar; the date of a date-field, with its time of day when made with `/time`; none for other kinds"
 		state    logic!    logic!    "Whether a check, a radio or a toggle is on; none for other kinds"
-		border?  logic!    logic!    "Whether a panel draws a frame around itself, or a field, an area or a text-list its border; none for other kinds"
+		border?  logic!    logic!    "Whether a panel draws a frame around itself, or a field, an area, a text-list or a list-view its border; none for other kinds"
 		;; Typography. Every kind which has `text` has these; the rest answer none.
 		font      string!  [string! none!] "Font family; none puts it back to the system font"
 		font-size integer! [integer! none!] "Point size; none puts it back to the system size"
 		bold?     logic!   logic!    "Whether the text is bold"
 		italic?   logic!   logic!    "Whether the text is italic"
 		color     tuple!   [tuple! none!] "Text colour; none lets the platform decide"
-		background tuple!  [tuple! none!] "Colour painted behind the text; none lets the platform decide"
+		background [tuple! block!] [tuple! block! none!] "Colour painted behind the text; none lets the platform decide. A list-view also takes two colours in a block, which its rows alternate between - either may be none, for the platform's own"
 		transparent? logic! logic!        "Whether nothing is painted behind it at all, so whatever the widget sits on shows through"
 		children  block!   none      "Widgets a container holds, in the order they were added; none for a kind which cannot hold any"
 		read-only? logic!  logic!    "Whether a field or an area refuses to be edited while staying selectable; none for other kinds"
 		focused?  logic!   none      "Whether it currently has the keyboard focus"
-		scroll    percent!  [percent! decimal! word! integer!] "How far an area or a text-list is scrolled; set a percent, or one of top, bottom and end; an integer brings that text-list item into view; none for kinds which do not scroll"
+		scroll    percent!  [percent! decimal! word! integer!] "How far an area, a text-list or a list-view is scrolled; set a percent, or one of top, bottom and end; an integer brings that item or row into view; none for kinds which do not scroll"
 		group    integer!  none      "Which radio group it belongs to; for a tab-panel's page, which tab it is; 0 for everything else"
 		enabled? logic!    logic!    "Whether the control responds to the user"
 		tip      string!   [string! none!] "Text the platform shows when the pointer rests on it; none for no tip"
@@ -422,6 +454,8 @@ handles: [
 		window   handle!   none      "The window it ends up in, however deeply nested"
 		scrollable? logic! logic!    "Whether the user can scroll a text-list - off hides its scroll bar and ignores the wheel, while `scroll` and `index` still move it; none for other kinds"
 		secure?  logic!    none      "Whether a field masks what is typed - made with `/secure`; none for other kinds"
+		columns  block!    block!    "A list-view's columns: each a title, its width and, unless left, its alignment (center or right); a width of none fits the title, or fills the rest on the last shown column; 0 hides it, while its values stay in the rows; setting a different number of columns clears `items`; none for other kinds"
+		sort-column integer! [integer! none!] "Which list-view column shows the sort arrow, 1-based, negative for descending; none for no arrow. Only the arrow - sorting `items` is the script's"
 	]
 	screen: [
 		"GUI screen handle - one display; every read asks the platform again"
@@ -638,6 +672,17 @@ commands: [
 		target [handle!] "The window, or a widget in it"
 		items  [block!]  "The same dialect as a window's `menu`"
 		/at offset [pair!] "Where it opens, in the window's client coordinates (default: at the pointer)"
+	]
+
+	add-list-view: [
+		"Creates a table - rows of cells under column headers - and returns its handle"
+		parent  [handle!] "Window, panel or image widget to put it in"
+		columns [block!]  "Column titles, each optionally followed by its width (integer!, 0 to hide it, or none: fit the title, or fill the rest on the last shown column) and alignment (left, center or right)"
+		offset  [pair!]   "Position inside the parent"
+		size    [pair!]
+		/with cells [block!] "Cells to show, row by row in one flat block; any values, shown as FORM shows them"
+		/index n [integer!] "Row picked to start with, 1-based (default: none)"
+		/flat "Without the border"
 	]
 ]
 

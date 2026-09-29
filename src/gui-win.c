@@ -112,6 +112,12 @@ static void   Subclass_For_Nav(GUIWIDGET *wid);
 // the rest of the tab-panel, far below.
 static void   Tab_Layout(GUIWIDGET *wid);
 static REBOOL Tab_Notify(GUIWIDGET *wid, NMHDR *nm);
+
+// Posted to a list-view by itself, to look at its selection once a change
+// is complete - see List_View_Notify.
+#define WM_GUI_LIST_CHECK (WM_APP + 0x51)
+#define LV_HEADER(wid) ((HWND)SendMessageW(HWND_OF_WID(wid), LVM_GETHEADER, 0, 0))
+static REBOOL List_View_Notify(GUIWIDGET *wid, NMHDR *nm, LRESULT *res);
 static REBOOL Gui_Handle_Key(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);
 
 // Whether OLE came up on this thread, decided once in Gui_Init_Platform,
@@ -565,6 +571,13 @@ static REBOOL Dark_For(GUIWIN *win)
 static COLORREF Default_Window_Color(GUIWIN *win)
 {
 	return Dark_For(win) ? DARK_WINDOW : GetSysColor(COLOR_WINDOW);
+}
+
+// What a list-view's rows are painted on when no `background` is set: the
+// entry colour, as a field's, when dark.
+static COLORREF List_Default_Back(GUIWIN *win)
+{
+	return Dark_For(win) ? DARK_ENTRY : GetSysColor(COLOR_WINDOW);
 }
 
 static COLORREF Default_Text_Color(GUIWIN *win)
@@ -1605,6 +1618,29 @@ static void Theme_Control(GUIWIDGET *wid, REBOOL dark)
 	case W_GUI_WIDGET_TEXT_LIST:
 		set(hwnd, dark ? L"DarkMode_Explorer" : NULL, NULL);
 		break;
+	case W_GUI_WIDGET_LIST_VIEW:
+		// Explorer's own look in the light too, not the classic one: a
+		// whole-row selection with rounded corners, and a highlight under
+		// the pointer - what every file list on the system looks like.
+		set(hwnd, dark ? L"DarkMode_Explorer" : L"Explorer", NULL);
+		{
+			// The header is a control of its own, with a theme of its own.
+			// "ItemsView" is the one which has a dark variant - what
+			// Explorer's own header uses - but it keeps dark TEXT, which is
+			// set as each title is drawn: see Nav_Proc.
+			HWND hdr = LV_HEADER(wid);
+			if (hdr) {
+				Allow_Dark(hdr, dark);
+				set(hdr, dark ? L"ItemsView" : NULL, NULL);
+				SendMessageW(hdr, WM_THEMECHANGED, 0, 0);
+				InvalidateRect(hdr, NULL, TRUE);
+			}
+		}
+		// The rows are not themed at all - their colours are told to the
+		// control, so they are told again for the new appearance.
+		Gui_Widget_Set_Color(wid);
+		Gui_Widget_Set_Background(wid);
+		break;
 	case W_GUI_WIDGET_DROP_LIST:
 	case W_GUI_WIDGET_DROP_DOWN:
 		set(hwnd, dark ? L"DarkMode_CFD" : NULL, NULL);
@@ -1880,6 +1916,8 @@ static LRESULT CALLBACK Gui_Window_Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
 				}
 				if (nm->code == DTN_DATETIMECHANGE) return 0;
 			}
+			if (dw && dw->kind == W_GUI_WIDGET_LIST_VIEW && List_View_Notify(dw, nm, &r))
+				return r;
 		}
 		if (Dark_Custom_Draw(win, lp, &r)) return r;
 		break; }
@@ -2562,7 +2600,7 @@ void Gui_Init_Platform(void)
 	// have to be registered before either can be created.
 	controls.dwSize = sizeof(controls);
 	controls.dwICC  = ICC_BAR_CLASSES | ICC_PROGRESS_CLASS | ICC_STANDARD_CLASSES
-	                | ICC_DATE_CLASSES | ICC_TAB_CLASSES;
+	                | ICC_DATE_CLASSES | ICC_TAB_CLASSES | ICC_LISTVIEW_CLASSES;
 	InitCommonControlsEx(&controls);
 
 	/*******************************************************************
@@ -4170,6 +4208,47 @@ static LRESULT CALLBACK Nav_Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 	GUIWIDGET *wid  = (GUIWIDGET*)GetWindowLongPtrW(hwnd, GWLP_USERDATA);
 	WNDPROC    base = (wid && wid->wndproc) ? (WNDPROC)wid->wndproc : NULL;
 
+	// A list-view's selection has settled - see List_View_Notify.
+	if (msg == WM_GUI_LIST_CHECK) {
+		if (wid && wid->kind == W_GUI_WIDGET_LIST_VIEW)
+			Gui_List_Picked(wid, Gui_Widget_Get_Index(wid));
+		return 0;
+	}
+
+	// A list-view's header in a dark window: the dark theme paints its
+	// background but not its text, which would stay black on dark grey.
+	if (wid && wid->kind == W_GUI_WIDGET_LIST_VIEW && msg == WM_NOTIFY
+	    && Dark_For(wid->owner)) {
+		NMCUSTOMDRAW *cd = (NMCUSTOMDRAW*)lp;
+		if (cd && cd->hdr.code == NM_CUSTOMDRAW && cd->hdr.hwndFrom == LV_HEADER(wid)) {
+			if (cd->dwDrawStage == CDDS_PREPAINT) return CDRF_NOTIFYITEMDRAW;
+			if (cd->dwDrawStage == CDDS_ITEMPREPAINT) {
+				SetTextColor(cd->hdc, DARK_TEXT);
+				return CDRF_DODEFAULT;
+			}
+		}
+	}
+
+	// A list-view whose last column fills the rest: fitted again once the
+	// list has a new size, or once the user has dragged another column's
+	// edge. (Its own header notifies the LIST, not the window.) Not after
+	// a change to the last column itself - that is the fitting, and
+	// answering it would never end.
+	if (wid && wid->kind == W_GUI_WIDGET_LIST_VIEW && (wid->state & GUI_LIST_FILL)
+	    && (msg == WM_SIZE || msg == WM_NOTIFY)) {
+		REBOOL refit = (msg == WM_SIZE);
+		LRESULT r;
+		if (msg == WM_NOTIFY) {
+			NMHEADERW *nh = (NMHEADERW*)lp;
+			refit = (nh && nh->hdr.hwndFrom == LV_HEADER(wid)
+			         && (nh->hdr.code == HDN_ITEMCHANGEDW || nh->hdr.code == HDN_ITEMCHANGEDA)
+			         && nh->iItem + 1 < Header_GetItemCount(nh->hdr.hwndFrom));
+		}
+		r = base ? CallWindowProcW(base, hwnd, msg, wp, lp) : DefWindowProcW(hwnd, msg, wp, lp);
+		if (refit) Gui_List_Fill(wid);
+		return r;
+	}
+
 	/*******************************************************************
 	**  A text-list with `scrollable?` off.
 	**
@@ -4254,10 +4333,15 @@ static LRESULT CALLBACK Nav_Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 	// line is typed. A date-field is a one-line entry like a field, and
 	// beeps the same way; its dropped calendar is a window of its own, so
 	// Enter there still picks the day.
-	if (wid && (wid->kind == W_GUI_WIDGET_FIELD || wid->kind == W_GUI_WIDGET_DATE_FIELD)
+	//
+	// A list-view reports Enter the same way, as its double click - but
+	// only with a row picked, as there is nothing to activate otherwise.
+	if (wid && (wid->kind == W_GUI_WIDGET_FIELD || wid->kind == W_GUI_WIDGET_DATE_FIELD
+	            || wid->kind == W_GUI_WIDGET_LIST_VIEW)
 	    && wp == VK_RETURN
 	    && (msg == WM_KEYDOWN || msg == WM_CHAR)) {
-		if (msg == WM_KEYDOWN && wid->hob) {
+		if (msg == WM_KEYDOWN && wid->hob
+		    && (wid->kind != W_GUI_WIDGET_LIST_VIEW || Gui_Widget_Get_Index(wid) >= 0)) {
 			REBINT x = 0, y = 0, w = 0, h = 0;
 			Gui_Widget_Get_Box(wid, &x, &y, &w, &h);
 			Gui_Queue_Event(wid->hob, EVT_CLICK, x, y, Modifiers());
@@ -4292,7 +4376,7 @@ static LRESULT CALLBACK Nav_Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 	// A field's or an area's edge in a dark window - see Paint_Dark_Edge().
 	if (msg == WM_NCPAINT && wid
 	    && (wid->kind == W_GUI_WIDGET_FIELD || wid->kind == W_GUI_WIDGET_AREA
-	        || wid->kind == W_GUI_WIDGET_TEXT_LIST)
+	        || wid->kind == W_GUI_WIDGET_TEXT_LIST || wid->kind == W_GUI_WIDGET_LIST_VIEW)
 	    && Dark_For(wid->owner)) {
 		LRESULT r = base ? CallWindowProcW(base, hwnd, msg, wp, lp)
 		                 : DefWindowProcW(hwnd, msg, wp, lp);
@@ -4418,6 +4502,19 @@ static void Subclass_For_Transparency(GUIWIDGET *wid)
 void Gui_Widget_Set_Background(GUIWIDGET *wid)
 {
 	if (!wid || !wid->handle) return;
+
+	// ... and so is a list-view's background. Like an entry's, a colour is
+	// honoured and transparency is not.
+	if (wid->kind == W_GUI_WIDGET_LIST_VIEW) {
+		COLORREF c = GUI_COLOR_HAS(wid->background) && !GUI_BG_IS_CLEAR(wid->background)
+			? RGB(GUI_COLOR_R(wid->background), GUI_COLOR_G(wid->background),
+			      GUI_COLOR_B(wid->background))
+			: List_Default_Back(wid->owner);
+		SendMessageW(HWND_OF_WID(wid), LVM_SETBKCOLOR, 0, (LPARAM)c);
+		SendMessageW(HWND_OF_WID(wid), LVM_SETTEXTBKCOLOR, 0, (LPARAM)c);
+		InvalidateRect(HWND_OF_WID(wid), NULL, TRUE);
+		return;
+	}
 
 	// A check and a radio are BUTTONs, a label is a STATIC; the entries
 	// and the drop-down have a frame and a background of their own which
@@ -4934,6 +5031,16 @@ REBOOL Gui_Widget_Set_Color(GUIWIDGET *wid)
 {
 	if (!wid || !wid->handle) return FALSE;
 
+	// A ListView paints its own rows and asks no one: it is told.
+	if (wid->kind == W_GUI_WIDGET_LIST_VIEW) {
+		COLORREF c = GUI_COLOR_HAS(wid->color)
+			? RGB(GUI_COLOR_R(wid->color), GUI_COLOR_G(wid->color), GUI_COLOR_B(wid->color))
+			: Default_Text_Color(wid->owner);
+		SendMessageW(HWND_OF_WID(wid), LVM_SETTEXTCOLOR, 0, (LPARAM)c);
+		InvalidateRect(HWND_OF_WID(wid), NULL, TRUE);
+		return TRUE;
+	}
+
 	// Nothing to apply: the colour is read out of the widget context by
 	// the parent's WM_CTLCOLOR* handler, at the moment the control is
 	// about to paint. All that is needed is to make it paint.
@@ -5334,10 +5441,19 @@ REBOOL Gui_Widget_Natural_Size(GUIWIDGET *wid, REBINT *w, REBINT *h)
 		break;
 	case W_GUI_WIDGET_AREA:
 	case W_GUI_WIDGET_TEXT_LIST:
+	case W_GUI_WIDGET_LIST_VIEW:
 		// One line is not a useful multi-line box; four is the smallest
 		// that looks like one. A list gets a few more, as it is read by
-		// scanning down it.
-		lines = (wid->kind == W_GUI_WIDGET_TEXT_LIST) ? 6 : 4;
+		// scanning down it - and a list-view one more for its header.
+		lines = (wid->kind == W_GUI_WIDGET_TEXT_LIST) ? 6
+		      : (wid->kind == W_GUI_WIDGET_LIST_VIEW) ? 7 : 4;
+		// A list-view is as wide as its columns, and the scroll bar.
+		if (wid->kind == W_GUI_WIDGET_LIST_VIEW) {
+			REBCNT n, count = Gui_List_Column_Count(wid);
+			text.cx = Metric(dpi, SM_CXVSCROLL);
+			for (n = 0; n < count; n++)
+				text.cx += (LONG)SendMessageW(hwnd, LVM_GETCOLUMNWIDTH, (WPARAM)n, 0);
+		}
 		// fall through
 	case W_GUI_WIDGET_FIELD:
 	case W_GUI_WIDGET_DROP_LIST:
@@ -6055,6 +6171,381 @@ REBOOL Gui_Create_Text_List(GUIWIDGET *wid, GUIWIN *owner,
 }
 
 
+//-- list-view ----------------------------------------------------------------
+
+/***********************************************************************
+**  A report-mode ListView, VIRTUAL (LVS_OWNERDATA): it holds no strings,
+**  only a row count, and asks for each cell with LVN_GETDISPINFO as it
+**  paints it - see List_View_Notify. The cells stay in the shared layer.
+**
+**  Set while this file changes the selection itself: a ListView notifies
+**  LVN_ITEMCHANGED for every step of that (deselect all, then select),
+**  and none of it is the user's.
+***********************************************************************/
+static REBOOL Setting_List = FALSE;
+
+REBOOL Gui_Create_List_View(GUIWIDGET *wid, GUIWIN *owner,
+                            REBINT x, REBINT y, REBINT w, REBINT h)
+{
+	HWND hwnd;
+
+	if (!wid || !owner || !owner->handle) return FALSE;
+	Box_To_Device(Dpi_Of(HWND_OF(owner)), &x, &y, &w, &h);
+
+	hwnd = CreateWindowExW(
+		WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
+		WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_GROUP
+		| LVS_REPORT | LVS_OWNERDATA | LVS_SINGLESEL | LVS_SHOWSELALWAYS,
+		x, y, w, h,
+		Parent_Hwnd(wid, owner),
+		NULL,
+		App_Instance, NULL
+	);
+	if (!hwnd) return FALSE;
+
+	SetWindowLongPtrW(hwnd, GWLP_USERDATA, (LONG_PTR)wid);
+	// A whole row is picked, not its first cell; and no flicker on scroll.
+	SendMessageW(hwnd, LVM_SETEXTENDEDLISTVIEWSTYLE,
+	             LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER,
+	             LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER);
+	SendMessageW(hwnd, WM_SETFONT, (WPARAM)Default_Font_At(Dpi_Of(hwnd)), TRUE);
+
+	wid->handle = (void*)hwnd;
+	Subclass_For_Nav(wid);
+
+	// The Explorer theme - see Theme_Control; a dark window switches it
+	// again when the widget is attached. Its selection is a filled row, so
+	// the dotted focus rectangle drawn inside it is only noise: hidden,
+	// as Explorer hides it.
+	Theme_Control(wid, FALSE);
+	SendMessageW(hwnd, WM_CHANGEUISTATE, MAKEWPARAM(UIS_SET, UISF_HIDEFOCUS), 0);
+	return TRUE;
+}
+
+
+/***********************************************************************
+**  Which value of a row a column shows - its FIELD. Only the columns
+**  shown are in the control, so column n is field n only until one is
+**  hidden. The field rides in the header item's lParam: the ListView's
+**  own subitem numbering is left as it is (subitem n in column n), since
+**  column 0 is special to it and is best not argued with.
+***********************************************************************/
+static REBINT List_Field_Of(GUIWIDGET *wid, int col)
+{
+	HDITEMW it;
+	ZeroMemory(&it, sizeof(it));
+	it.mask = HDI_LPARAM;
+	if (col < 0 || !Header_GetItem(LV_HEADER(wid), col, &it)) return -1;
+	return (REBINT)it.lParam;
+}
+
+REBOOL Gui_List_Add_Column(GUIWIDGET *wid, REBCNT field, const REBYTE *utf8, REBCNT len,
+                           REBINT width, REBINT align)
+{
+	LVCOLUMNW col;
+	WCHAR    *wide;
+	HWND      hwnd;
+	int       dpi, count;
+	LRESULT   res;
+
+	if (!wid || !wid->handle) return FALSE;
+	hwnd  = HWND_OF_WID(wid);
+	dpi   = Dpi_Of(hwnd);
+	count = Header_GetItemCount(LV_HEADER(wid));
+	wide  = To_Wide(utf8, len);
+
+	ZeroMemory(&col, sizeof(col));
+	col.mask    = LVCF_TEXT | LVCF_WIDTH | LVCF_FMT;
+	col.fmt     = (align == GUI_ALIGN_RIGHT)  ? LVCFMT_RIGHT
+	            : (align == GUI_ALIGN_CENTER) ? LVCFMT_CENTER : LVCFMT_LEFT;
+	col.pszText = wide ? wide : L"";
+	// Fitting the title: its width in the list's font, and room for the
+	// padding and the sort arrow. (LVSCW_AUTOSIZE_USEHEADER would be the
+	// obvious call, but on the LAST column it fills the rest of the list.)
+	col.cx = (width < 0)
+		? (int)SendMessageW(hwnd, LVM_GETSTRINGWIDTHW, 0, (LPARAM)col.pszText) + To_Device(dpi, 28)
+		: To_Device(dpi, width);
+
+	res = SendMessageW(hwnd, LVM_INSERTCOLUMNW, (WPARAM)count, (LPARAM)&col);
+	if (wide) FREE_MEM(wide);
+	if (res < 0) return FALSE;
+
+	{	HDITEMW it;
+		ZeroMemory(&it, sizeof(it));
+		it.mask   = HDI_LPARAM;
+		it.lParam = (LPARAM)field;
+		Header_SetItem(LV_HEADER(wid), (int)res, &it);
+	}
+
+	// The first column is inserted left-aligned whatever it is asked for -
+	// a rule from the days when it held the icon. Set afterwards, the
+	// alignment is kept.
+	if (res == 0 && col.fmt != LVCFMT_LEFT) {
+		LVCOLUMNW fmt;
+		ZeroMemory(&fmt, sizeof(fmt));
+		fmt.mask = LVCF_FMT;
+		fmt.fmt  = col.fmt;
+		SendMessageW(hwnd, LVM_SETCOLUMNW, 0, (LPARAM)&fmt);
+	}
+	return TRUE;
+}
+
+
+/***********************************************************************
+**  The last column filling the rest. LVSCW_AUTOSIZE_USEHEADER does it:
+**  on the LAST column it is documented to take the remaining width -
+**  or the title's, if that is wider. Asked again whenever that room
+**  changes, since the control does not keep it so by itself.
+***********************************************************************/
+void Gui_List_Fill(GUIWIDGET *wid)
+{
+	int count;
+	if (!wid || !wid->handle || !(wid->state & GUI_LIST_FILL)) return;
+	count = Header_GetItemCount(LV_HEADER(wid));
+	if (count <= 0) return;
+	SendMessageW(HWND_OF_WID(wid), LVM_SETCOLUMNWIDTH, (WPARAM)(count - 1),
+	             MAKELPARAM(LVSCW_AUTOSIZE_USEHEADER, 0));
+}
+
+
+void Gui_List_Clear_Columns(GUIWIDGET *wid)
+{
+	int n;
+	if (!wid || !wid->handle) return;
+	// Counted, last to first - never "until it fails". Column 0 is special
+	// to a ListView (it is the item, the rest are subitems), and a delete
+	// of it which reports success without removing it would loop forever.
+	n = Header_GetItemCount(LV_HEADER(wid));
+	while (--n >= 0) SendMessageW(HWND_OF_WID(wid), LVM_DELETECOLUMN, (WPARAM)n, 0);
+}
+
+
+REBCNT Gui_List_Column_Count(GUIWIDGET *wid)
+{
+	int n;
+	if (!wid || !wid->handle) return 0;
+	n = Header_GetItemCount(LV_HEADER(wid));
+	return (n < 0) ? 0 : (REBCNT)n;
+}
+
+
+REBINT Gui_List_Column_Width(GUIWIDGET *wid, REBCNT field)
+{
+	HWND hwnd;
+	int  n, count;
+	if (!wid || !wid->handle) return -1;
+	hwnd  = HWND_OF_WID(wid);
+	count = Header_GetItemCount(LV_HEADER(wid));
+	for (n = 0; n < count; n++) {
+		if (List_Field_Of(wid, n) != (REBINT)field) continue;
+		return To_Logical(Dpi_Of(hwnd),
+		                  (REBINT)SendMessageW(hwnd, LVM_GETCOLUMNWIDTH, (WPARAM)n, 0));
+	}
+	return -1;   // hidden
+}
+
+
+// Deselects everything, quietly.
+static void List_Deselect(HWND hwnd)
+{
+	LVITEMW item;
+	ZeroMemory(&item, sizeof(item));
+	item.stateMask = LVIS_SELECTED | LVIS_FOCUSED;
+	item.state     = 0;
+	SendMessageW(hwnd, LVM_SETITEMSTATE, (WPARAM)-1, (LPARAM)&item);
+}
+
+
+void Gui_List_Reload(GUIWIDGET *wid, REBCNT rows)
+{
+	HWND hwnd;
+	if (!wid || !wid->handle) return;
+	hwnd = HWND_OF_WID(wid);
+	Setting_List = TRUE;
+	List_Deselect(hwnd);
+	SendMessageW(hwnd, LVM_SETITEMCOUNT, (WPARAM)rows, 0);
+	Setting_List = FALSE;
+	// The rows may have brought the scroll bar, or taken it away - and
+	// with it the room the last column fills.
+	Gui_List_Fill(wid);
+	// The count alone repaints nothing that was already there, and the
+	// cells may have changed under the same count.
+	InvalidateRect(hwnd, NULL, TRUE);
+}
+
+
+void Gui_List_Show_Header(GUIWIDGET *wid, REBOOL show)
+{
+	HWND     hwnd;
+	LONG_PTR style;
+	if (!wid || !wid->handle) return;
+	hwnd  = HWND_OF_WID(wid);
+	style = GetWindowLongPtrW(hwnd, GWL_STYLE);
+	style = show ? (style & ~(LONG_PTR)LVS_NOCOLUMNHEADER) : (style | LVS_NOCOLUMNHEADER);
+	// A ListView takes this style while it lives (WM_STYLECHANGED), and
+	// moves its rows up or down to match.
+	SetWindowLongPtrW(hwnd, GWL_STYLE, style);
+	SetWindowPos(hwnd, NULL, 0, 0, 0, 0,
+	             SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+	InvalidateRect(hwnd, NULL, TRUE);
+}
+
+
+void Gui_List_Show_Sort(GUIWIDGET *wid)
+{
+	HWND   hdr;
+	int    n, count;
+	REBINT col;
+
+	if (!wid || !wid->handle) return;
+	hdr   = LV_HEADER(wid);
+	count = Header_GetItemCount(hdr);
+	col   = (wid->sort < 0) ? -wid->sort : wid->sort;   // 1-based, 0 none
+
+	for (n = 0; n < count; n++) {
+		HDITEMW it;
+		ZeroMemory(&it, sizeof(it));
+		it.mask = HDI_FORMAT;
+		if (!Header_GetItem(hdr, n, &it)) continue;
+		it.fmt &= ~(HDF_SORTUP | HDF_SORTDOWN);
+		if (List_Field_Of(wid, n) + 1 == col) it.fmt |= (wid->sort > 0) ? HDF_SORTUP : HDF_SORTDOWN;
+		Header_SetItem(hdr, n, &it);
+	}
+}
+
+
+/***********************************************************************
+**  The list-view's notifications, from the window procedure (a panel
+**  passes them up to it). TRUE when handled, with the result in *res.
+**
+**  LVN_GETDISPINFO is the virtual list asking for one cell. The text is
+**  handed over in a buffer of our own rather than copied into the
+**  control's: pszText may point anywhere that stays valid until the next
+**  notification, and ours is not limited to cchTextMax.
+***********************************************************************/
+static REBOOL List_View_Notify(GUIWIDGET *wid, NMHDR *nm, LRESULT *res)
+{
+	static WCHAR cell[1100];   // LIST_CELL_LIMIT chars, "...", and room
+	REBINT x = 0, y = 0, w = 0, h = 0;
+
+	*res = 0;
+	switch (nm->code) {
+	case LVN_GETDISPINFOW: {
+		NMLVDISPINFOW *di = (NMLVDISPINFOW*)nm;
+		REBYTE *utf8;
+		REBCNT  len;
+		int     n = 0;
+		REBINT  field;
+		if (!(di->item.mask & LVIF_TEXT)) return TRUE;
+		// Subitem n is column n (see List_Field_Of), which shows its field.
+		field = List_Field_Of(wid, di->item.iSubItem);
+		if (di->item.iItem >= 0 && field >= 0
+		    && Gui_List_Cell(wid, (REBCNT)di->item.iItem, (REBCNT)field, &utf8, &len)
+		    && len > 0) {
+			n = MultiByteToWideChar(CP_UTF8, 0, (LPCCH)utf8, (int)len,
+			                        cell, (int)(sizeof(cell) / sizeof(WCHAR)) - 1);
+			if (n < 0) n = 0;
+		}
+		cell[n] = 0;
+		di->item.pszText = cell;
+		return TRUE; }
+
+	case NM_CUSTOMDRAW: {
+		// Stripes. Without any, the control paints as it always does -
+		// `background` alone is LVM_SETBKCOLOR, see Gui_Widget_Set_Background.
+		// With them, each row is told its own cell colour before it is
+		// drawn; the theme's selection and hover still go over it.
+		NMLVCUSTOMDRAW *cd = (NMLVCUSTOMDRAW*)nm;
+		if (!GUI_LIST_STRIPED(wid)) { *res = CDRF_DODEFAULT; return TRUE; }
+		switch (cd->nmcd.dwDrawStage) {
+		case CDDS_PREPAINT:
+			*res = CDRF_NOTIFYITEMDRAW;
+			return TRUE;
+		case CDDS_ITEMPREPAINT: {
+			REBCNT c = wid->rows[cd->nmcd.dwItemSpec & 1];
+			cd->clrTextBk = GUI_COLOR_HAS(c)
+				? RGB(GUI_COLOR_R(c), GUI_COLOR_G(c), GUI_COLOR_B(c))
+				: List_Default_Back(wid->owner);
+			*res = CDRF_NEWFONT;   // "the colours in the structure changed"
+			return TRUE; }
+		}
+		*res = CDRF_DODEFAULT;
+		return TRUE; }
+
+	case LVN_ITEMCHANGED:
+		// One STEP of a selection change: picking another row is the old
+		// one deselected, notified, and then the new one selected. Asked
+		// now, the answer in between is "nothing picked" - so the question
+		// is posted, and asked once the whole change is done. Gui_List_Picked
+		// reports only a row other than the last one reported, so several
+		// steps posting it still make one `change`.
+		if (!Setting_List && (((NMLISTVIEW*)nm)->uChanged & LVIF_STATE))
+			PostMessageW(nm->hwndFrom, WM_GUI_LIST_CHECK, 0, 0);
+		return TRUE;
+
+	case NM_DBLCLK:
+		// On a row only - not on the empty part below the last one.
+		if (((NMITEMACTIVATE*)nm)->iItem < 0 || !wid->hob) return TRUE;
+		Gui_Widget_Get_Box(wid, &x, &y, &w, &h);
+		Gui_Queue_Event(wid->hob, EVT_CLICK, x, y, Modifiers());
+		return TRUE;
+
+	case LVN_COLUMNCLICK:
+		if (!wid->hob) return TRUE;
+		Gui_Widget_Get_Box(wid, &x, &y, &w, &h);
+		// The FIELD, hidden columns counted - what `sort/skip/compare` wants.
+		Gui_Queue_Event(wid->hob, EVT_SORT, x, y,
+		                List_Field_Of(wid, ((NMLISTVIEW*)nm)->iSubItem) + 1);
+		return TRUE;
+
+	case NM_SETFOCUS:
+	case NM_KILLFOCUS:
+		if (!wid->hob) return TRUE;
+		Gui_Widget_Get_Box(wid, &x, &y, &w, &h);
+		Gui_Queue_Event(wid->hob, nm->code == NM_SETFOCUS ? EVT_FOCUS : EVT_UNFOCUS,
+		                x, y, Modifiers());
+		return TRUE;
+	}
+	return FALSE;
+}
+
+
+// A row by its number: brought into view, the least scrolling it takes.
+static void List_View_Show_Row(HWND hwnd, REBINT n)
+{
+	SendMessageW(hwnd, LVM_ENSUREVISIBLE, (WPARAM)n, FALSE);
+}
+
+
+// How far down, as a fraction of the rows that do not fit.
+static REBDEC List_View_Get_Scroll(HWND hwnd)
+{
+	LRESULT count = SendMessageW(hwnd, LVM_GETITEMCOUNT, 0, 0);
+	LRESULT per   = SendMessageW(hwnd, LVM_GETCOUNTPERPAGE, 0, 0);
+	REBINT  span  = (REBINT)(count - per);
+	if (span <= 0) return 0.0;
+	return (REBDEC)SendMessageW(hwnd, LVM_GETTOPINDEX, 0, 0) / (REBDEC)span;
+}
+
+
+// LVM_SCROLL takes pixels in report mode, so the rows are measured.
+static void List_View_Set_Scroll(HWND hwnd, REBDEC where)
+{
+	LRESULT count = SendMessageW(hwnd, LVM_GETITEMCOUNT, 0, 0);
+	LRESULT per   = SendMessageW(hwnd, LVM_GETCOUNTPERPAGE, 0, 0);
+	REBINT  span  = (REBINT)(count - per), target, top;
+	RECT    r;
+
+	if (span <= 0) return;
+	if (where >= 1.0) { List_View_Show_Row(hwnd, (REBINT)count - 1); return; }
+	target = (REBINT)((REBDEC)span * where + 0.5);
+	top    = (REBINT)SendMessageW(hwnd, LVM_GETTOPINDEX, 0, 0);
+	r.left = LVIR_BOUNDS;
+	if (!SendMessageW(hwnd, LVM_GETITEMRECT, 0, (LPARAM)&r)) return;
+	SendMessageW(hwnd, LVM_SCROLL, 0, (LPARAM)((target - top) * (r.bottom - r.top)));
+}
+
+
 /***********************************************************************
 **  The items of a drop-down and of a text-list.
 **
@@ -6069,6 +6560,7 @@ REBCNT Gui_Widget_Count_Items(GUIWIDGET *wid)
 {
 	LRESULT count;
 	if (!wid || !wid->handle) return 0;
+	if (wid->kind == W_GUI_WIDGET_LIST_VIEW) return Gui_List_Rows(wid);
 	if (wid->kind == W_GUI_WIDGET_TAB_PANEL) {
 		count = Tabs_Of(wid) ? SendMessageW(Tabs_Of(wid), TCM_GETITEMCOUNT, 0, 0) : 0;
 		return (count < 0) ? 0 : (REBCNT)count;
@@ -6161,7 +6653,9 @@ REBINT Gui_Widget_Get_Index(GUIWIDGET *wid)
 {
 	LRESULT n;
 	if (!wid || !wid->handle) return -1;
-	if (wid->kind == W_GUI_WIDGET_TAB_PANEL)
+	if (wid->kind == W_GUI_WIDGET_LIST_VIEW)
+		n = SendMessageW(HWND_OF_WID(wid), LVM_GETNEXTITEM, (WPARAM)-1, LVNI_SELECTED);
+	else if (wid->kind == W_GUI_WIDGET_TAB_PANEL)
 		n = Tabs_Of(wid) ? SendMessageW(Tabs_Of(wid), TCM_GETCURSEL, 0, 0) : -1;
 	else
 	n = SendMessageW(HWND_OF_WID(wid), IS_LIST(wid) ? LB_GETCURSEL : CB_GETCURSEL, 0, 0);
@@ -6172,6 +6666,21 @@ REBINT Gui_Widget_Get_Index(GUIWIDGET *wid)
 void Gui_Widget_Set_Index(GUIWIDGET *wid, REBINT n)
 {
 	if (!wid || !wid->handle) return;
+	if (wid->kind == W_GUI_WIDGET_LIST_VIEW) {
+		HWND    hwnd = HWND_OF_WID(wid);
+		LVITEMW item;
+		Setting_List = TRUE;
+		List_Deselect(hwnd);
+		if (n >= 0 && n < (REBINT)SendMessageW(hwnd, LVM_GETITEMCOUNT, 0, 0)) {
+			ZeroMemory(&item, sizeof(item));
+			item.stateMask = LVIS_SELECTED | LVIS_FOCUSED;
+			item.state     = LVIS_SELECTED | LVIS_FOCUSED;
+			SendMessageW(hwnd, LVM_SETITEMSTATE, (WPARAM)n, (LPARAM)&item);
+			List_View_Show_Row(hwnd, n);
+		}
+		Setting_List = FALSE;
+		return;
+	}
 	if (wid->kind == W_GUI_WIDGET_TAB_PANEL) {
 		// Always one page: out of range changes nothing.
 		HWND tabs = Tabs_Of(wid);
@@ -6332,6 +6841,7 @@ void Gui_Widget_Scroll_To_Item(GUIWIDGET *wid, REBINT n)
 
 	if (!wid || !wid->handle) return;
 	hwnd = HWND_OF_WID(wid);
+	if (wid->kind == W_GUI_WIDGET_LIST_VIEW) { List_View_Show_Row(hwnd, n); return; }
 	top  = SendMessageW(hwnd, LB_GETTOPINDEX, 0, 0);
 	row  = SendMessageW(hwnd, LB_GETITEMHEIGHT, 0, 0);
 	if (top < 0 || row <= 0 || !GetClientRect(hwnd, &r)) return;
@@ -6352,6 +6862,7 @@ REBDEC Gui_Widget_Get_Scroll(GUIWIDGET *wid)
 	REBINT     span = 0;
 
 	if (!wid || !wid->handle) return -1.0;
+	if (wid->kind == W_GUI_WIDGET_LIST_VIEW) return List_View_Get_Scroll(HWND_OF_WID(wid));
 	if (wid->kind == W_GUI_WIDGET_TEXT_LIST) {
 		span = List_Span_Of(HWND_OF_WID(wid));
 		if (span <= 0) return 0.0;
@@ -6373,6 +6884,7 @@ REBOOL Gui_Widget_Set_Scroll(GUIWIDGET *wid, REBDEC where)
 
 	if (!wid || !wid->handle) return FALSE;
 	hwnd = HWND_OF_WID(wid);
+	if (wid->kind == W_GUI_WIDGET_LIST_VIEW) { List_View_Set_Scroll(hwnd, where); return TRUE; }
 	if (wid->kind == W_GUI_WIDGET_TEXT_LIST) {
 		span = List_Span_Of(hwnd);
 		if (span <= 0) return TRUE;

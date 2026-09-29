@@ -30,6 +30,8 @@ static const REBYTE* ERR_NO_PORT_STATE  = (const REBYTE*)"Not a usable port!";
 static const REBYTE* ERR_DEVICE_FAIL    = (const REBYTE*)"GUI device command failed!";
 static const REBYTE* ERR_HAS_MODAL      = (const REBYTE*)"The window has a modal dialog open!";
 static const REBYTE* ERR_MODAL_DEPTH    = (const REBYTE*)"Too many modal dialogs open!";
+static const REBYTE* ERR_BAD_COLUMNS    = (const REBYTE*)"Columns must be titles, each optionally followed by a width!";
+static const REBYTE* ERR_BAD_CELLS      = (const REBYTE*)"The cells do not make whole rows!";
 
 // The device request behind a port. A port's state field is where the host
 // keeps it, and this is the only way an extension can reach the device it
@@ -604,6 +606,9 @@ static REBHOB *Screen_Handle(const REBYTE *key);
 **      [0] the payload  - an image! for an image widget, the menu block
 **                         for a window, none for anything else
 **      [1] the children - a block of handles, or none
+**      [2] a list-view's scratch string, which each cell is formed into
+**          (only a list-view has this third slot - see Hob_Scratch)
+**      [3] a list-view's columns spec, normalized - see List_Spec
 **
 **  Marking the outer block marks both, and nothing outside these four
 **  functions knows the layout. A widget which is neither a container
@@ -611,6 +616,7 @@ static REBHOB *Screen_Handle(const REBYTE *key);
 ***********************************************************************/
 #define SLOT_PAYLOAD  0
 #define SLOT_CHILDREN 1
+#define SLOT_SCRATCH  2
 
 static REBSER *Hob_Slots(REBHOB *hob)
 {
@@ -705,6 +711,378 @@ static REBSER *Hob_Children(REBHOB *hob, REBOOL make)
 	RL_PROTECT_GC(kids, 0);
 
 	return kids;
+}
+
+
+/***********************************************************************
+**  list-view: the cells, and the scratch string they are formed into.
+**
+**  `items` is NOT copied. The block the script assigned is kept in the
+**  payload slot as it was given, index included, and the cells are read
+**  out of it whenever the control asks - so `lv/items` reads back that
+**  very block, with its values unchanged (a copy made through RXIARG
+**  would lose word bindings, for one). The price is the one a shared
+**  block always has: change it in place and the control shows the new
+**  values only as it repaints them, and a new NUMBER of rows only once
+**  the block is set again - `lv/items: lv/items`.
+***********************************************************************/
+
+// Longest a cell is formed, in chars. Past it the cell ends with "...":
+// a cell holding a big block or a long string must not cost its whole
+// FORM each time it is painted.
+#define LIST_CELL_LIMIT 256
+
+// The items block and its index, or NULL.
+static REBSER *List_Items(GUIWIDGET *wid, REBCNT *index)
+{
+	RXIARG val;
+	if (!wid || !wid->hob || !wid->hob->series) return NULL;
+	if (RL_GET_VALUE(wid->hob->series, SLOT_PAYLOAD, &val) != RXT_BLOCK) return NULL;
+	if (index) *index = val.index;
+	return (REBSER*)val.series;
+}
+
+// Made when the list-view is created, which is where allocating is
+// comfortable - not at paint time.
+static REBSER *Hob_Scratch(REBHOB *hob, REBOOL make)
+{
+	REBSER *blk, *str;
+	RXIARG  val;
+
+	if (!hob) return NULL;
+	if (hob->series && RL_GET_VALUE(hob->series, SLOT_SCRATCH, &val) == RXT_STRING)
+		return (REBSER*)val.series;
+	if (!make) return NULL;
+
+	blk = Hob_Slots(hob);
+	if (!blk) return NULL;
+	str = (REBSER*)RL_MAKE_STRING(LIST_CELL_LIMIT + 8, FALSE);
+	if (!str) return NULL;
+
+	CLEARS(&val);
+	val.series = str;
+	val.index  = 0;
+	RL_PROTECT_GC(str, 1);
+	RL_SET_VALUE(blk, SLOT_SCRATCH, val, RXT_STRING);  // appends: slot [2]
+	RL_PROTECT_GC(str, 0);
+	return str;
+}
+
+REBCNT Gui_List_Rows(GUIWIDGET *wid)
+{
+	REBCNT  index = 0, tail, cols;
+	REBSER *blk = List_Items(wid, &index);
+
+	if (!blk) return 0;
+	cols = wid->fields;
+	if (cols == 0) return 0;
+	tail = (REBCNT)RL_SERIES(blk, RXI_SER_TAIL);
+	return (tail > index) ? (tail - index) / cols : 0;
+}
+
+REBOOL Gui_List_Cell(GUIWIDGET *wid, REBCNT row, REBCNT col, REBYTE **utf8, REBCNT *len)
+{
+	REBCNT  index = 0, cols, type;
+	REBSER *blk = List_Items(wid, &index);
+	REBSER *str;
+	RXIARG  val;
+	REBINT  n;
+
+	*utf8 = (REBYTE*)"";
+	*len  = 0;
+	if (!blk) return FALSE;
+	cols = wid->fields;
+	if (col >= cols) return FALSE;
+
+	type = RL_GET_VALUE(blk, index + row * cols + col, &val);
+	if (type == 0 || type == RXT_END) return FALSE;  // the block got shorter
+	// A missing value is an empty cell, not the word "none".
+	if (type == RXT_NONE || type == RXT_UNSET) return TRUE;
+
+	str = Hob_Scratch(wid->hob, FALSE);
+	if (!str) return FALSE;
+	n = RL_FORM_VALUE(str, val, type, LIST_CELL_LIMIT, 0);
+	if (n < 0) return FALSE;
+
+	// Straight from the series, as IMG_DATA reads an image's pixels - NOT
+	// through RL_SERIES(RXI_SER_DATA). That returns the pointer as a
+	// REBUPT, and where the extension's build types REBUPT as a 32-bit
+	// `unsigned long` (a 64-bit Windows compiler which is not C99 and
+	// defines no __LLP64__), the address comes back cut in half.
+	*utf8 = STR_HEAD(str);
+	*len  = (REBCNT)n;
+	return TRUE;
+}
+
+void Gui_List_Picked(GUIWIDGET *wid, REBINT n)
+{
+	REBINT x = 0, y = 0, w = 0, h = 0;
+
+	if (!wid || n == wid->picked) return;
+	wid->picked = n;
+	if (!wid->hob) return;
+	Gui_Widget_Get_Box(wid, &x, &y, &w, &h);
+	Gui_Queue_Event(wid->hob, EVT_CHANGE, x, y, 0);
+}
+
+// Picks row `n` (0-based; out of range picks nothing) without it being
+// reported - the row is recorded as reported first.
+static void List_Set_Index(GUIWIDGET *wid, REBINT n)
+{
+	if (n < 0 || n >= (REBINT)Gui_List_Rows(wid)) n = -1;
+	wid->picked = n;
+	Gui_Widget_Set_Index(wid, n);
+}
+
+/***********************************************************************
+**  The column spec: titles, each optionally followed by a width and an
+**  alignment, in either order.
+**
+**      ["Name" 120  "Size" 60 right  "Date" none center]
+**
+**  A width of none fits the title - except on the LAST column, which
+**  then fills whatever room the others leave, and keeps filling it as
+**  the list is resized. The alignment is one of left (the default),
+**  center and right, and applies to the title and the cells alike.
+**
+**  Checked whole before anything changes, so a bad spec leaves the
+**  columns as they were.
+***********************************************************************/
+// A width of none, written in a block that is not reduced, is the WORD
+// `none` - which is what the spec in the README looks like.
+static REBOOL Is_None_Width(REBCNT type, RXIARG *val)
+{
+	static u32 none_sym = 0;
+	if (type == RXT_NONE) return TRUE;
+	if (type != RXT_WORD) return FALSE;
+	if (!none_sym) none_sym = RL_MAP_WORD((REBYTE*)"none");
+	return ((u32)val->int32a == none_sym) ? TRUE : FALSE;
+}
+
+// GUI_ALIGN_* for an alignment word, or -1 for anything else.
+static REBINT Align_Of(REBCNT type, RXIARG *val)
+{
+	if (type != RXT_WORD) return -1;
+	switch (RL_FIND_WORD(Gui_align_words, (REBCNT)val->int32a)) {
+	case W_GUI_ALIGN_LEFT:   return GUI_ALIGN_LEFT;
+	case W_GUI_ALIGN_CENTER: return GUI_ALIGN_CENTER;
+	case W_GUI_ALIGN_RIGHT:  return GUI_ALIGN_RIGHT;
+	}
+	return -1;
+}
+
+typedef struct {
+	REBCNT  index;   // of the title in the block
+	REBINT  width;   // -1 for none
+	REBINT  align;   // GUI_ALIGN_*
+} LIST_COL;
+
+// Reads the column at `index` - the title and what follows it - and
+// returns the index after it, or 0 when the spec is bad there.
+static REBCNT List_Next_Column(REBSER *blk, REBCNT index, LIST_COL *col)
+{
+	REBCNT type;
+	RXIARG val;
+	REBOOL has_width = FALSE, has_align = FALSE;
+
+	type = RL_GET_VALUE(blk, index, &val);
+	if (type != RXT_STRING) return 0;
+	col->index = index++;
+	col->width = -1;
+	col->align = GUI_ALIGN_LEFT;
+
+	for (;; index++) {
+		REBINT a;
+		type = RL_GET_VALUE(blk, index, &val);
+		if (type == 0 || type == RXT_END || type == RXT_STRING) break;
+		if (!has_width && (type == RXT_INTEGER || Is_None_Width(type, &val))) {
+			has_width = TRUE;
+			if (type == RXT_INTEGER) col->width = (val.int64 < 0) ? -1 : (REBINT)val.int64;
+			continue;
+		}
+		if (!has_align && (a = Align_Of(type, &val)) >= 0) {
+			has_align = TRUE;
+			col->align = a;
+			continue;
+		}
+		return 0;   // a second width, a second alignment, or anything else
+	}
+	return index;
+}
+
+static REBOOL List_Columns_Valid(REBSER *blk, REBCNT index, REBCNT *count)
+{
+	REBCNT   type, n = 0;
+	RXIARG   val;
+	LIST_COL col;
+
+	while ((type = RL_GET_VALUE(blk, index, &val)) != 0 && type != RXT_END) {
+		index = List_Next_Column(blk, index, &col);
+		if (!index) return FALSE;
+		n++;
+	}
+	*count = n;
+	return TRUE;
+}
+
+// Where the columns spec is kept, normalized: three values per column -
+// the title, the width (an integer, 0 for hidden, or none) and the
+// alignment word. `columns` is read back from it. Hidden columns exist
+// ONLY here: the native control is given the visible ones, each told which
+// value of a row it shows. Kept in the handle's slots, after the scratch
+// string (see the note on the shared slot).
+#define SLOT_COLUMNS 3
+
+static REBSER *List_Spec(GUIWIDGET *wid)
+{
+	RXIARG val;
+	if (!wid || !wid->hob || !wid->hob->series) return NULL;
+	if (RL_GET_VALUE(wid->hob->series, SLOT_COLUMNS, &val) != RXT_BLOCK) return NULL;
+	return (REBSER*)val.series;
+}
+
+static REBOOL List_Set_Columns(GUIWIDGET *wid, REBSER *blk, REBCNT index)
+{
+	REBCNT   type, count = 0, field = 0;
+	RXIARG   val;
+	LIST_COL col;
+	REBOOL   fill = FALSE, titled = FALSE, any_shown = FALSE;
+	REBSER  *spec, *slots;
+	REBCNT   old = wid->fields;
+
+	if (!List_Columns_Valid(blk, index, &count)) return FALSE;
+
+	// The normalized spec first - it is what `columns` reads back.
+	slots = Hob_Slots(wid->hob);
+	spec  = (REBSER*)RL_MAKE_BLOCK(count * 3);
+	if (!slots || !spec) return FALSE;
+	RL_PROTECT_GC(spec, 1);
+
+	Gui_List_Clear_Columns(wid);
+
+	while ((type = RL_GET_VALUE(blk, index, &val)) != 0 && type != RXT_END) {
+		REBYTE *utf8 = NULL;
+		RXIARG  title, w, a;
+		int     len;
+
+		index = List_Next_Column(blk, index, &col);   // valid: checked above
+		RL_GET_VALUE(blk, col.index, &title);
+		RL_SET_VALUE(spec, field * 3, title, RXT_STRING);
+		CLEARS(&w);
+		if (col.width < 0) {
+			RL_SET_VALUE(spec, field * 3 + 1, w, RXT_NONE);
+		} else {
+			w.int64 = (i64)col.width;
+			RL_SET_VALUE(spec, field * 3 + 1, w, RXT_INTEGER);
+		}
+		CLEARS(&a);
+		a.int32a = (i32)Gui_align_words[col.align == GUI_ALIGN_RIGHT  ? W_GUI_ALIGN_RIGHT
+		                              : col.align == GUI_ALIGN_CENTER ? W_GUI_ALIGN_CENTER
+		                              : W_GUI_ALIGN_LEFT];
+		RL_SET_VALUE(spec, field * 3 + 2, a, RXT_WORD);
+
+		// A width of 0 is a hidden column: in the rows, not on screen.
+		if (col.width != 0) {
+			len = RL_GET_UTF8_STRING((REBSER*)title.series, title.index, (void**)&utf8);
+			Gui_List_Add_Column(wid, field, utf8, (REBCNT)(len < 0 ? 0 : len),
+			                    col.width, col.align);
+			if (len > 0) titled = TRUE;
+			fill      = (col.width < 0);   // what the last SHOWN one says counts
+			any_shown = TRUE;
+		}
+		field++;
+	}
+
+	CLEARS(&val);
+	val.series = spec;
+	val.index  = 0;
+	RL_SET_VALUE(slots, SLOT_COLUMNS, val, RXT_BLOCK);   // [3], after the scratch
+	RL_PROTECT_GC(spec, 0);
+
+	wid->fields = count;
+	if (fill && any_shown) wid->state |= GUI_LIST_FILL;
+	else                   wid->state &= ~GUI_LIST_FILL;
+	Gui_List_Fill(wid);
+
+	// No titles at all: no header row. (One title is enough to keep it -
+	// the others are simply blank.)
+	Gui_List_Show_Header(wid, titled);
+
+	// Rows are cells over columns: a different number of columns makes
+	// the cells mean something else, so they go.
+	if (count != old) Hob_Set_Payload(wid->hob, NULL, RXT_NONE);
+	wid->sort = 0;
+	Gui_List_Show_Sort(wid);
+	List_Set_Index(wid, -1);
+	Gui_List_Reload(wid, Gui_List_Rows(wid));
+	return TRUE;
+}
+
+// The spec back: title, width - 0 for hidden, none for a last column which
+// fills, and otherwise the width it has NOW, which the user may have
+// dragged - and the alignment when it is not left. Setting it again gives
+// the same columns.
+static REBSER *List_Columns_Block(GUIWIDGET *wid)
+{
+	REBSER *spec = List_Spec(wid);
+	REBCNT  n, at = 0, count = wid->fields, last_shown = (REBCNT)-1;
+	REBSER *blk;
+	RXIARG  title, w, a;
+
+	if (!spec) return (REBSER*)RL_MAKE_BLOCK(0);
+	for (n = 0; n < count; n++) {
+		if (RL_GET_VALUE(spec, n * 3 + 1, &w) != RXT_INTEGER || w.int64 != 0) last_shown = n;
+	}
+
+	blk = (REBSER*)RL_MAKE_BLOCK(count * 3);
+	if (!blk) return NULL;
+	RL_PROTECT_GC(blk, 1);
+	for (n = 0; n < count; n++) {
+		REBCNT wtype;
+		RL_GET_VALUE(spec, n * 3, &title);
+		RL_SET_VALUE(blk, at++, title, RXT_STRING);
+
+		wtype = RL_GET_VALUE(spec, n * 3 + 1, &w);
+		if (wtype == RXT_INTEGER && w.int64 == 0) {
+			RL_SET_VALUE(blk, at++, w, RXT_INTEGER);            // hidden
+		} else if (n == last_shown && (wid->state & GUI_LIST_FILL)) {
+			CLEARS(&w);
+			RL_SET_VALUE(blk, at++, w, RXT_NONE);               // fills
+		} else {
+			REBINT now = Gui_List_Column_Width(wid, n);
+			CLEARS(&w);
+			w.int64 = (i64)(now < 0 ? 0 : now);
+			RL_SET_VALUE(blk, at++, w, RXT_INTEGER);
+		}
+
+		RL_GET_VALUE(spec, n * 3 + 2, &a);
+		if (RL_FIND_WORD(Gui_align_words, (REBCNT)a.int32a) != W_GUI_ALIGN_LEFT)
+			RL_SET_VALUE(blk, at++, a, RXT_WORD);
+	}
+	RL_PROTECT_GC(blk, 0);
+	return blk;
+}
+
+// FALSE when the cells do not make whole rows.
+static REBOOL List_Set_Items(GUIWIDGET *wid, REBSER *blk, REBCNT index)
+{
+	REBCNT tail, cols = wid->fields;
+	RXIARG val;
+
+	if (blk) {
+		tail = (REBCNT)RL_SERIES(blk, RXI_SER_TAIL);
+		if (tail < index) index = tail;
+		if (cols == 0 ? (tail > index) : ((tail - index) % cols != 0)) return FALSE;
+		CLEARS(&val);
+		val.series = blk;
+		val.index  = index;
+		Hob_Set_Payload(wid->hob, &val, RXT_BLOCK);
+	} else {
+		Hob_Set_Payload(wid->hob, NULL, RXT_NONE);
+	}
+	wid->picked = -1;
+	Gui_List_Reload(wid, Gui_List_Rows(wid));
+	return TRUE;
 }
 
 
@@ -895,6 +1273,8 @@ static REBOOL Kind_Has_Text(REBCNT kind)
 	     || kind == W_GUI_WIDGET_DROP_LIST
 	     || kind == W_GUI_WIDGET_DROP_DOWN
 	     || kind == W_GUI_WIDGET_TEXT_LIST
+	     // the first cell of the picked row; read-only
+	     || kind == W_GUI_WIDGET_LIST_VIEW
 	     // the label of the tab shown; read-only, like a drop-list's
 	     || kind == W_GUI_WIDGET_TAB_PANEL) ? TRUE : FALSE;
 }
@@ -903,7 +1283,7 @@ static REBOOL Kind_Has_Text(REBCNT kind)
 // panel's frame is `border?` too, but drawn by the extension itself.
 #define Kind_Has_Border(kind) \
 	((kind) == W_GUI_WIDGET_FIELD || (kind) == W_GUI_WIDGET_AREA \
-	 || (kind) == W_GUI_WIDGET_TEXT_LIST)
+	 || (kind) == W_GUI_WIDGET_TEXT_LIST || (kind) == W_GUI_WIDGET_LIST_VIEW)
 
 /***********************************************************************
 **  A date! as it crosses the extension boundary (3.22.9 and later): the
@@ -958,7 +1338,8 @@ static REBOOL Date_From_Arg(GUIWIDGET *wid, u32 bits, i64 time, GUIDATE *d)
 // Which kinds hold a list of strings, and pick one of them by `index`.
 #define Kind_Has_Items(kind) \
 	((kind) == W_GUI_WIDGET_DROP_LIST || (kind) == W_GUI_WIDGET_DROP_DOWN \
-	 || (kind) == W_GUI_WIDGET_TEXT_LIST || (kind) == W_GUI_WIDGET_TAB_PANEL)
+	 || (kind) == W_GUI_WIDGET_TEXT_LIST || (kind) == W_GUI_WIDGET_TAB_PANEL \
+	 || (kind) == W_GUI_WIDGET_LIST_VIEW)
 
 // Which kinds are on or off.
 static REBOOL Kind_Has_State(REBCNT kind)
@@ -1329,7 +1710,8 @@ static REBOOL Kind_Has_Enabled(REBCNT kind)
 // Which kinds scroll, and can be asked where they are. A drop-list's or a
 // drop-down's list scrolls too, but is not addressable.
 #define Kind_Scrolls(kind) \
-	((kind) == W_GUI_WIDGET_AREA || (kind) == W_GUI_WIDGET_TEXT_LIST)
+	((kind) == W_GUI_WIDGET_AREA || (kind) == W_GUI_WIDGET_TEXT_LIST \
+	 || (kind) == W_GUI_WIDGET_LIST_VIEW)
 
 static const char* Kind_Name(REBCNT kind)
 {
@@ -1350,6 +1732,7 @@ static const char* Kind_Name(REBCNT kind)
 	case W_GUI_WIDGET_PANEL:     return "panel";
 	case W_GUI_WIDGET_LINE:      return "line";
 	case W_GUI_WIDGET_TAB_PANEL: return "tab-panel";
+	case W_GUI_WIDGET_LIST_VIEW: return "list-view";
 	default:                 return "button";
 	}
 }
@@ -2081,6 +2464,8 @@ COMMAND cmd_gui_poll_events(RXIFRM *frm, void *ctx)
 			ev.data  = (u32)evt->x;
 			break;
 
+		case EVT_SORT:
+			// The 1-based number of the column whose header was clicked.
 		case EVT_SCROLL_LINE:
 			// The signed number of lines. There is no room for a position
 			// as well - see the note above.
@@ -2569,6 +2954,78 @@ COMMAND cmd_gui_add_drop_list(RXIFRM *frm, void *ctx)
 COMMAND cmd_gui_add_text_list(RXIFRM *frm, void *ctx)
 {
 	return Add_List_Control(frm, W_GUI_WIDGET_TEXT_LIST);
+}
+
+
+/***********************************************************************
+**  add-list-view
+**      parent columns [block!] offset [pair!] size [pair!]
+**      /with cells [block!] /index n [integer!] /flat
+**
+**  Frame: 1 parent, 2 columns, 3 offset, 4 size, 5 /with, 6 cells,
+**  7 /index, 8 n, 9 /flat.
+***********************************************************************/
+COMMAND cmd_gui_add_list_view(RXIFRM *frm, void *ctx)
+{
+	REBHOB    *hob;
+	GUIWIDGET *wid;
+	GUIWIDGET *panel = NULL;
+	GUIWIN    *win = Frm_Parent(frm, 1, &panel);
+	REBINT     x, y, w, h, req_w, req_h;
+	REBCNT     count = 0;
+
+	if (!win || !win->handle) RETURN_ERROR(ERR_INVALID_HANDLE);
+	if (!List_Columns_Valid(RXA_SERIES(frm, 2), RXA_INDEX(frm, 2), &count))
+		RETURN_ERROR(ERR_BAD_COLUMNS);
+	// The cells are checked here too, before anything is made - the same
+	// test List_Set_Items applies.
+	if (RXA_REF(frm, 5)) {
+		REBCNT tail  = (REBCNT)RL_SERIES(RXA_SERIES(frm, 6), RXI_SER_TAIL);
+		REBCNT index = RXA_INDEX(frm, 6);
+		if (tail < index) tail = index;
+		if (count == 0 ? (tail > index) : ((tail - index) % count != 0))
+			RETURN_ERROR(ERR_BAD_CELLS);
+	}
+
+	x = (REBINT)RXA_PAIR(frm, 3).x;
+	y = (REBINT)RXA_PAIR(frm, 3).y;
+	w = (REBINT)RXA_PAIR(frm, 4).x;
+	h = (REBINT)RXA_PAIR(frm, 4).y;
+	if (w < 0 || h < 0) RETURN_ERROR(ERR_BAD_SIZE);
+
+	// A zero axis asks for the natural size - see Add_Button_Control.
+	req_w = w; req_h = h;
+	if (w <= 0) w = 1;
+	if (h <= 0) h = 1;
+
+	hob = RL_MAKE_HANDLE_CONTEXT(Handle_GuiWidget);
+	if (hob == NULL) RETURN_ERROR(ERR_NO_HANDLE);
+
+	wid = (GUIWIDGET*)hob->data;
+	CLEARS(wid);
+	wid->hob    = hob;
+	wid->kind   = W_GUI_WIDGET_LIST_VIEW;
+	wid->owner  = win;
+	wid->parent = panel;
+	wid->picked = -1;
+
+	// Before the control exists: it may ask for cells as soon as it does.
+	if (!Hob_Scratch(hob, TRUE) || !Gui_Create_List_View(wid, win, x, y, w, h)) {
+		wid->owner  = NULL;
+		wid->parent = NULL;
+		RL_FREE_HANDLE_CONTEXT(hob);
+		RETURN_ERROR(ERR_NO_WIDGET);
+	}
+
+	if (RXA_REF(frm, 9)) Gui_Widget_Set_Border(wid, FALSE);
+
+	List_Set_Columns(wid, RXA_SERIES(frm, 2), RXA_INDEX(frm, 2));
+	if (RXA_REF(frm, 5)) List_Set_Items(wid, RXA_SERIES(frm, 6), RXA_INDEX(frm, 6));
+	List_Set_Index(wid, RXA_REF(frm, 7) ? (REBINT)RXA_INT32(frm, 8) - 1 : -1);
+
+	Attach_Widget(wid, win, req_w, req_h);
+
+	RETURN_HANDLE(hob);
 }
 
 
@@ -3442,6 +3899,28 @@ int GuiWidget_get_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 	case W_GUI_ARG_TEXT: {
 		REBSER *str;
 		if (!Kind_Has_Text(wid->kind)) { *type = RXT_NONE; break; }
+		if (wid->kind == W_GUI_WIDGET_LIST_VIEW) {
+			// The first cell of the picked row, formed into a string of
+			// its own - none when nothing is picked.
+			REBINT  n = Gui_Widget_Get_Index(wid);
+			REBCNT  index = 0, cell;
+			REBSER *blk = List_Items(wid, &index);
+			RXIARG  val;
+			if (n < 0 || !blk || wid->fields == 0) { *type = RXT_NONE; break; }
+			cell = RL_GET_VALUE(blk, index + (REBCNT)n * wid->fields, &val);
+			if (cell == 0 || cell == RXT_END) { *type = RXT_NONE; break; }
+			str = (REBSER*)RL_MAKE_STRING(16, FALSE);
+			if (!str) { *type = RXT_NONE; break; }
+			if (cell != RXT_NONE && cell != RXT_UNSET) {
+				RL_PROTECT_GC(str, 1);
+				RL_FORM_VALUE(str, val, cell, 0, 0);
+				RL_PROTECT_GC(str, 0);
+			}
+			arg->series = str;
+			arg->index  = 0;
+			*type = RXT_STRING;
+			break;
+		}
 		if (wid->kind == W_GUI_WIDGET_TEXT_LIST || wid->kind == W_GUI_WIDGET_DROP_LIST
 		 || wid->kind == W_GUI_WIDGET_TAB_PANEL) {
 			// A list box, or a non-editable drop-down, has no text of its
@@ -3576,6 +4055,30 @@ int GuiWidget_get_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 		// `none` covers both "the platform's own" and "nothing at all" -
 		// the second is what `transparent?` is for, and a transparent
 		// widget has no colour to report.
+		if (wid->kind == W_GUI_WIDGET_LIST_VIEW && GUI_LIST_STRIPED(wid)) {
+			// Two colours, read back as they were given - none for the
+			// platform's own.
+			REBSER *blk = (REBSER*)RL_MAKE_BLOCK(2);
+			RXIARG  c;
+			int     i;
+			if (!blk) { *type = RXT_NONE; break; }
+			for (i = 0; i < 2; i++) {
+				CLEARS(&c);
+				if (GUI_COLOR_HAS(wid->rows[i])) {
+					c.tuple_len = 3;
+					c.tuple_bytes[0] = (REBYTE)GUI_COLOR_R(wid->rows[i]);
+					c.tuple_bytes[1] = (REBYTE)GUI_COLOR_G(wid->rows[i]);
+					c.tuple_bytes[2] = (REBYTE)GUI_COLOR_B(wid->rows[i]);
+					RL_SET_VALUE(blk, (u32)i, c, RXT_TUPLE);
+				} else {
+					RL_SET_VALUE(blk, (u32)i, c, RXT_NONE);
+				}
+			}
+			arg->series = blk;
+			arg->index  = 0;
+			*type = RXT_BLOCK;
+			break;
+		}
 		if (!Kind_Has_Font(wid->kind) || !GUI_COLOR_HAS(wid->background)) {
 			*type = RXT_NONE;
 			break;
@@ -3602,6 +4105,16 @@ int GuiWidget_get_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 	case W_GUI_ARG_ITEMS: {
 		REBSER *blk;
 		if (!Kind_Has_Items(wid->kind)) { *type = RXT_NONE; break; }
+		if (wid->kind == W_GUI_WIDGET_LIST_VIEW) {
+			// The very block it was given - see List_Items().
+			REBCNT index = 0;
+			blk = List_Items(wid, &index);
+			if (!blk) { *type = RXT_NONE; break; }
+			arg->series = blk;
+			arg->index  = index;
+			*type = RXT_BLOCK;
+			break;
+		}
 		blk = Items_To_Block(wid);
 		if (!blk) { *type = RXT_NONE; break; }
 		arg->series = blk;
@@ -3657,6 +4170,22 @@ int GuiWidget_get_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 		if (wid->kind != W_GUI_WIDGET_TEXT_LIST) { *type = RXT_NONE; break; }
 		*type = RXT_LOGIC;
 		arg->int32a = (wid->state & GUI_LIST_FIXED) ? 0 : 1;
+		break;
+
+	case W_GUI_ARG_COLUMNS: {
+		REBSER *blk;
+		if (wid->kind != W_GUI_WIDGET_LIST_VIEW) { *type = RXT_NONE; break; }
+		blk = List_Columns_Block(wid);
+		if (!blk) { *type = RXT_NONE; break; }
+		arg->series = blk;
+		arg->index  = 0;
+		*type = RXT_BLOCK;
+		break; }
+
+	case W_GUI_ARG_SORT_COLUMN:
+		if (wid->kind != W_GUI_WIDGET_LIST_VIEW || wid->sort == 0) { *type = RXT_NONE; break; }
+		*type = RXT_INTEGER;
+		arg->int64 = (i64)wid->sort;
 		break;
 
 	case W_GUI_ARG_SIZE:
@@ -3775,6 +4304,12 @@ int GuiWidget_set_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 	switch (word) {
 	case W_GUI_ARG_ITEMS:
 		if (!Kind_Has_Items(wid->kind)) return PE_BAD_SET;
+		if (wid->kind == W_GUI_WIDGET_LIST_VIEW) {
+			if (*type == RXT_NONE) { List_Set_Items(wid, NULL, 0); break; }
+			if (*type != RXT_BLOCK) return PE_BAD_SET_TYPE;
+			if (!List_Set_Items(wid, (REBSER*)arg->series, arg->index)) return PE_BAD_SET;
+			break;
+		}
 		// A tab-panel's labels come with pages, which scripts hold on to;
 		// replacing them is not supported (yet).
 		if (wid->kind == W_GUI_WIDGET_TAB_PANEL) return PE_BAD_SET;
@@ -3786,7 +4321,8 @@ int GuiWidget_set_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 		if (!Kind_Has_Items(wid->kind)) return PE_BAD_SET;
 		if (*type != RXT_INTEGER) return PE_BAD_SET_TYPE;
 		// Out of range - zero included - simply picks nothing.
-		Gui_Widget_Set_Index(wid, (REBINT)arg->int64 - 1);
+		if (wid->kind == W_GUI_WIDGET_LIST_VIEW) List_Set_Index(wid, (REBINT)arg->int64 - 1);
+		else Gui_Widget_Set_Index(wid, (REBINT)arg->int64 - 1);
 		break;
 
 	case W_GUI_ARG_TEXT: {
@@ -3798,6 +4334,7 @@ int GuiWidget_set_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 		// whose text CAN be set - it is the typed value, not a pick.
 		if (wid->kind == W_GUI_WIDGET_DROP_LIST
 		 || wid->kind == W_GUI_WIDGET_TEXT_LIST
+		 || wid->kind == W_GUI_WIDGET_LIST_VIEW
 		 || wid->kind == W_GUI_WIDGET_TAB_PANEL) return PE_BAD_SET;
 		if (*type != RXT_STRING) return PE_BAD_SET_TYPE;
 		len = RL_GET_UTF8_STRING((REBSER*)arg->series, arg->index, (void**)&utf8);
@@ -3943,7 +4480,33 @@ int GuiWidget_set_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 
 	case W_GUI_ARG_BACKGROUND:
 		if (!Kind_Has_Font(wid->kind)) return PE_BAD_SET;
-		if (*type == RXT_NONE) {
+		// One colour, or none, takes the stripes off a list-view.
+		wid->rows[0] = wid->rows[1] = 0;
+		if (*type == RXT_BLOCK && wid->kind == W_GUI_WIDGET_LIST_VIEW) {
+			// Two colours: the rows alternate - the even ones first. Either
+			// may be none, the platform's own, which is what makes the
+			// stripes start on the first row or on the second.
+			RXIARG c;
+			REBCNT t;
+			int    i;
+			t = RL_GET_VALUE((REBSER*)arg->series, arg->index + 2, &c);
+			if (t != 0 && t != RXT_END) return PE_BAD_SET;   // more than two
+			for (i = 0; i < 2; i++) {
+				t = RL_GET_VALUE((REBSER*)arg->series, arg->index + (u32)i, &c);
+				if (t == RXT_TUPLE && c.tuple_len >= 3)
+					wid->rows[i] = GUI_COLOR_OF(c.tuple_bytes[0], c.tuple_bytes[1],
+					                            c.tuple_bytes[2]);
+				else if (!(t == RXT_NONE || Is_None_Width(t, &c))) {
+					wid->rows[0] = wid->rows[1] = 0;
+					return PE_BAD_SET;
+				}
+			}
+			// The empty part below the rows: the even rows' colour when
+			// both have one - it continues the list - and otherwise the
+			// platform's, since a colour there would be a third stripe.
+			wid->background = (GUI_COLOR_HAS(wid->rows[0]) && GUI_COLOR_HAS(wid->rows[1]))
+			                ? wid->rows[0] : 0;
+		} else if (*type == RXT_NONE) {
 			wid->background = 0; // the platform decides again
 		} else if (*type == RXT_TUPLE) {
 			if (arg->tuple_len < 3) return PE_BAD_SET;
@@ -3965,6 +4528,7 @@ int GuiWidget_set_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 		// than to a colour set earlier: one field holds both, because the
 		// two are answers to the same question.
 		wid->background = arg->int32a ? GUI_BG_CLEAR : 0;
+		wid->rows[0] = wid->rows[1] = 0;
 		Gui_Widget_Set_Background(wid);
 		break;
 
@@ -4023,7 +4587,8 @@ int GuiWidget_set_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 			case W_GUI_SCROLL_END:    where = 1.0; break;
 			default: return PE_BAD_SET;
 			}
-		} else if (*type == RXT_INTEGER && wid->kind == W_GUI_WIDGET_TEXT_LIST) {
+		} else if (*type == RXT_INTEGER && (wid->kind == W_GUI_WIDGET_TEXT_LIST
+		                                 || wid->kind == W_GUI_WIDGET_LIST_VIEW)) {
 			// An item, 1-based like `index`, brought into view without
 			// being picked. Clamped like a percent: 0 or less is the first
 			// item, past the end is the last.
@@ -4043,6 +4608,24 @@ int GuiWidget_set_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 		}
 
 		Gui_Widget_Set_Scroll(wid, where);
+		break; }
+
+	case W_GUI_ARG_COLUMNS:
+		if (wid->kind != W_GUI_WIDGET_LIST_VIEW) return PE_BAD_SET;
+		if (*type != RXT_BLOCK) return PE_BAD_SET_TYPE;
+		if (!List_Set_Columns(wid, (REBSER*)arg->series, arg->index)) return PE_BAD_SET;
+		break;
+
+	case W_GUI_ARG_SORT_COLUMN: {
+		i64 n;
+		if (wid->kind != W_GUI_WIDGET_LIST_VIEW) return PE_BAD_SET;
+		if (*type == RXT_NONE) n = 0;
+		else if (*type == RXT_INTEGER) n = arg->int64;
+		else return PE_BAD_SET_TYPE;
+		// A column that is not there shows no arrow.
+		if (n > (i64)wid->fields || -n > (i64)wid->fields) n = 0;
+		wid->sort = (REBINT)n;
+		Gui_List_Show_Sort(wid);
 		break; }
 
 	case W_GUI_ARG_SCROLLABLEQ:

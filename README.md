@@ -12,7 +12,7 @@ image widget - render into an `image!` with whatever draws pixels
 ([Blend2D](https://github.com/Siskin-framework/Rebol-Blend2D) being the
 intended one) and `redraw` it.
 
-Requires Rebol **3.22.9** or newer. Implementation notes for contributors are
+Requires Rebol **3.22.10** or newer. Implementation notes for contributors are
 in [INTERNALS.md](INTERNALS.md).
 
 ## What it is not (yet)
@@ -20,9 +20,9 @@ in [INTERNALS.md](INTERNALS.md).
 - no DRAW dialect, no compositor - just the image widget
 - keyboard events only per window, with `keys?`, and observed rather than taken
 - no checkable menu items
-- seventeen native controls: button, image, text, field, area, check, radio,
+- eighteen native controls: button, image, text, field, area, check, radio,
   toggle, slider, progress, drop-list, drop-down, text-list, date-field, panel,
-  line, tab-panel
+  line, tab-panel, list-view
 - Windows and macOS only; there is no X11/Wayland backend yet
 
 ## Build
@@ -324,6 +324,7 @@ pic:   add-image  win some-image       340x20
 | `drop-list` | pick one of a list | `change` `focus` `unfocus` |
 | `drop-down` | editable combo box - pick from a list, or type free text | `change` `focus` `unfocus` |
 | `text-list` | pick one of a list shown in a box | `change` `focus` `unfocus` |
+| `list-view` | a table - rows of cells under column headers | `change` `click` `sort` `focus` `unfocus` |
 | `date-field` | a date, and optionally a time of day | `change` `click` `focus` `unfocus` |
 | `panel`     | holds other widgets | nothing |
 | `line`      | separator rule | nothing |
@@ -632,6 +633,111 @@ trees/scroll: 3           ;; brings item 3 into view, without picking it
 An integer `scroll` scrolls as little as it takes: not at all if the item is
 already visible, and otherwise until it sits at the nearer edge. Values out
 of range are clamped. Reading `scroll` still gives a percent.
+
+### List-views
+
+A table: rows of cells under column headers. It needs Rebol 3.22.10 or
+later, for the `sort` event and for `RL_FORM_VALUE`.
+
+```rebol
+files: add-list-view/with/index win ["Name" 120  "Size" 60 right  "Date" none] 20x20 320x160 [
+    "a.txt"   120  1-Jan-2026
+    "b.png"  4096  2-Feb-2026
+    "c.r3"     64  3-Mar-2026
+] 2
+
+files/index               ;; 2 - the row, 1-based; 0 when nothing is picked
+files/text                ;; "b.png" - the first cell of that row, formed; read-only
+files/items               ;; the block it was given - the very same one
+files/columns             ;; ["Name" 120 "Size" 60 right "Date" none]
+```
+
+The columns are titles, each optionally followed by a width and an
+alignment, in either order. A width of `none`, or no width at all, fits the
+title. On the last shown column it fills the rest of the list instead, and
+keeps filling it as the list or the other columns are resized.
+
+A width of `0` hides a column. Its values stay in the rows, since a row is as
+long as the whole spec, but nothing shows them. That suits an id or a path the
+program needs and the user does not:
+
+```rebol
+files: add-list-view/with win ["id" 0  "Name" 140  "path" 0] 20x20 200x160 [
+    101 "readme"  %docs/readme.txt
+    102 "logo"    %img/logo.png
+]
+files/text                ;; the id of the picked row - the first value, hidden or not
+```
+
+`sort` reports a column by its position in the row, hidden columns counted, so
+`sort/skip/compare files/items 3 event/code` sorts by the column clicked. The alignment is
+`left` (the default), `center` or `right`, and applies to the title and the
+cells:
+
+```rebol
+files/columns: ["Name" 140  "Size" 70 right  "Date" none center]
+files/columns             ;; the same back - setting it again changes nothing
+```
+
+The cells are one flat block, row by row, as `foreach [name size date]` and
+`sort/skip` want them. They can be any values, shown as `form` shows them.
+`none` shows as an empty cell, and a cell is cut at 256 characters. A block
+whose length is not a whole number of rows is refused.
+
+The block is not copied. `items` gives back the same block, with its values
+unchanged, and the cells are formed only when they are shown, so a long list
+costs nothing until it is scrolled. Change the block in place and the rows
+show the new values as they repaint. For a new number of rows, set it again:
+
+```rebol
+append files/items ["d.jpg" 512 4-Apr-2026]
+files/items: files/items  ;; the new row shows up
+```
+
+Setting `columns` to a different number of columns clears `items`. When
+every title is empty, `["" 140 "" none]`, there is no header row, and so no
+`sort` either.
+
+`background` takes two colours in a block for striped rows: the first, third
+... rows get the first colour, the second, fourth... rows the second. Either
+may be `none` for the platform's own, which decides whether the stripes start
+on the first row or on the second. One colour, or `none`, takes the stripes
+off again:
+
+```rebol
+files/background: [none 235.240.250]   ;; plain, blue, plain, blue...
+files/background: [235.240.250 none]   ;; blue, plain, blue, plain...
+files/background: none                 ;; plain again - on macOS too
+```
+
+The part below the last row gets the first colour when both are set, and the
+platform's own otherwise.
+
+The user picking a row reports `change`. A double click on a row, or Enter
+with a row picked, reports `click`. Clicking a header reports `sort` with the
+column number, 1-based, in `event/code`. Sorting is the script's job: sort
+`items`, set it again, and set `sort-column` to show the arrow. A negative
+column means descending:
+
+```rebol
+if event/type = 'sort [
+    col: event/code
+    dir: either col = files/sort-column [negate col][col]
+    sort/skip/compare/reverse files/items 3 col          ;; or without /reverse
+    files/items: files/items
+    files/sort-column: dir
+]
+```
+
+`index`, `scroll`, `border?`, `/flat`, fonts and `color` work as for a
+text-list. `scrollable?` does not apply. A zero size gives the width of
+the columns by six rows.
+
+On Windows it uses the Explorer theme: whole-row selection and a highlight
+under the pointer, as in the system's own file lists. With `dark-controls?`
+on in a dark window it goes dark with the rest - rows, header and scroll
+bars - and back again. Colours set with `color` and `background` are kept
+either way.
 
 ### Date-fields
 
@@ -1175,6 +1281,18 @@ Shows a context menu and returns the word of the item picked, or none
 * `/at`
 * `offset` `[pair!]` Where it opens, in the window's client coordinates (default: at the pointer)
 
+#### `add-list-view` `:parent` `:columns` `:offset` `:size`
+Creates a table - rows of cells under column headers - and returns its handle
+* `parent` `[handle!]` Window, panel or image widget to put it in
+* `columns` `[block!]` Column titles, each optionally followed by its width (integer!, 0 to hide it, or none: fit the title, or fill the rest on the last shown column) and alignment (left, center or right)
+* `offset` `[pair!]` Position inside the parent
+* `size` `[pair!]`
+* `/with`
+* `cells` `[block!]` Cells to show, row by row in one flat block; any values, shown as FORM shows them
+* `/index`
+* `n` `[integer!]` Row picked to start with, 1-based (default: none)
+* `/flat` Without the border
+
 
 ## Used handles and its getters / setters
 
@@ -1224,29 +1342,29 @@ Shows a context menu and returns the word of the item picked, or none
 
 ```rebol
 ;Refinement       Gets                Sets                          Description
-/text             string!             string!                       "Label or contents; the caption of a framed panel; the selected item of a drop-list or a text-list, which is read-only; the typed value of a drop-down, which can be set; none for an image"
-/items            block!              block!                        "Strings a drop-list, a drop-down or a text-list offers, or a tab-panel's tab labels (read-only there); none for other kinds"
-/index            integer!            integer!                      "Which item is picked, or which tab is shown, 1-based; 0 for none"
+/text             string!             string!                       "Label or contents; the caption of a framed panel; the selected item of a drop-list or a text-list, or the first cell of a list-view's selected row, which are read-only; the typed value of a drop-down, which can be set; none for an image"
+/items            block!              block!                        "Strings a drop-list, a drop-down or a text-list offers; a tab-panel's tab labels (read-only there); a list-view's cells, row by row in one flat block, any values; none for other kinds"
+/index            integer!            integer!                      "Which item or list-view row is picked, or which tab is shown, 1-based; 0 for none"
 /image            image!              image!                        "Image shown by an image widget, none for other kinds"
 /size             pair!               pair!                         "Size of the control; a zero axis asks it what that axis needs, the same as at creation"
 /offset           pair!               pair!                         "Position inside whatever holds it - a window or a panel"
 /at               pair!               none                          "Top-left corner in its window's client area, however deeply nested - what a mouse event's offset is measured from"
 /id               integer!            none                          "Native control handle as an integer"
-/kind             word!               none                          "What the control is: button, image, text, field, area, check, radio, toggle, slider, progress, drop-list, drop-down, text-list, date-field, panel, line or tab-panel"
+/kind             word!               none                          "What the control is: button, image, text, field, area, check, radio, toggle, slider, progress, drop-list, drop-down, text-list, date-field, panel, line, tab-panel or list-view"
 /value            [percent! date!]    [percent! decimal! date!]     "Position of a slider or a progress bar; the date of a date-field, with its time of day when made with `/time`; none for other kinds"
 /state            logic!              logic!                        "Whether a check, a radio or a toggle is on; none for other kinds"
-/border?          logic!              logic!                        "Whether a panel draws a frame around itself, or a field, an area or a text-list its border; none for other kinds"
+/border?          logic!              logic!                        "Whether a panel draws a frame around itself, or a field, an area, a text-list or a list-view its border; none for other kinds"
 /font             string!             [string! none!]               "Font family; none puts it back to the system font"
 /font-size        integer!            [integer! none!]              "Point size; none puts it back to the system size"
 /bold?            logic!              logic!                        "Whether the text is bold"
 /italic?          logic!              logic!                        "Whether the text is italic"
 /color            tuple!              [tuple! none!]                "Text colour; none lets the platform decide"
-/background       tuple!              [tuple! none!]                "Colour painted behind the text; none lets the platform decide"
+/background       [tuple! block!]     [tuple! block! none!]         "Colour painted behind the text; none lets the platform decide. A list-view also takes two colours in a block, which its rows alternate between - either may be none, for the platform's own"
 /transparent?     logic!              logic!                        "Whether nothing is painted behind it at all, so whatever the widget sits on shows through"
 /children         block!              none                          "Widgets a container holds, in the order they were added; none for a kind which cannot hold any"
 /read-only?       logic!              logic!                        "Whether a field or an area refuses to be edited while staying selectable; none for other kinds"
 /focused?         logic!              none                          "Whether it currently has the keyboard focus"
-/scroll           percent!            [percent! decimal! word! integer!]"How far an area or a text-list is scrolled; set a percent, or one of top, bottom and end; an integer brings that text-list item into view; none for kinds which do not scroll"
+/scroll           percent!            [percent! decimal! word! integer!]"How far an area, a text-list or a list-view is scrolled; set a percent, or one of top, bottom and end; an integer brings that item or row into view; none for kinds which do not scroll"
 /group            integer!            none                          "Which radio group it belongs to; for a tab-panel's page, which tab it is; 0 for everything else"
 /enabled?         logic!              logic!                        "Whether the control responds to the user"
 /tip              string!             [string! none!]               "Text the platform shows when the pointer rests on it; none for no tip"
@@ -1254,6 +1372,8 @@ Shows a context menu and returns the word of the item picked, or none
 /window           handle!             none                          "The window it ends up in, however deeply nested"
 /scrollable?      logic!              logic!                        "Whether the user can scroll a text-list - off hides its scroll bar and ignores the wheel, while `scroll` and `index` still move it; none for other kinds"
 /secure?          logic!              none                          "Whether a field masks what is typed - made with `/secure`; none for other kinds"
+/columns          block!              block!                        "A list-view's columns: each a title, its width and, unless left, its alignment (center or right); a width of none fits the title, or fills the rest on the last shown column; 0 hides it, while its values stay in the rows; setting a different number of columns clears `items`; none for other kinds"
+/sort-column      integer!            [integer! none!]              "Which list-view column shows the sort arrow, 1-based, negative for descending; none for no arrow. Only the arrow - sorting `items` is the script's"
 ```
 
 #### __SCREEN__ - GUI screen handle - one display; every read asks the platform again

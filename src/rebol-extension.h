@@ -1,7 +1,7 @@
 ////////////////////////////////////////////////////////////////////////
 // File: rebol-extension.h
 // Home: https://github.com/Oldes/Rebol3/
-// Date: 25-Sep-2026/10:52:56
+// Date: 28-Sep-2026/21:35:42
 // Note: This file is amalgamated from these sources:
 //
 //       reb-c.h
@@ -902,8 +902,8 @@ enum encoding_opts {
 ************************************************************************
 **
 **  Title: Extension Types (Isolators)
-**  Build: 3.22.9
-**  Date:  25-Sep-2026
+**  Build: 3.22.10
+**  Date:  28-Sep-2026
 **  File:  ext-types.h
 **
 **  AUTO-GENERATED FILE - Do not modify. (From: make-boot.reb)
@@ -2887,8 +2887,8 @@ typedef struct Reb_All {
 ************************************************************************
 **
 **  Title: Event Types
-**  Build: 3.22.9
-**  Date:  25-Sep-2026
+**  Build: 3.22.10
+**  Date:  28-Sep-2026
 **  File:  reb-evtypes.h
 **
 **  AUTO-GENERATED FILE - Do not modify. (From: make-boot.reb)
@@ -2964,6 +2964,7 @@ enum event_types {
 	EVT_MENU_CLOSE,               // 164
 	EVT_DROP_FILE,                // 165
 	EVT_DROP_TEXT,                // 166
+	EVT_SORT,                     // 167
 	EVT_MAX = 192
 };
 
@@ -3303,6 +3304,11 @@ enum {
 	RXE_NO_WORD,	// the word cannot be found (e.g. in an object)
 	RXE_NOT_FUNC,	// the value is not a function (for callback)
 	RXE_BAD_ARGS,	// function arguments to not match
+};
+
+enum {
+	RXF_MOLD,
+	RXF_APPEND,
 };
 
 #define SET_EXT_ERROR(v,n) ((v)->int32a = (n))
@@ -3871,8 +3877,8 @@ enum {
 ************************************************************************
 **
 **  Title: REBOL Host and Extension API
-**  Build: 3.22.9
-**  Date:  25-Sep-2026
+**  Build: 3.22.10
+**  Date:  28-Sep-2026
 **  File:  reb-lib.reb
 **
 **  AUTO-GENERATED FILE - Do not modify. (From: make-reb-lib.reb)
@@ -3884,7 +3890,7 @@ enum {
 // for compatiblity with the reb-lib DLL (using RL_Version.)
 #define RL_VER 3
 #define RL_REV 22
-#define RL_UPD 9
+#define RL_UPD 10
 
 // Bumped ONLY when an existing RL_API function's signature/semantics
 // change in a way that breaks old extension binaries calling it - i.e.
@@ -3965,6 +3971,7 @@ typedef struct rebol_ext_api {
 	int (*register_device)(REBDEV *dev, u32 dev_size);
 	REBREQ *(*port_state)(REBSER *port, REBCNT device);
 	int (*do_device)(REBREQ *req, REBCNT command);
+	REBINT (*form_value)(REBSER *dst, RXIARG val, REBCNT type, REBCNT limit, REBCNT flags);
 } RL_LIB;
 
 #ifndef API_EXPORT
@@ -5039,6 +5046,25 @@ extern RL_LIB *RL;  // is passed to the RX_Init() function
 **		an extension must not route around that.
 */
 
+#define RL_FORM_VALUE(a,b,c,d,e)    RL->form_value(a,b,c,d,e)
+/*
+**	REBINT RL_Form_Value(REBSER *dst, RXIARG val, REBCNT type, REBCNT limit, REBCNT flags)
+**
+**	Form (or mold) a value into a UTF-8 string series.
+**
+**	Returns:
+**		Number of bytes written, or -1 when dst is not a byte string.
+**	Arguments:
+**		dst   - target string; reset first unless RXF_APPEND is set
+**		val   - the value, as RXIARG + its RXT_ type
+**		limit - max chars (0 = no limit); longer output ends with "..."
+**		flags - RXF_MOLD: mold instead of form
+**		        RXF_APPEND: append to dst instead of replacing it
+**	Notes:
+**		Uses the shared mold buffer, so it must not be called while
+**		another mold is in progress (e.g. from a handle's mold callback).
+*/
+
 
 
 #define RL_MAKE_BINARY(s) RL_MAKE_STRING(s, FALSE)
@@ -5104,6 +5130,7 @@ RL_API void RL_Free(void *mem, size_t size);
 RL_API int RL_Register_Device(REBDEV *dev, u32 dev_size);
 RL_API REBREQ *RL_Port_State(REBSER *port, REBCNT device);
 RL_API int RL_Do_Device(REBREQ *req, REBCNT command);
+RL_API REBINT RL_Form_Value(REBSER *dst, RXIARG val, REBCNT type, REBCNT limit, REBCNT flags);
 
 #endif
 

@@ -408,6 +408,24 @@ static GUIWIN *Window_Context(NSWindow *window);
 @end
 
 
+// A list-view: the same table with a column per column and a header, and
+// its data source is the shared layer - see Gui_List_Cell(). `items` above
+// stays empty; the rows are counted and the cells formed as AppKit asks.
+@interface RebolGuiListView : RebolGuiList
+- (void)activated:(id)sender;
+@end
+
+// The two kinds built on RebolGuiList, which share most of their handling.
+#define IS_TABLE(wid) ((wid)->kind == W_GUI_WIDGET_TEXT_LIST \
+                    || (wid)->kind == W_GUI_WIDGET_LIST_VIEW)
+
+
+// Which value of a row a list-view column shows - its FIELD, kept as the
+// column's identifier. Only shown columns exist, so a column's position is
+// its field only until one is hidden.
+#define FIELD_OF(column) ((REBINT)[[(column) identifier] integerValue])
+
+
 // A date-field. Reports `change` when the user edits it - the action is
 // not sent for setDateValue:, so a date set by the script is not reported
 // back - and `focus`/`unfocus` as it gains and loses first responder.
@@ -1140,6 +1158,118 @@ TEXT_FIELD_BODY
 - (NSFont*)font
 {
 	return [[[[self tableColumns] firstObject] dataCell] font];
+}
+
+@end
+
+
+@implementation RebolGuiListView
+
+- (NSInteger)numberOfRowsInTableView:(NSTableView*)table
+{
+	return context ? (NSInteger)Gui_List_Rows(context) : 0;
+}
+
+// One cell, formed only now that it is about to be shown.
+- (id)tableView:(NSTableView*)table objectValueForTableColumn:(NSTableColumn*)column
+            row:(NSInteger)row
+{
+	REBYTE *utf8;
+	REBCNT  len;
+
+	if (!context || row < 0 || !column) return nil;
+	if (!Gui_List_Cell(context, (REBCNT)row, (REBCNT)FIELD_OF(column), &utf8, &len)) return nil;
+	return len ? To_NSString(utf8, len) : @"";
+}
+
+// Filtered by the shared layer: only a row other than the last one
+// reported is a `change`.
+- (void)tableViewSelectionDidChange:(NSNotification*)note
+{
+	if (quiet || !context) return;
+	Gui_List_Picked(context, (REBINT)[self selectedRow]);
+}
+
+- (void)tableView:(NSTableView*)table didClickTableColumn:(NSTableColumn*)column
+{
+	NSRect frame;
+	if (!context || !context->hob || !column) return;
+	frame = [[self enclosingScrollView] frame];
+	// The FIELD, hidden columns counted - what `sort/skip/compare` wants.
+	Gui_Queue_Event(context->hob, EVT_SORT,
+	                (REBINT)frame.origin.x, (REBINT)frame.origin.y, FIELD_OF(column) + 1);
+}
+
+// Columns are the script's to arrange, not the user's.
+- (BOOL)tableView:(NSTableView*)table shouldReorderColumn:(NSInteger)from toColumn:(NSInteger)to
+{
+	return NO;
+}
+
+- (void)report_click
+{
+	NSRect frame;
+	if (!context || !context->hob) return;
+	frame = [[self enclosingScrollView] frame];
+	Gui_Queue_Event(context->hob, EVT_CLICK,
+	                (REBINT)frame.origin.x, (REBINT)frame.origin.y,
+	                Modifier_Bits([NSEvent modifierFlags]));
+}
+
+// The double action - on a row only, not on the header or below the rows.
+- (void)activated:(id)sender
+{
+	if ([self clickedRow] >= 0) [self report_click];
+}
+
+// Enter (Return, or the keypad's) is the double click's keyboard twin.
+- (void)keyDown:(NSEvent*)evt
+{
+	unsigned short code = [evt keyCode];
+	if ((code == 36 || code == 76) && [self selectedRow] >= 0) {
+		[self report_click];
+		return;
+	}
+	[super keyDown:evt];
+}
+
+// The background, then each row with a colour of its own - under the
+// selection, which AppKit draws afterwards. A row whose colour is none
+// keeps the background, which is the platform's own whenever either is.
+- (void)drawBackgroundInClipRect:(NSRect)clip
+{
+	NSRange rows;
+	NSUInteger r;
+	[super drawBackgroundInClipRect:clip];
+	if (!context || !GUI_LIST_STRIPED(context)) return;
+
+	rows = [self rowsInRect:clip];
+	for (r = rows.location; r < NSMaxRange(rows); r++) {
+		REBCNT c = context->rows[r & 1];
+		if (!GUI_COLOR_HAS(c)) continue;
+		[[NSColor colorWithSRGBRed:GUI_COLOR_R(c) / 255.0
+		                     green:GUI_COLOR_G(c) / 255.0
+		                      blue:GUI_COLOR_B(c) / 255.0
+		                     alpha:1.0] setFill];
+		NSRectFill(NSIntersectionRect([self rectOfRow:(NSInteger)r], clip));
+	}
+}
+
+// Every column's cell, not only the first one's.
+- (void)setFont:(NSFont*)font
+{
+	if (!font) font = [NSFont systemFontOfSize:[NSFont systemFontSize]];
+	for (NSTableColumn *column in [self tableColumns])
+		[[column dataCell] setFont:font];
+	[self setRowHeight:ceil([font ascender] - [font descender] + [font leading]) + 2.0];
+	[self reloadData];
+}
+
+- (NSFont*)font
+{
+	NSTableColumn *column = [[self tableColumns] firstObject];
+	return column ? [[column dataCell] font]
+	              : [NSFont systemFontOfSize:[NSFont systemFontSize]];
 }
 
 @end
@@ -2504,7 +2634,7 @@ static NSTextView* Text_View_Of(GUIWIDGET *wid)
 // ... and a text-list's is too; the table lives one level in.
 static RebolGuiList* List_View_Of(GUIWIDGET *wid)
 {
-	if (!wid || !wid->handle || wid->kind != W_GUI_WIDGET_TEXT_LIST) return nil;
+	if (!wid || !wid->handle || !IS_TABLE(wid)) return nil;
 	return (RebolGuiList*)[(NSScrollView*)wid->handle documentView];
 }
 
@@ -2524,7 +2654,7 @@ static void Detach_Control(GUIWIDGET *wid)
 			[tv setDelegate:nil];
 			[(id)tv setContext:NULL];
 		}
-	} else if (wid->kind == W_GUI_WIDGET_TEXT_LIST) {
+	} else if (IS_TABLE(wid)) {
 		RebolGuiList *list = List_View_Of(wid);
 		if (list) {
 			[list setDelegate:nil];
@@ -3064,6 +3194,17 @@ REBOOL Gui_Widget_Natural_Size(GUIWIDGET *wid, REBINT *w, REBINT *h)
 			size = NSMakeSize(0.0, ([list rowHeight] + [list intercellSpacing].height) * 6.0 + 4.0);
 			break; }
 
+		case W_GUI_WIDGET_LIST_VIEW: {
+			// Six rows under the header, and as wide as the columns.
+			RebolGuiList *list = List_View_Of(wid);
+			CGFloat width = 4.0 + [NSScroller scrollerWidthForControlSize:NSControlSizeRegular
+			                                                 scrollerStyle:NSScrollerStyleLegacy];
+			for (NSTableColumn *col in [list tableColumns])
+				width += [col width] + [list intercellSpacing].width;
+			size = NSMakeSize(width, ([list rowHeight] + [list intercellSpacing].height) * 6.0
+			                  + [[list headerView] frame].size.height + 4.0);
+			break; }
+
 		default:
 			return FALSE; // no text, so no natural size to give
 		}
@@ -3072,7 +3213,7 @@ REBOOL Gui_Widget_Natural_Size(GUIWIDGET *wid, REBINT *w, REBINT *h)
 		// user is meant to type into wants room whatever is in it now.
 		if (wid->kind == W_GUI_WIDGET_FIELD
 		 || wid->kind == W_GUI_WIDGET_AREA
-		 || wid->kind == W_GUI_WIDGET_TEXT_LIST
+		 || IS_TABLE(wid)
 		 || wid->kind == W_GUI_WIDGET_DROP_LIST
 		 || wid->kind == W_GUI_WIDGET_DROP_DOWN) {
 			CGFloat least = 20.0 * [NSFont systemFontSize] * 0.55;
@@ -3105,7 +3246,7 @@ REBOOL Gui_Widget_Set_Tip(GUIWIDGET *wid, const REBYTE *utf8, REBCNT len)
 		}
 		[NSVIEW_OF(wid) setToolTip:tip];
 		if (wid->kind == W_GUI_WIDGET_AREA) [Text_View_Of(wid) setToolTip:tip];
-		if (wid->kind == W_GUI_WIDGET_TEXT_LIST) [List_View_Of(wid) setToolTip:tip];
+		if (IS_TABLE(wid)) [List_View_Of(wid) setToolTip:tip];
 		return TRUE;
 	}
 }
@@ -3192,7 +3333,7 @@ static id Font_Target(GUIWIDGET *wid)
 {
 	if (!wid || !wid->handle) return nil;
 	if (wid->kind == W_GUI_WIDGET_AREA) return (id)Text_View_Of(wid);
-	if (wid->kind == W_GUI_WIDGET_TEXT_LIST) return (id)List_View_Of(wid);
+	if (IS_TABLE(wid)) return (id)List_View_Of(wid);
 	return (id)wid->handle;
 }
 
@@ -3374,6 +3515,7 @@ REBOOL Gui_Widget_Set_Color(GUIWIDGET *wid)
 			break;
 
 		case W_GUI_WIDGET_TEXT_LIST:
+		case W_GUI_WIDGET_LIST_VIEW:
 			// Read by the table's willDisplayCell: as each row is drawn.
 			[List_View_Of(wid) setNeedsDisplay:YES];
 			break;
@@ -3435,6 +3577,7 @@ void Gui_Widget_Set_Background(GUIWIDGET *wid)
 			break; }
 
 		case W_GUI_WIDGET_TEXT_LIST:
+		case W_GUI_WIDGET_LIST_VIEW:
 			// Like an entry: a colour is honoured, transparency is not.
 			[List_View_Of(wid) setBackgroundColor:
 				(color ? color : [NSColor controlBackgroundColor])];
@@ -3651,7 +3794,7 @@ static NSView *Focus_Target(GUIWIDGET *wid)
 {
 	if (!wid || !wid->handle) return nil;
 	if (wid->kind == W_GUI_WIDGET_AREA) return (NSView*)Text_View_Of(wid);
-	if (wid->kind == W_GUI_WIDGET_TEXT_LIST) return (NSView*)List_View_Of(wid);
+	if (IS_TABLE(wid)) return (NSView*)List_View_Of(wid);
 	return (NSView*)wid->handle;
 }
 
@@ -4202,6 +4345,209 @@ REBOOL Gui_Create_Text_List(GUIWIDGET *wid, GUIWIN *owner,
 }
 
 
+//-- list-view ----------------------------------------------------------------
+
+REBOOL Gui_Create_List_View(GUIWIDGET *wid, GUIWIN *owner,
+                            REBINT x, REBINT y, REBINT w, REBINT h)
+{
+	@autoreleasepool {
+		NSScrollView     *scroll;
+		RebolGuiListView *list;
+		NSView           *content;
+		NSRect rect = NSMakeRect((CGFloat)x, (CGFloat)y, (CGFloat)w, (CGFloat)h);
+
+		if (!wid || !owner || !owner->handle) return FALSE;
+		if (![NSThread isMainThread]) return FALSE;
+
+		content = Parent_View(wid, owner);
+		if (!content) return FALSE;
+
+		scroll = [[NSScrollView alloc] initWithFrame:rect];
+		if (!scroll) return FALSE;
+		[scroll setBorderType:NSBezelBorder];
+		[scroll setHasVerticalScroller:YES];
+		[scroll setHasHorizontalScroller:YES];
+		[scroll setAutohidesScrollers:YES];
+
+		list = [[RebolGuiListView alloc] initWithFrame:
+			NSMakeRect(0, 0, [scroll contentSize].width, [scroll contentSize].height)];
+		if (!list) { [scroll release]; return FALSE; }
+
+		// Columns keep the widths they are given; the last one does not
+		// stretch to fill, the same as on Windows.
+		[list setColumnAutoresizingStyle:NSTableViewNoColumnAutoresizing];
+		[list setAllowsEmptySelection:YES];
+		[list setAllowsMultipleSelection:NO];
+		[list setAllowsColumnReordering:NO];
+		// Plain unless asked: stripes are `background` with two colours,
+		// drawn by -drawBackgroundInClipRect: - the same on both platforms.
+		[list setUsesAlternatingRowBackgroundColors:NO];
+		[list setContext:wid];
+		[list setDataSource:list];
+		[list setDelegate:list];
+		[list setTarget:list];
+		[list setDoubleAction:@selector(activated:)];
+
+		[scroll setDocumentView:list];
+		[list release];   // the scroll view holds it now
+
+		[content addSubview:scroll];
+		wid->handle = (void*)scroll;
+		return TRUE;
+	}
+}
+
+
+static NSTextAlignment NS_Align(REBINT align)
+{
+	return (align == GUI_ALIGN_RIGHT)  ? NSTextAlignmentRight
+	     : (align == GUI_ALIGN_CENTER) ? NSTextAlignmentCenter : NSTextAlignmentLeft;
+}
+
+REBOOL Gui_List_Add_Column(GUIWIDGET *wid, REBCNT field, const REBYTE *utf8, REBCNT len,
+                           REBINT width, REBINT align)
+{
+	@autoreleasepool {
+		RebolGuiListView *list = (RebolGuiListView*)List_View_Of(wid);
+		NSTableColumn    *column;
+		NSString         *title;
+		NSFont           *font;
+
+		if (!list) return FALSE;
+		title = To_NSString(utf8, len);
+		if (!title) title = @"";
+		font  = [list font];   // before the column: taken from the first one
+
+		// The identifier is the field - see FIELD_OF.
+		column = [[[NSTableColumn alloc] initWithIdentifier:
+			[NSString stringWithFormat:@"%lu", (unsigned long)field]]
+			autorelease];
+		[[column headerCell] setStringValue:title];
+		[[column dataCell] setFont:font];
+		[[column dataCell] setAlignment:NS_Align(align)];
+		[[column headerCell] setAlignment:NS_Align(align)];
+		[column setEditable:NO];
+		[column setResizingMask:NSTableColumnUserResizingMask];
+		[list addTableColumn:column];
+		if (width < 0) {
+			// Fitting the title, and room for the sort arrow.
+			[column sizeToFit];
+			[column setWidth:[column width] + 16.0];
+		} else {
+			[column setWidth:(CGFloat)width];
+		}
+		return TRUE;
+	}
+}
+
+
+void Gui_List_Clear_Columns(GUIWIDGET *wid)
+{
+	@autoreleasepool {
+		RebolGuiList *list = List_View_Of(wid);
+		if (!list) return;
+		while ([[list tableColumns] count] > 0)
+			[list removeTableColumn:[[list tableColumns] lastObject]];
+	}
+}
+
+
+// AppKit keeps the last column filling by itself once asked to - through
+// resizes of the list and of the other columns alike.
+void Gui_List_Fill(GUIWIDGET *wid)
+{
+	@autoreleasepool {
+		RebolGuiList *list = List_View_Of(wid);
+		if (!list) return;
+		if (wid->state & GUI_LIST_FILL) {
+			[list setColumnAutoresizingStyle:NSTableViewLastColumnOnlyAutoresizingStyle];
+			[list sizeLastColumnToFit];
+		} else {
+			[list setColumnAutoresizingStyle:NSTableViewNoColumnAutoresizing];
+		}
+	}
+}
+
+
+REBCNT Gui_List_Column_Count(GUIWIDGET *wid)
+{
+	@autoreleasepool {
+		RebolGuiList *list = List_View_Of(wid);
+		return list ? (REBCNT)[[list tableColumns] count] : 0;
+	}
+}
+
+
+REBINT Gui_List_Column_Width(GUIWIDGET *wid, REBCNT field)
+{
+	@autoreleasepool {
+		RebolGuiList *list = List_View_Of(wid);
+		if (!list) return -1;
+		for (NSTableColumn *column in [list tableColumns])
+			if (FIELD_OF(column) == (REBINT)field) return (REBINT)([column width] + 0.5);
+		return -1;   // hidden
+	}
+}
+
+
+void Gui_List_Reload(GUIWIDGET *wid, REBCNT rows)
+{
+	@autoreleasepool {
+		RebolGuiList *list = List_View_Of(wid);
+		if (!list) return;
+		// The count is asked of the data source again, so `rows` is only
+		// what the Windows side needs.
+		[list setQuiet:YES];
+		[list deselectAll:nil];
+		[list reloadData];
+		[list setQuiet:NO];
+		Display_Pending = TRUE;
+	}
+}
+
+
+void Gui_List_Show_Header(GUIWIDGET *wid, REBOOL show)
+{
+	@autoreleasepool {
+		RebolGuiList *list = List_View_Of(wid);
+		if (!list || (show ? YES : NO) == ([list headerView] != nil)) return;
+		[list setHeaderView:show
+			? [[[NSTableHeaderView alloc] initWithFrame:
+				NSMakeRect(0, 0, [list frame].size.width, 22.0)] autorelease]
+			: nil];
+		// The scroll view lays out its header and clip view again.
+		[[list enclosingScrollView] tile];
+		Display_Pending = TRUE;
+	}
+}
+
+
+void Gui_List_Show_Sort(GUIWIDGET *wid)
+{
+	@autoreleasepool {
+		RebolGuiList *list = List_View_Of(wid);
+		REBINT col;
+		NSUInteger n;
+
+		if (!list) return;
+		NSTableColumn *sorted = nil;
+		col = (wid->sort < 0) ? -wid->sort : wid->sort;   // a field, 1-based
+		for (n = 0; n < [[list tableColumns] count]; n++) {
+			NSTableColumn *column = [[list tableColumns] objectAtIndex:n];
+			NSImage *arrow = nil;
+			if (FIELD_OF(column) + 1 == col) {
+				sorted = column;
+				arrow  = [NSImage imageNamed:(wid->sort > 0)
+					? @"NSAscendingSortIndicator" : @"NSDescendingSortIndicator"];
+			}
+			[list setIndicatorImage:arrow inTableColumn:column];
+		}
+		[list setHighlightedTableColumn:sorted];
+		[[list headerView] setNeedsDisplay:YES];
+	}
+}
+
+
 REBCNT Gui_Widget_Count_Items(GUIWIDGET *wid)
 {
 	@autoreleasepool {
@@ -4210,6 +4556,8 @@ REBCNT Gui_Widget_Count_Items(GUIWIDGET *wid)
 			return (REBCNT)[NSTABS_OF(wid) numberOfTabViewItems];
 		if (wid->kind == W_GUI_WIDGET_TEXT_LIST)
 			return (REBCNT)[[List_View_Of(wid) items] count];
+		if (wid->kind == W_GUI_WIDGET_LIST_VIEW)
+			return Gui_List_Rows(wid);
 		if (wid->kind == W_GUI_WIDGET_DROP_DOWN)
 			return (REBCNT)[NSCOMBO_OF(wid) numberOfItems];
 		return (REBCNT)[NSPOPUP_OF(wid) numberOfItems];
@@ -4326,7 +4674,7 @@ REBINT Gui_Widget_Get_Index(GUIWIDGET *wid)
 			NSTabViewItem *item = [NSTABS_OF(wid) selectedTabViewItem];
 			return item ? (REBINT)[NSTABS_OF(wid) indexOfTabViewItem:item] : -1;
 		}
-		if (wid->kind == W_GUI_WIDGET_TEXT_LIST)
+		if (IS_TABLE(wid))
 			return (REBINT)[List_View_Of(wid) selectedRow]; // -1 for none
 		if (wid->kind == W_GUI_WIDGET_DROP_DOWN)
 			return (REBINT)[NSCOMBO_OF(wid) indexOfSelectedItem];
@@ -4351,7 +4699,7 @@ void Gui_Widget_Set_Index(GUIWIDGET *wid, REBINT n)
 			Display_Pending = TRUE;
 			return;
 		}
-		if (wid->kind == W_GUI_WIDGET_TEXT_LIST) {
+		if (IS_TABLE(wid)) {
 			RebolGuiList *list = List_View_Of(wid);
 			// Quiet, so a pick made by the script is not reported back as
 			// the user's - as on Windows, where LB_SETCURSEL notifies no one.
@@ -4522,7 +4870,7 @@ REBOOL Gui_Widget_Get_Enabled(GUIWIDGET *wid)
 		// read-only log as disabled.
 		if (wid->kind == W_GUI_WIDGET_AREA)
 			return [Text_View_Of(wid) isSelectable] ? TRUE : FALSE;
-		if (wid->kind == W_GUI_WIDGET_TEXT_LIST)
+		if (IS_TABLE(wid))
 			return [List_View_Of(wid) isEnabled] ? TRUE : FALSE;
 		return [(NSControl*)wid->handle isEnabled] ? TRUE : FALSE;
 	}
@@ -4555,7 +4903,7 @@ REBOOL Gui_Widget_Set_Enabled(GUIWIDGET *wid, REBOOL enabled)
 		if (!wid || !wid->handle) return FALSE;
 		if (wid->kind == W_GUI_WIDGET_AREA) {
 			Apply_Text_Editability(wid, enabled);
-		} else if (wid->kind == W_GUI_WIDGET_TEXT_LIST) {
+		} else if (IS_TABLE(wid)) {
 			[List_View_Of(wid) setEnabled:(enabled ? YES : NO)];
 		} else {
 			[(NSControl*)wid->handle setEnabled:(enabled ? YES : NO)];
@@ -4584,7 +4932,7 @@ static REBOOL Scroll_Metrics_Of(GUIWIDGET *wid, NSScrollView **sv,
 	NSView     *doc;
 
 	if (!wid || !wid->handle) return FALSE;
-	if (wid->kind != W_GUI_WIDGET_AREA && wid->kind != W_GUI_WIDGET_TEXT_LIST) return FALSE;
+	if (wid->kind != W_GUI_WIDGET_AREA && !IS_TABLE(wid)) return FALSE;
 
 	*sv  = (NSScrollView*)wid->handle;
 	clip = [*sv contentView];
@@ -4682,7 +5030,7 @@ REBOOL Gui_Widget_Set_Scroll(GUIWIDGET *wid, REBDEC where)
 		// laid out yet, and scrollRangeToVisible: forces that first. A
 		// computed fraction has no such guarantee to offer, so it uses
 		// whatever the layout currently says.
-		if (where >= 1.0 && wid->kind == W_GUI_WIDGET_TEXT_LIST) {
+		if (where >= 1.0 && IS_TABLE(wid)) {
 			RebolGuiList *list = List_View_Of(wid);
 			if ([list numberOfRows] > 0)
 				[list scrollRowToVisible:[list numberOfRows] - 1];
