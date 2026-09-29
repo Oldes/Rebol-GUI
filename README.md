@@ -24,7 +24,7 @@ in [INTERNALS.md](INTERNALS.md).
 - eighteen native controls: button, image, text, field, area, check, radio,
   toggle, slider, progress, drop-list, drop-down, text-list, date-field, panel,
   line, tab-panel, list-view
-- Windows and macOS only; there is no X11/Wayland backend yet
+- Windows, macOS and Linux (GTK 3) only
 
 ## Build
 
@@ -38,6 +38,11 @@ The build generates `src/gen-gui.h` and `src/gen-gui.c` from `src/gui.reb` and
 refreshes the reference sections of this file from the same specification. The
 amalgamated `rebol-extension.h` of a matching Rebol3 build must be reachable by
 the compiler.
+
+On Linux the backend is built on GTK 3 (3.22 or newer). Install its
+development files first - `libgtk-3-dev` on Debian and Ubuntu, `gtk3-devel` on
+Fedora - and `pkg-config`, which the nest asks for the compiler and linker
+flags.
 
 ## Usage
 
@@ -223,7 +228,8 @@ add-button ghost "floating" 20x20 0x0
 ```
 
 On Windows this uses a colour key of pure magenta: anything drawn in exactly
-`255.0.255` becomes a hole, and clicks there go to whatever is behind.
+`255.0.255` becomes a hole, and clicks there go to whatever is behind. On Linux
+it needs a compositing window manager; without one the client area is black.
 
 ### Light and dark
 
@@ -237,8 +243,11 @@ if evt/type = 'theme-change [
 ]
 ```
 
-On macOS the native controls and default colours follow the switch by
-themselves. On Windows only the title bar does, unless the window asks for more:
+On macOS and Linux the native controls and default colours follow the switch
+by themselves. On Linux, `dark?` is read from the GTK theme - a theme whose
+text is lighter than it is dark counts as dark - and switching themes reports
+`theme-change`. On Windows only the title bar follows, unless the window asks
+for more:
 
 ```rebol
 win/dark-controls?: true
@@ -259,7 +268,7 @@ already on screen therefore fills in a moment after it is built. To have it
 appear complete, open it `/hidden` and call `show-window` when done.
 
 `redraw` repaints a widget after you have changed its image. On Windows it
-paints before returning; on macOS it is drawn at the next pump, like
+paints before returning; on macOS and Linux it is drawn at the next pump, like
 everything else there.
 
 ### Screens
@@ -294,6 +303,13 @@ window's own size.
 
 On Windows, `name` is what the display settings show, which on some systems is
 only "Generic PnP Monitor". On macOS before 10.15 a display is named by its id.
+On Linux it is the connector (`DP-1`, `HDMI-2`), after the maker when the
+system knows it.
+
+On Linux, screens, a window's `offset` and `track-mouse` need X11: a Wayland
+client may neither place its windows nor see the pointer outside them. The
+extension therefore prefers X11, which on a Wayland desktop means XWayland;
+`GDK_BACKEND=wayland` forces native Wayland, without those three.
 
 ## Widgets
 
@@ -413,7 +429,7 @@ status-bar hints - use `enter` and `leave` instead.
 ### Sizes and DPI
 
 **Offsets and sizes are logical units** - 96 to the inch, a point on macOS, a
-pixel at 100% scaling on Windows. The same layout is the same physical size on
+pixel at 100% scaling on Windows and Linux. The same layout is the same physical size on
 any display, and event coordinates use the same units.
 
 **A zero axis asks the widget what it needs**, from its font and its own
@@ -454,7 +470,8 @@ the moment to render its images again at the new scale.
 
 On Windows this needs Windows 10 version 1703 or later. On older versions
 every window uses the system scale, and Windows stretches a window shown on a
-monitor with another setting.
+monitor with another setting. On Linux `scale` is GTK's whole-number scale
+factor (`GDK_SCALE`); fractional scaling enlarges the text only.
 
 ### Text and colour
 
@@ -759,7 +776,11 @@ centred in a taller box.
 
 Windows uses the Date and Time Picker, which drops down a calendar; with
 `/time` it shows the user's short date and time formats. macOS uses
-`NSDatePicker` as a field with a stepper. `dark-controls?` does not change
+`NSDatePicker` as a field with a stepper. GTK 3 has no date picker, so on
+Linux it is a field showing the user's short date (in ISO order where that
+format has a two-digit year) with a calendar behind its icon; a typed date is
+taken on Enter or when the field loses the focus, and one that does not read
+as a date is put back. `dark-controls?` does not change
 the Windows control yet. Requires Rebol 3.22.9, the first version that
 passes a date's time to extensions.
 
@@ -913,6 +934,8 @@ Platform differences:
   shows the menu of whichever window is active. An application menu is added
   first; its Quit reports a `close` event for the window rather than ending
   the process.
+- On **Linux** the bar is inside the window, as on Windows, and keeps the
+  client area the same size.
 
 ### Context menus
 
@@ -973,7 +996,8 @@ widget.
 Tab and Shift-Tab move between controls, including into panels and image
 widgets; Space presses a focused button or check; `&` in a label marks a
 mnemonic. On Windows the arrow keys also move within a radio group; on macOS
-they do not.
+and Linux they do not. On macOS and Linux, Tab follows the controls' positions
+rather than the order they were made in.
 
 ## Keys
 
@@ -991,8 +1015,8 @@ when nothing in it is focused.
 | `named-key`, `named-key-up` | a word from `system/catalog/event-keys`: `left`, `f1`, `escape`, `backspace`, `shift`... |
 
 The character has Shift applied but not Control or Option/Alt: Ctrl+A is
-`#"a"` with `control` in `flags`. On Windows, AltGr characters come through
-as typed. A dead key reports nothing until it makes a character. Command on
+`#"a"` with `control` in `flags`. On Windows and Linux, AltGr characters come
+through as typed. A dead key reports nothing until it makes a character. Command on
 macOS has no key and no flag, and is not reported. Held keys repeat.
 
 Keys are only observed: the widget still gets them, and a handler cannot
@@ -1031,15 +1055,15 @@ image reports the image; walk `target/parent` if you need more.
 
 ## Platforms
 
-| | Windows | macOS |
-|---|---|---|
-| file | `gui-win.c` | `gui-mac.m` |
-| built on | Win32 / GDI | AppKit |
-| needs | user32, gdi32, comctl32 | AppKit, Foundation, 10.13+ SDK |
+| | Windows | macOS | Linux |
+|---|---|---|---|
+| file | `gui-win.c` | `gui-mac.m` | `gui-gtk.c` |
+| built on | Win32 / GDI | AppKit | GTK 3 |
+| needs | user32, gdi32, comctl32 | AppKit, Foundation, 10.13+ SDK | GTK 3.22+, X11 preferred |
 
 Things worth knowing:
 
-- **Coordinates** have a top-left origin on both platforms, and `size` is
+- **Coordinates** have a top-left origin on every platform, and `size` is
   always the client (content) area.
 - **Mouse wheel** direction on macOS follows the user's "natural scrolling"
   setting.
@@ -1051,7 +1075,12 @@ Things worth knowing:
 - **macOS: never load two copies of the extension.** A standalone `gui.rebx`
   in a host that already embeds the same sources makes the Objective-C runtime
   report duplicated classes, and controls then misbehave. Builds with
-  different `GUI_CLASS_PREFIX` values can coexist.
+  different `GUI_CLASS_PREFIX` values can coexist. The same holds on Linux,
+  for GTK's type names.
+- **Linux control sizes:** GTK's default theme sizes controls for touch as
+  much as for a mouse. Inside this extension's windows, buttons, entries and
+  tabs lose their minimum heights and some padding, so a layout sized for
+  Windows or macOS fits.
 ## Extension commands:
 
 
@@ -1311,7 +1340,7 @@ Creates a table - rows of cells under column headers - and returns its handle
 /screen           handle!             none                          "The screen most of the window is on"
 /dark?            logic!              none                          "Whether the system shows it in the dark appearance; a `theme-change` event reports when this changes"
 /modal?           logic!              none                          "Whether it was opened with `/modal` - while it is open, every other window is blocked"
-/dark-controls?   logic!              logic!                        "Whether its controls and default colours follow the dark appearance on Windows (macOS always does); off by default"
+/dark-controls?   logic!              logic!                        "Whether its controls and default colours follow the dark appearance on Windows (macOS and Linux always do); off by default"
 /keys?            logic!              logic!                        "Whether every key pressed in it is reported as `key`/`key-up` (a char!) or `named-key`/`named-key-up` (a word); off by default"
 /resizable?       logic!              logic!                        "Whether the user can resize it"
 /title?           logic!              logic!                        "Whether it has a title bar and a frame; without one the user cannot move or close it"

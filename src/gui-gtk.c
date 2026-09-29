@@ -140,6 +140,11 @@ static gdouble Last_Press_X = 0, Last_Press_Y = 0;
 // to a line.
 static gdouble Wheel_Rest = 0.0;
 
+// A copy of the last button press in one of our windows. GTK wants the
+// event which opened a context menu; popup-menu is called from Rebol, long
+// after that event was dispatched, so it is kept here.
+static GdkEvent *Last_Press = NULL;
+
 static GtkCssProvider *Compact_Css = NULL;
 
 
@@ -817,7 +822,8 @@ static GUIWIDGET *Widget_Under_Point(GUIWIN *win, gdouble cx, gdouble cy, REBOOL
 
 // The kinds whose presses are theirs to report: what Rebol draws on, and
 // the controls one presses. The rest take the mouse for themselves (a
-// field selects text, a list picks a row) and report what it meant.
+// field selects text, a list picks a row) and report what it meant; a
+// panel only holds things.
 static REBOOL Reports_Press(REBCNT kind)
 {
 	switch (kind) {
@@ -830,13 +836,6 @@ static REBOOL Reports_Press(REBCNT kind)
 		return TRUE;
 	}
 	return FALSE;
-}
-
-// ... and the kinds which are only somewhere to put things, so a press on
-// them is the window's.
-static REBOOL Is_Holder(REBCNT kind)
-{
-	return kind == W_GUI_WIDGET_PANEL;
 }
 
 
@@ -998,8 +997,10 @@ static void Event_Hook(GdkEvent *ev, gpointer data)
 			if (!type || !In_Client(win, ev)) break;
 			extra = Is_Double_Click(b) ? GUI_FLAG_DOUBLE : 0;
 			Client_Point(win, b->x_root, b->y_root, &cx, &cy);
+			// A press on the window's own background is the window's; one
+			// on a panel is nobody's, as the README promises.
 			wid = Widget_Under_Point(win, cx, cy, FALSE);
-			if (!wid || Is_Holder(wid->kind)) source = win->hob;
+			if (!wid) source = win->hob;
 			else if (Reports_Press(wid->kind)) source = wid->hob;
 			else source = NULL;   // the control's own business
 			if (Press_Buttons == 0) {
@@ -1008,6 +1009,8 @@ static void Event_Hook(GdkEvent *ev, gpointer data)
 				Press_Kind   = wid ? wid->kind : 0;
 			}
 			Press_Buttons |= 1u << b->button;
+			if (Last_Press) gdk_event_free(Last_Press);
+			Last_Press = gdk_event_copy(ev);
 			if (source)
 				Gui_Queue_Event(source, type, (REBINT)floor(cx), (REBINT)floor(cy),
 				                Modifier_Bits(b->state) | extra);
@@ -1755,6 +1758,7 @@ REBCNT Gui_Popup_Track(GUIWIN *win, void *root, REBOOL at, REBINT x, REBINT y)
 	GtkMenu   *menu;
 	GMainLoop *loop;
 	GdkWindow *gw;
+	GdkEvent  *trigger, *made = NULL;
 	gulong     done;
 
 	if (!win || !win->handle || !root) return 0;
@@ -1764,6 +1768,19 @@ REBCNT Gui_Popup_Track(GUIWIN *win, void *root, REBOOL at, REBINT x, REBINT y)
 
 	gtk_menu_attach_to_widget(menu, GW(win)->content, NULL);
 	loop = g_main_loop_new(NULL, FALSE);
+	trigger = Last_Press;
+	if (!trigger || Window_Of_Gdk(trigger->any.window) != win) {
+		// Opened from code, with no press of ours to answer: an event is
+		// made up, on the window and the pointer, which is all GTK asks of
+		// one.
+		GdkDisplay *display = gdk_window_get_display(gw);
+		made = gdk_event_new(GDK_BUTTON_PRESS);
+		made->button.window = g_object_ref(gw);
+		made->button.time   = GDK_CURRENT_TIME;
+		made->button.button = 3;
+		gdk_event_set_device(made, gdk_seat_get_pointer(gdk_display_get_default_seat(display)));
+		trigger = made;
+	}
 	done = g_signal_connect(menu, "deactivate", G_CALLBACK(On_Popup_Done), loop);
 
 	Popup_Pick = 0;
@@ -1772,7 +1789,7 @@ REBCNT Gui_Popup_Track(GUIWIN *win, void *root, REBOOL at, REBINT x, REBINT y)
 		GdkRectangle r;
 		r.x = x; r.y = y; r.width = 1; r.height = 1;
 		gtk_menu_popup_at_rect(menu, gw, &r, GDK_GRAVITY_NORTH_WEST,
-		                       GDK_GRAVITY_NORTH_WEST, NULL);
+		                       GDK_GRAVITY_NORTH_WEST, trigger);
 	} else {
 		GdkDisplay *display = gdk_window_get_display(gw);
 		GdkDevice  *pointer = gdk_seat_get_pointer(gdk_display_get_default_seat(display));
@@ -1781,8 +1798,9 @@ REBCNT Gui_Popup_Track(GUIWIN *win, void *root, REBOOL at, REBINT x, REBINT y)
 		gdk_window_get_device_position(gw, pointer, &px, &py, NULL);
 		r.x = px; r.y = py; r.width = 1; r.height = 1;
 		gtk_menu_popup_at_rect(menu, gw, &r, GDK_GRAVITY_NORTH_WEST,
-		                       GDK_GRAVITY_NORTH_WEST, NULL);
+		                       GDK_GRAVITY_NORTH_WEST, trigger);
 	}
+	if (made) gdk_event_free(made);
 	if (gtk_widget_get_visible(GTK_WIDGET(menu))) g_main_loop_run(loop);
 	Popup_Tracking = FALSE;
 
@@ -2790,11 +2808,16 @@ REBOOL Gui_Create_Combo_Box(GUIWIDGET *wid, GUIWIN *owner,
                             REBINT x, REBINT y, REBINT w, REBINT h)
 {
 	GtkWidget *combo, *entry;
+	GtkWidget *button = NULL;
 	if (!wid || !owner || !owner->handle) return FALSE;
 	combo = gtk_combo_box_text_new_with_entry();
 	entry = gtk_bin_get_child(GTK_BIN(combo));
 	gtk_entry_set_width_chars(GTK_ENTRY(entry), 1);
 	if (!Place(wid, owner, combo, x, y, w, h)) return FALSE;
+	// One stop for Tab, the text, as a Win32 combo box has: the arrow is
+	// for the mouse.
+	gtk_container_forall(GTK_CONTAINER(combo), Find_Toggle, &button);
+	if (button) gtk_widget_set_can_focus(button, FALSE);
 	// A pick sets the entry's text, so both a pick and a keystroke land on
 	// the entry's `changed` - one `change` each.
 	Connect(wid, entry, "changed", G_CALLBACK(On_Changed));
@@ -3705,6 +3728,25 @@ void Gui_Widget_Set_Date(GUIWIDGET *wid, const GUIDATE *in)
 
 //== geometry =================================================================
 
+static void Layout_Window(GUIWIN *win, REBOOL measure);
+
+// A tab page is placed by its notebook, at the next layout; one which has
+// not had it yet is laid out first, so its place can be answered now.
+static void Place_Pages(GUIWIDGET *wid)
+{
+	GUIWIDGET *w;
+	for (w = wid; w; w = (GUIWIDGET*)w->parent) {
+		GtkWidget *g = GTKW(w);
+		GtkWidget *parent = g ? gtk_widget_get_parent(g) : NULL;
+		if (parent && GTK_IS_NOTEBOOK(parent)) {
+			GtkAllocation pa, na;
+			gtk_widget_get_allocation(g, &pa);
+			gtk_widget_get_allocation(parent, &na);
+			if (pa.y <= na.y) { Layout_Window(wid->owner, FALSE); return; }
+		}
+	}
+}
+
 REBOOL Gui_Widget_Get_Box(GUIWIDGET *wid, REBINT *x, REBINT *y, REBINT *w, REBINT *h)
 {
 	GtkWidget *widget, *parent;
@@ -3720,6 +3762,7 @@ REBOOL Gui_Widget_Get_Box(GUIWIDGET *wid, REBINT *x, REBINT *y, REBINT *w, REBIN
 	// A tab page: placed by its notebook.
 	if (parent && GTK_IS_NOTEBOOK(parent)) {
 		GtkAllocation pa, na;
+		Place_Pages(wid);
 		gtk_widget_get_allocation(widget, &pa);
 		gtk_widget_get_allocation(parent, &na);
 		*x = pa.x - na.x; *y = pa.y - na.y;
@@ -3743,6 +3786,7 @@ REBOOL Gui_Widget_Set_Box(GUIWIDGET *wid, REBINT x, REBINT y, REBINT w, REBINT h
 REBOOL Gui_Widget_Get_At(GUIWIDGET *wid, REBINT *x, REBINT *y)
 {
 	if (!wid || !wid->handle || !wid->owner || !wid->owner->handle) return FALSE;
+	Place_Pages(wid);
 	return Widget_Origin(wid, x, y);
 }
 
@@ -3809,7 +3853,7 @@ void Gui_Widget_Set_Border(GUIWIDGET *wid, REBOOL on)
 **  which measures lines and rows is let run - twice, since measuring
 **  changes what there is to lay out.
 ***********************************************************************/
-static void Layout_Hidden(GUIWIN *win)
+static void Layout_Window(GUIWIN *win, REBOOL measure)
 {
 	GTKWIN *gw;
 	GtkRequisition req;
@@ -3818,9 +3862,14 @@ static void Layout_Hidden(GUIWIN *win)
 
 	if (!win || !win->handle) return;
 	gw = GW(win);
-	if (gtk_widget_get_mapped(gw->window)) return;
+	if (gtk_widget_get_mapped(gw->window)) {
+		// On screen: whatever is pending is done now rather than at the
+		// next frame.
+		if (!measure) gtk_container_check_resize(GTK_CONTAINER(gw->window));
+		return;
+	}
 
-	for (round = 0; round < 2; round++) {
+	for (round = 0; round < (measure ? 2 : 1); round++) {
 		gint bar = 0;
 		if (gw->menubar && gtk_widget_get_visible(gw->menubar)) {
 			gint min = 0;
@@ -3831,16 +3880,21 @@ static void Layout_Hidden(GUIWIN *win)
 		a.height = (gw->want_h > 0 ? gw->want_h : 1) + bar;
 		gtk_widget_get_preferred_size(gw->vbox, &req, NULL);
 		gtk_widget_size_allocate(gw->vbox, &a);
+		if (!measure) break;
 		guard = 0;
 		while (g_main_context_iteration(NULL, FALSE) && ++guard < 200) {}
 	}
 }
+
+#define Layout_Hidden(win) Layout_Window((win), TRUE)
 
 static GtkAdjustment *Scroll_Adjustment(GUIWIDGET *wid)
 {
 	if (!wid || !wid->handle) return NULL;
 	if (wid->kind != W_GUI_WIDGET_AREA && !IS_TABLE(wid)) return NULL;
 	Layout_Hidden(wid->owner);
+	// Laying out ran the main loop; asked again, in case that closed it.
+	if (!wid->handle) return NULL;
 	return gtk_scrolled_window_get_vadjustment(GTK_SCROLLED_WINDOW(wid->handle));
 }
 
@@ -3879,7 +3933,7 @@ REBOOL Gui_Widget_Set_Scroll(GUIWIDGET *wid, REBDEC where)
 		else gtk_text_buffer_move_mark(buffer, mark, &end);
 		gtk_text_view_scroll_to_mark(tv, mark, 0.0, TRUE, 0.0, 1.0);
 		Layout_Hidden(wid->owner);
-		return TRUE;
+		return wid->handle ? TRUE : FALSE;
 	}
 	if (where >= 1.0 && IS_TABLE(wid)) {
 		gtk_adjustment_set_value(adj, gtk_adjustment_get_upper(adj)
@@ -3910,7 +3964,7 @@ static void Show_Row(GUIWIDGET *wid, REBINT n)
 	GdkRectangle r, first;
 	gdouble top, page, y;
 
-	if (!adj) return;
+	if (!adj || !wid->handle) return;
 	path = gtk_tree_path_new_from_indices(n, -1);
 	gtk_tree_view_get_background_area(tree, path, NULL, &r);
 	gtk_tree_path_free(path);

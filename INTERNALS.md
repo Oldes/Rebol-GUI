@@ -450,3 +450,75 @@ their theme instead (for readable text) looked worse and was dropped.
 macOS: `viewDidChangeEffectiveAppearance` on the content view, and the answer
 from `bestMatchFromAppearancesWithNames:` - both by selector and by appearance
 name, since the SDK floor (10.13) predates them.
+## Linux (GTK 3)
+
+`gui-gtk.c`. GTK's main loop never runs by itself: `Gui_Pump` iterates the
+default main context without blocking, which dispatches GDK's events and runs
+the frame clock, so layout and painting happen only there, as on macOS.
+`gdk_set_allowed_backends("x11,*")` prefers X11 (XWayland on a Wayland
+desktop), because Wayland lets a client neither place a window nor ask where
+the pointer is outside it. `GDK_BACKEND` still decides.
+
+- **Input:** one hook, `gdk_event_handler_set`, sees every `GdkEvent` before
+  GTK dispatches it (`Event_Hook`). It reports `move`, presses, the wheel,
+  `leave` and `keys?` for every window and passes the event on unchanged.
+  The source is worked out from the window's widget list (`Widget_Under_Point`,
+  the same walk as macOS), not from GTK's picking, so a label or a disabled
+  control is see-through as on Win32. Presses are reported for the window's
+  background, images, buttons, checks, radios, toggles and sliders; other
+  controls report what a press meant. A drag belongs to the source of its
+  press. Pointer events outside the client area (the menu bar, a date
+  field's calendar) are not reported. A slider's `up` is queued after GTK has
+  handled the release, so it follows the last `change`. GDK reports a double
+  click only after the second press, so the second press is recognised
+  with GDK's own time and distance settings. Blocked windows (modal dialogs)
+  lose their input in the hook.
+- **One container:** the client area, panels, tab pages and image widgets
+  are `RebolGuiBox`, a `GtkContainer` with a `GdkWindow` of its own that gives
+  each child exactly its box. `GtkFixed` would give a child its natural size
+  whenever that is larger. A child at a 1-unit placeholder (size still to be
+  measured) is kept out of layout until it has a real box, because GTK warns
+  when a frame does not fit. Fills go through `cairo_rectangle`, not
+  `cairo_paint`: the clip GTK hands a widget with its own window can reach
+  into its parent.
+- **Compact metrics:** a screen-wide provider scoped to `window.rebol-gui`
+  drops Adwaita's minimum heights and trims padding on buttons, entries,
+  combo boxes, tabs, scales and scroll bar sliders, so layouts sized for the
+  other platforms fit.
+- **Font, colour, background** are CSS: a provider per widget, added to its
+  style context and to those of its internal children (a button's label, a
+  combo box's cell), since a theme which colours a label directly ignores an
+  inherited colour. Styles are recomputed lazily, so after a change the
+  widget's style is reset and `style-updated` sent down, and the theme's
+  transitions are turned off on it, or a size measured, or a font read back,
+  right away would be the old one. The background goes on the one node that
+  paints it (`textview text`, `treeview.view`, the control's own node).
+- **Radios** each sit in a GTK group of two with a hidden partner: switching
+  the partner on is how a radio is switched off, since GTK will not untick a
+  radio itself and a real group would clear radios this extension did not
+  ask it to.
+- **Suppressed `change`:** writes from Rebol run with `Quiet` raised, and
+  the signal handlers ignore what fires meanwhile.
+- **List-view** has a `GtkTreeModel` of its own (`RebolGuiRows`) which only
+  knows how many rows there are; cells are formed by the column's data
+  function through `Gui_List_Cell`. A reload takes the model off and puts it
+  back. Stripes and text colour are set per cell.
+- **Date-field:** GTK 3 has no date picker. It is an entry showing the short
+  date (ISO order when the locale's has a two-digit year) and a `GtkCalendar`
+  in a popover behind the entry's icon. The value is kept in the widget; a
+  typed date is parsed with `g_date_set_parse` on Enter or focus loss.
+- **Hidden windows** are laid out on demand (`Layout_Window`) when a scroll
+  position or a tab page's place is asked for: GTK sizes a toplevel's
+  contents only once it is shown, and the other platforms answer at once.
+  Rows are brought into view from their own rectangles, measured from the
+  first row, because `gtk_tree_view_scroll_to_cell` only records the wish.
+- **Menus:** the bar is a `GtkMenuBar` above the client area, and the window
+  grows by its height. Shortcuts are accelerators on the window's group;
+  context menus have none, so there they are labels only. `popup-menu` runs a
+  nested main loop until the menu's `deactivate`, which GTK emits before the
+  item's `activate` in the same dispatch; the last press is kept as the
+  trigger event GTK asks for.
+- **Screens** are keyed by the connector name GDK reports as the monitor's
+  model. **Light and dark** is the luminance of the theme's text colour,
+  re-read when GTK's theme settings change.
+- **Type names** carry `GUI_CLASS_PREFIX`, for the same reason as on macOS.
