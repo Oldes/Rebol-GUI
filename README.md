@@ -21,9 +21,9 @@ in [INTERNALS.md](INTERNALS.md).
 - no DRAW dialect, no compositor - just the image widget
 - keyboard events only per window, with `keys?`, and observed rather than taken
 - no checkable menu items
-- eighteen native controls: button, image, text, field, area, check, radio,
+- nineteen native controls: button, image, text, field, area, check, radio,
   toggle, slider, progress, drop-list, drop-down, text-list, date-field, panel,
-  line, tab-panel, list-view
+  line, tab-panel, list-view, tree-view
 - Windows, macOS and Linux (GTK 3) only
 
 ## Build
@@ -761,6 +761,48 @@ on in a dark window it goes dark with the rest - rows, header and scroll
 bars - and back again. Colours set with `color` and `background` are kept
 either way.
 
+### Tree-views
+
+```rebol
+tree: add-tree-view win [
+    "Documents" docs [
+        "Report.txt" report
+        "Old" old ["a.txt" a  "b.txt"]
+    ]
+    "Music" music ["Song.mp3"]
+    "Notes.txt"
+] 20x20 220x300
+
+tree/selected                  ;; [docs old "b.txt"] - the path to the picked node
+tree/text                      ;; "b.txt" - its label
+tree/selected: [docs report]   ;; picks it, opening the branches above it
+tree/selected: 'report         ;; the first node with that word...
+tree/selected: "Song.mp3"      ;; ... or that label
+tree/selected: none            ;; nothing picked
+tree/expanded                  ;; [[docs] [docs old]] - the open branches
+tree/expanded: [[docs old]]    ;; opens exactly those, and the ones above
+tree/items: [...]              ;; replaces the whole tree
+```
+
+`items` is the menu bar's grammar without shortcuts: a label, then optionally
+a word naming the node, then optionally a block of its children. A node is
+found by its PATH - a block of each node's word on the way down, or its label
+where it has none - so words only have to be unique among siblings. Setting
+`selected` or `expanded` to a path that names nothing picks, or opens,
+nothing; a single word or label finds the first node with it, parents before
+children.
+
+`change` is reported when the user picks another node, and `click` on a
+double click or Enter. Setting `selected`, `expanded` or `items` reports
+nothing. A branch inside a closed one keeps its state and shows it again when
+its parent opens, and `expanded` lists it all the same. Fonts, `color`,
+`background`, `border?`, `/flat` and `scroll` (a percent or `top`, `bottom`,
+`end`) work as for a text-list; a zero size gives about eight rows.
+
+Windows uses the TreeView control with the Explorer look, macOS an
+`NSOutlineView`, Linux a `GtkTreeView`. On Windows a double click also opens
+or closes a branch, as it does in Explorer.
+
 ### Date-fields
 
 ```rebol
@@ -1327,6 +1369,14 @@ Creates a table - rows of cells under column headers - and returns its handle
 * `n` `[integer!]` Row picked to start with, 1-based (default: none)
 * `/flat` Without the border
 
+#### `add-tree-view` `:parent` `:items` `:offset` `:size`
+Creates a tree - nodes in branches which open and close - and returns its handle
+* `parent` `[handle!]` Window, panel or image widget to put it in
+* `items` `[block!]` Nodes: a label, then optionally a word naming it, then optionally a block of its children in the same grammar
+* `offset` `[pair!]` Position inside the parent
+* `size` `[pair!]`
+* `/flat` Without the border
+
 
 ## Used handles and its getters / setters
 
@@ -1376,18 +1426,18 @@ Creates a table - rows of cells under column headers - and returns its handle
 
 ```rebol
 ;Refinement       Gets                Sets                          Description
-/text             string!             string!                       "Label or contents; the caption of a framed panel; the selected item of a drop-list or a text-list, or the first cell of a list-view's selected row, which are read-only; the typed value of a drop-down, which can be set; none for an image"
-/items            block!              block!                        "Strings a drop-list, a drop-down or a text-list offers; a tab-panel's tab labels (read-only there); a list-view's cells, row by row in one flat block, any values; none for other kinds"
+/text             string!             string!                       "Label or contents; the caption of a framed panel; the selected item of a drop-list or a text-list, the first cell of a list-view's selected row, or the label of a tree-view's selected node, which are read-only; the typed value of a drop-down, which can be set; none for an image"
+/items            block!              block!                        "Strings a drop-list, a drop-down or a text-list offers; a tab-panel's tab labels (read-only there); a list-view's cells, row by row in one flat block, any values; a tree-view's nodes, in the menu dialect's grammar; none for other kinds"
 /index            integer!            integer!                      "Which item or list-view row is picked, or which tab is shown, 1-based; 0 for none"
 /image            image!              image!                        "Image shown by an image widget, none for other kinds"
 /size             pair!               pair!                         "Size of the control; a zero axis asks it what that axis needs, the same as at creation"
 /offset           pair!               pair!                         "Position inside whatever holds it - a window or a panel"
 /at               pair!               none                          "Top-left corner in its window's client area, however deeply nested - what a mouse event's offset is measured from"
 /id               integer!            none                          "Native control handle as an integer"
-/kind             word!               none                          "What the control is: button, image, text, field, area, check, radio, toggle, slider, progress, drop-list, drop-down, text-list, date-field, panel, line, tab-panel or list-view"
+/kind             word!               none                          "What the control is: button, image, text, field, area, check, radio, toggle, slider, progress, drop-list, drop-down, text-list, date-field, panel, line, tab-panel, list-view or tree-view"
 /value            [percent! date!]    [percent! decimal! date!]     "Position of a slider or a progress bar; the date of a date-field, with its time of day when made with `/time`; none for other kinds"
 /state            logic!              logic!                        "Whether a check, a radio or a toggle is on; none for other kinds"
-/border?          logic!              logic!                        "Whether a panel draws a frame around itself, or a field, an area, a text-list or a list-view its border; none for other kinds"
+/border?          logic!              logic!                        "Whether a panel draws a frame around itself, or a field, an area, a text-list, a list-view or a tree-view its border; none for other kinds"
 /font             string!             [string! none!]               "Font family; none puts it back to the system font"
 /font-size        integer!            [integer! none!]              "Point size; none puts it back to the system size"
 /bold?            logic!              logic!                        "Whether the text is bold"
@@ -1398,7 +1448,7 @@ Creates a table - rows of cells under column headers - and returns its handle
 /children         block!              none                          "Widgets a container holds, in the order they were added; none for a kind which cannot hold any"
 /read-only?       logic!              logic!                        "Whether a field or an area refuses to be edited while staying selectable; none for other kinds"
 /focused?         logic!              none                          "Whether it currently has the keyboard focus"
-/scroll           percent!            [percent! decimal! word! integer!]"How far an area, a text-list or a list-view is scrolled; set a percent, or one of top, bottom and end; an integer brings that item or row into view; none for kinds which do not scroll"
+/scroll           percent!            [percent! decimal! word! integer!]"How far an area, a text-list, a list-view or a tree-view is scrolled; set a percent, or one of top, bottom and end; an integer brings that item or row into view; none for kinds which do not scroll"
 /group            integer!            none                          "Which radio group it belongs to; for a tab-panel's page, which tab it is; 0 for everything else"
 /enabled?         logic!              logic!                        "Whether the control responds to the user"
 /tip              string!             [string! none!]               "Text the platform shows when the pointer rests on it; none for no tip"
@@ -1408,6 +1458,8 @@ Creates a table - rows of cells under column headers - and returns its handle
 /secure?          logic!              none                          "Whether a field masks what is typed - made with `/secure`; none for other kinds"
 /columns          block!              block!                        "A list-view's columns: each a title, its width and, unless left, its alignment (center or right); a width of none fits the title, or fills the rest on the last shown column; 0 hides it, while its values stay in the rows; setting a different number of columns clears `items`; none for other kinds"
 /sort-column      integer!            [integer! none!]              "Which list-view column shows the sort arrow, 1-based, negative for descending; none for no arrow. Only the arrow - sorting `items` is the script's"
+/selected         [block!]            [block! word! string! none!]  "A tree-view's selected node, as the path to it: a block of each node's word, or its label where it has none; setting a word or a label picks the first node that has it; none for no selection or for other kinds"
+/expanded         block!              block!                        "A tree-view's open branches, each as a path; setting opens exactly those (with the branches above them) and closes the rest; none for other kinds"
 ```
 
 #### __SCREEN__ - GUI screen handle - one display; every read asks the platform again

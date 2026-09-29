@@ -85,6 +85,7 @@
 #define RebolGuiPopUp     GUI_CLASS(PopUp)
 #define RebolGuiComboBox  GUI_CLASS(ComboBox)
 #define RebolGuiList      GUI_CLASS(List)
+#define RebolGuiTree      GUI_CLASS(Tree)
 #define RebolGuiDatePicker GUI_CLASS(DatePicker)
 #define RebolGuiPanel     GUI_CLASS(Panel)
 #define RebolGuiTabView   GUI_CLASS(TabView)
@@ -416,8 +417,11 @@ static GUIWIN *Window_Context(NSWindow *window);
 @end
 
 // The two kinds built on RebolGuiList, which share most of their handling.
+// A tree-view is an NSOutlineView, which is an NSTableView too, and
+// answers every table method sent through List_View_Of (see RebolGuiTree).
 #define IS_TABLE(wid) ((wid)->kind == W_GUI_WIDGET_TEXT_LIST \
-                    || (wid)->kind == W_GUI_WIDGET_LIST_VIEW)
+                    || (wid)->kind == W_GUI_WIDGET_LIST_VIEW \
+                    || (wid)->kind == W_GUI_WIDGET_TREE_VIEW)
 
 
 // Which value of a row a list-view column shows - its FIELD, kept as the
@@ -1270,6 +1274,216 @@ TEXT_FIELD_BODY
 	NSTableColumn *column = [[self tableColumns] firstObject];
 	return column ? [[column dataCell] font]
 	              : [NSFont systemFontOfSize:[NSFont systemFontSize]];
+}
+
+@end
+
+
+/***********************************************************************
+**  A tree-view: a one-column, cell-based NSOutlineView which is its own
+**  data source and delegate. The structure is the shared layer's table
+**  of nodes (see gui.h); the outline's items are one NSNumber per node,
+**  kept in `nodes` by index, because an outline recognises an item by
+**  its identity and must be handed the same object every time.
+**
+**  Which branches are open is kept in `open`, per node: an outline can
+**  only open a branch it is showing, and a Windows tree remembers a
+**  branch inside a closed one as open - so the wish is recorded, and
+**  applied as the branch holding it opens.
+***********************************************************************/
+@interface RebolGuiTree : NSOutlineView <NSOutlineViewDataSource, NSOutlineViewDelegate>
+{
+	GUIWIDGET         *context;
+	NSMutableArray    *nodes;
+	NSMutableIndexSet *open;
+	BOOL               quiet;
+}
+- (void)setContext:(GUIWIDGET*)ctx;
+- (void)setQuiet:(BOOL)on;
+- (NSMutableArray*)nodes;
+- (NSMutableIndexSet*)open;
+- (void)activated:(id)sender;
+@end
+
+@implementation RebolGuiTree
+
+- (void)setContext:(GUIWIDGET*)ctx { context = ctx; }
+- (void)setQuiet:(BOOL)on { quiet = on; }
+
+- (NSMutableArray*)nodes
+{
+	if (!nodes) nodes = [[NSMutableArray alloc] init];
+	return nodes;
+}
+
+- (NSMutableIndexSet*)open
+{
+	if (!open) open = [[NSMutableIndexSet alloc] init];
+	return open;
+}
+
+- (void)dealloc
+{
+	[nodes release];
+	[open release];
+	[super dealloc];
+}
+
+// The node an item stands for, and the first child of one: -1 for none.
+- (GUITREE*)table { return context ? GUI_TREE_OF(context) : NULL; }
+
+- (REBINT)firstChildOf:(id)item
+{
+	GUITREE *tree = [self table];
+	REBCNT n;
+	if (!tree) return -1;
+	if (item) {
+		REBINT at = [(NSNumber*)item intValue];
+		return (at >= 0 && (REBCNT)at < tree->count) ? tree->nodes[at].first : -1;
+	}
+	for (n = 0; n < tree->count; n++)
+		if (tree->nodes[n].parent < 0) return (REBINT)n;
+	return -1;
+}
+
+- (NSInteger)outlineView:(NSOutlineView*)view numberOfChildrenOfItem:(id)item
+{
+	GUITREE *tree = [self table];
+	NSInteger count = 0;
+	REBINT k;
+	if (!tree) return 0;
+	for (k = [self firstChildOf:item]; k >= 0; k = tree->nodes[k].next) count++;
+	return count;
+}
+
+- (id)outlineView:(NSOutlineView*)view child:(NSInteger)index ofItem:(id)item
+{
+	GUITREE *tree = [self table];
+	REBINT k = [self firstChildOf:item];
+	if (!tree) return nil;
+	while (k >= 0 && index-- > 0) k = tree->nodes[k].next;
+	return (k >= 0 && (NSUInteger)k < [nodes count]) ? [nodes objectAtIndex:(NSUInteger)k] : nil;
+}
+
+- (BOOL)outlineView:(NSOutlineView*)view isItemExpandable:(id)item
+{
+	return [self firstChildOf:item] >= 0;
+}
+
+- (id)outlineView:(NSOutlineView*)view objectValueForTableColumn:(NSTableColumn*)column
+           byItem:(id)item
+{
+	GUITREE *tree = [self table];
+	REBINT at = item ? [(NSNumber*)item intValue] : -1;
+	if (!tree || at < 0 || (REBCNT)at >= tree->count) return nil;
+	return To_NSString(tree->nodes[at].label, tree->nodes[at].len);
+}
+
+- (BOOL)outlineView:(NSOutlineView*)view shouldEditTableColumn:(NSTableColumn*)column
+               item:(id)item
+{
+	return NO;
+}
+
+// The widget's `color`, as each row is drawn - see RebolGuiList.
+- (void)outlineView:(NSOutlineView*)view willDisplayCell:(id)cell
+     forTableColumn:(NSTableColumn*)column item:(id)item
+{
+	NSColor *color = nil;
+	if (context && GUI_COLOR_HAS(context->color)) {
+		color = [NSColor colorWithSRGBRed:GUI_COLOR_R(context->color) / 255.0
+		                            green:GUI_COLOR_G(context->color) / 255.0
+		                             blue:GUI_COLOR_B(context->color) / 255.0
+		                            alpha:1.0];
+	}
+	if ([cell respondsToSelector:@selector(setTextColor:)]) {
+		[cell setTextColor:(color && ![view isRowSelected:[view rowForItem:item]])
+			? color : [NSColor controlTextColor]];
+	}
+}
+
+- (void)outlineViewSelectionDidChange:(NSNotification*)note
+{
+	NSInteger row;
+	if (quiet || !context) return;
+	row = [self selectedRow];
+	Gui_Tree_Picked(context, row < 0 ? -1 : [(NSNumber*)[self itemAtRow:row] intValue]);
+}
+
+// A branch opened: every branch inside it that was open before, opens
+// again - see the note above.
+- (void)outlineViewItemDidExpand:(NSNotification*)note
+{
+	id item = [[note userInfo] objectForKey:@"NSObject"];
+	GUITREE *tree = [self table];
+	REBINT k;
+	if (!item || !tree) return;
+	[[self open] addIndex:(NSUInteger)[(NSNumber*)item intValue]];
+	for (k = [self firstChildOf:item]; k >= 0; k = tree->nodes[k].next)
+		if ([open containsIndex:(NSUInteger)k] && (NSUInteger)k < [nodes count])
+			[self expandItem:[nodes objectAtIndex:(NSUInteger)k]];
+}
+
+- (void)outlineViewItemDidCollapse:(NSNotification*)note
+{
+	id item = [[note userInfo] objectForKey:@"NSObject"];
+	if (item && !quiet) [[self open] removeIndex:(NSUInteger)[(NSNumber*)item intValue]];
+}
+
+- (void)report_click
+{
+	NSRect frame;
+	if (!context || !context->hob) return;
+	frame = [[self enclosingScrollView] frame];
+	Gui_Queue_Event(context->hob, EVT_CLICK,
+	                (REBINT)frame.origin.x, (REBINT)frame.origin.y,
+	                Modifier_Bits([NSEvent modifierFlags]));
+}
+
+// The double action - on a node only.
+- (void)activated:(id)sender
+{
+	if ([self clickedRow] >= 0) [self report_click];
+}
+
+// Enter (Return, or the keypad's) is the double click's keyboard twin.
+- (void)keyDown:(NSEvent*)evt
+{
+	unsigned short code = [evt keyCode];
+	if ((code == 36 || code == 76) && [self selectedRow] >= 0) {
+		[self report_click];
+		return;
+	}
+	[super keyDown:evt];
+}
+
+- (BOOL)becomeFirstResponder
+{
+	BOOL ok = [super becomeFirstResponder];
+	if (ok && context && context->hob) Gui_Queue_Event(context->hob, EVT_FOCUS, 0, 0, 0);
+	return ok;
+}
+
+- (BOOL)resignFirstResponder
+{
+	BOOL ok = [super resignFirstResponder];
+	if (ok && context && context->hob) Gui_Queue_Event(context->hob, EVT_UNFOCUS, 0, 0, 0);
+	return ok;
+}
+
+// The font is the column's cell's, and the rows follow its height.
+- (void)setFont:(NSFont*)font
+{
+	NSTableColumn *column = [[self tableColumns] firstObject];
+	if (!font) font = [NSFont systemFontOfSize:[NSFont systemFontSize]];
+	[[column dataCell] setFont:font];
+	[self setRowHeight:ceil([font ascender] - [font descender] + [font leading]) + 2.0];
+	[self reloadData];
+}
+
+- (NSFont*)font
+{
+	return [[[[self tableColumns] firstObject] dataCell] font];
 }
 
 @end
@@ -3194,6 +3408,12 @@ REBOOL Gui_Widget_Natural_Size(GUIWIDGET *wid, REBINT *w, REBINT *h)
 			size = NSMakeSize(0.0, ([list rowHeight] + [list intercellSpacing].height) * 6.0 + 4.0);
 			break; }
 
+		case W_GUI_WIDGET_TREE_VIEW: {
+			// Eight rows: a tree is browsed more than glanced at.
+			RebolGuiList *list = List_View_Of(wid);
+			size = NSMakeSize(0.0, ([list rowHeight] + [list intercellSpacing].height) * 8.0 + 4.0);
+			break; }
+
 		case W_GUI_WIDGET_LIST_VIEW: {
 			// Six rows under the header, and as wide as the columns.
 			RebolGuiList *list = List_View_Of(wid);
@@ -4353,6 +4573,167 @@ REBOOL Gui_Create_Text_List(GUIWIDGET *wid, GUIWIN *owner,
 		[content addSubview:scroll];
 		wid->handle = (void*)scroll;
 		return TRUE;
+	}
+}
+
+
+//-- tree-view ----------------------------------------------------------------
+
+static RebolGuiTree* Tree_Of(GUIWIDGET *wid)
+{
+	if (!wid || !wid->handle || wid->kind != W_GUI_WIDGET_TREE_VIEW) return nil;
+	return (RebolGuiTree*)[(NSScrollView*)wid->handle documentView];
+}
+
+REBOOL Gui_Create_Tree_View(GUIWIDGET *wid, GUIWIN *owner,
+                            REBINT x, REBINT y, REBINT w, REBINT h)
+{
+	@autoreleasepool {
+		NSScrollView  *scroll;
+		RebolGuiTree  *tree;
+		NSTableColumn *column;
+		NSView        *content;
+		NSRect rect = NSMakeRect((CGFloat)x, (CGFloat)y, (CGFloat)w, (CGFloat)h);
+
+		if (!wid || !owner || !owner->handle) return FALSE;
+		if (![NSThread isMainThread]) return FALSE;
+
+		content = Parent_View(wid, owner);
+		if (!content) return FALSE;
+
+		scroll = [[NSScrollView alloc] initWithFrame:rect];
+		if (!scroll) return FALSE;
+		[scroll setBorderType:NSBezelBorder];
+		[scroll setHasVerticalScroller:YES];
+		[scroll setHasHorizontalScroller:NO];
+		[scroll setAutohidesScrollers:YES];
+
+		tree = [[RebolGuiTree alloc] initWithFrame:
+			NSMakeRect(0, 0, [scroll contentSize].width, [scroll contentSize].height)];
+		if (!tree) { [scroll release]; return FALSE; }
+
+		column = [[[NSTableColumn alloc] initWithIdentifier:@"node"] autorelease];
+		[column setEditable:NO];
+		[column setResizingMask:NSTableColumnAutoresizingMask];
+		[tree addTableColumn:column];
+		[tree setOutlineTableColumn:column];
+		[tree setHeaderView:nil];
+		[tree setColumnAutoresizingStyle:NSTableViewUniformColumnAutoresizingStyle];
+		[tree setAllowsEmptySelection:YES];
+		[tree setAllowsMultipleSelection:NO];
+		[tree setAutoresizesOutlineColumn:NO];
+		[tree setFont:nil];   // the system font, and the row height to match
+		[tree setContext:wid];
+		[tree setDataSource:tree];
+		[tree setDelegate:tree];
+		[tree setTarget:tree];
+		[tree setDoubleAction:@selector(activated:)];
+		[column setWidth:[scroll contentSize].width];
+
+		[scroll setDocumentView:tree];
+		[tree release];   // the scroll view holds it now
+
+		[content addSubview:scroll];
+		wid->handle = (void*)scroll;
+		return TRUE;
+	}
+}
+
+void Gui_Tree_Clear(GUIWIDGET *wid)
+{
+	@autoreleasepool {
+		RebolGuiTree *tree = Tree_Of(wid);
+		if (!tree) return;
+		[tree setQuiet:YES];
+		[[tree nodes] removeAllObjects];
+		[[tree open] removeAllIndexes];
+		[tree reloadData];
+		[tree setQuiet:NO];
+	}
+}
+
+// The item for node `n`: an NSNumber the outline will be handed every
+// time it asks - see RebolGuiTree.
+void* Gui_Tree_Add_Node(GUIWIDGET *wid, REBCNT n)
+{
+	@autoreleasepool {
+		RebolGuiTree *tree = Tree_Of(wid);
+		NSMutableArray *nodes;
+		if (!tree) return NULL;
+		nodes = [tree nodes];
+		while ([nodes count] <= (NSUInteger)n)
+			[nodes addObject:[NSNumber numberWithInt:(int)[nodes count]]];
+		return (void*)[nodes objectAtIndex:(NSUInteger)n];
+	}
+}
+
+void Gui_Tree_End(GUIWIDGET *wid)
+{
+	@autoreleasepool {
+		RebolGuiTree *tree = Tree_Of(wid);
+		if (!tree) return;
+		[tree setQuiet:YES];
+		[tree reloadData];
+		[tree setQuiet:NO];
+		Display_Pending = TRUE;
+	}
+}
+
+void Gui_Tree_Select(GUIWIDGET *wid, REBINT n)
+{
+	@autoreleasepool {
+		RebolGuiTree *tree = Tree_Of(wid);
+		NSInteger row = -1;
+		if (!tree) return;
+		if (n >= 0 && (NSUInteger)n < [[tree nodes] count])
+			row = [tree rowForItem:[[tree nodes] objectAtIndex:(NSUInteger)n]];
+		[tree setQuiet:YES];
+		if (row < 0) {
+			[tree deselectAll:nil];
+		} else {
+			[tree selectRowIndexes:[NSIndexSet indexSetWithIndex:(NSUInteger)row]
+			  byExtendingSelection:NO];
+			[tree scrollRowToVisible:row];
+		}
+		[tree setQuiet:NO];
+	}
+}
+
+REBINT Gui_Tree_Selected(GUIWIDGET *wid)
+{
+	@autoreleasepool {
+		RebolGuiTree *tree = Tree_Of(wid);
+		NSInteger row;
+		if (!tree) return -1;
+		row = [tree selectedRow];
+		return row < 0 ? -1 : (REBINT)[(NSNumber*)[tree itemAtRow:row] intValue];
+	}
+}
+
+// Recorded whatever happens, and applied when the branch is showing -
+// the shared layer opens the ones above it first.
+void Gui_Tree_Expand(GUIWIDGET *wid, REBCNT n, REBOOL on)
+{
+	@autoreleasepool {
+		RebolGuiTree *tree = Tree_Of(wid);
+		id item;
+		if (!tree || (NSUInteger)n >= [[tree nodes] count]) return;
+		item = [[tree nodes] objectAtIndex:(NSUInteger)n];
+		if (on) [[tree open] addIndex:(NSUInteger)n];
+		else    [[tree open] removeIndex:(NSUInteger)n];
+		[tree setQuiet:YES];
+		if (on) { if ([tree rowForItem:item] >= 0) [tree expandItem:item]; }
+		else    [tree collapseItem:item];
+		[tree setQuiet:NO];
+		Display_Pending = TRUE;
+	}
+}
+
+REBOOL Gui_Tree_Is_Expanded(GUIWIDGET *wid, REBCNT n)
+{
+	@autoreleasepool {
+		RebolGuiTree *tree = Tree_Of(wid);
+		return (tree && [[tree open] containsIndex:(NSUInteger)n]) ? TRUE : FALSE;
 	}
 }
 

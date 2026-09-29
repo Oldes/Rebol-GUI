@@ -1021,6 +1021,46 @@ print ["columns changed, items:" mold spare-lv/items "(expected none)"]
 remove-widget spare-lv
 
 ;;=============================================================================
+print as-yellow "^/== Tree-view"
+;;=============================================================================
+
+;; The menu dialect's grammar: a label, a word naming the node if it needs
+;; one, and a block of children if it has any. A node is found by its PATH -
+;; each node's word on the way down, or its label where it has no word.
+;;
+;; WATCH: picking a node logs `change`; a double click or Enter logs `click`.
+;; A branch opened inside a closed one stays open when its parent opens.
+trees: open-window/title/at 240x260 "Tree" 1000x580
+tree: add-tree-view trees [
+	"Documents" docs [
+		"Report.txt" report
+		"Old" old ["a.txt" a  "b.txt"]
+	]
+	"Music" music ["Song.mp3"]
+	"Notes.txt"
+] 10x10 220x240
+
+print ["tree-view:" tree/kind "nothing picked:" mold tree/selected "(expected none)"]
+tree/selected: [docs old "b.txt"]
+print ["picked by path:" mold tree/selected mold tree/text
+	"(expected [docs old ^"b.txt^"] ^"b.txt^")"]
+print ["its branches opened:" mold tree/expanded "(expected [[docs] [docs old]])"]
+tree/selected: 'report
+print ["picked by word:" mold tree/selected "(expected [docs report])"]
+tree/selected: "Song.mp3"
+print ["picked by label:" mold tree/selected "(expected [music ^"Song.mp3^"])"]
+tree/selected: [docs nothing]
+print ["a path to nothing:" mold tree/selected "(expected none)"]
+tree/expanded: [music [docs old]]
+print ["opened as asked:" mold tree/expanded "(expected [[docs] [docs old] [music]])"]
+tree/expanded: [[docs old]]
+print ["exactly those, and above:" mold tree/expanded "(expected [[docs] [docs old]])"]
+print ["the same block back:" same? tree/items tree/items]
+spare-tree: add-tree-view trees ["x"] 0x0 0x0
+print ["a zero size measures it:" spare-tree/size]
+remove-widget spare-tree
+
+;;=============================================================================
 print as-yellow "^/== Menu bar"
 ;;=============================================================================
 

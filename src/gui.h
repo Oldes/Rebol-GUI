@@ -577,6 +577,68 @@ REBOOL  Gui_List_Cell(GUIWIDGET *wid, REBCNT row, REBCNT col, REBYTE **utf8, REB
 void    Gui_List_Picked(GUIWIDGET *wid, REBINT n);
 
 
+/***********************************************************************
+**  tree-view - nodes in branches which open and close.
+**
+**  The `items` block is parsed by the shared layer, once, into a table
+**  of nodes (GUITREE, in `wid->tree`), and pushed at the backend a node
+**  at a time, parents first: Gui_Tree_Clear, then Gui_Tree_Add_Node for
+**  every node, then Gui_Tree_End. A backend never sees a Rebol value.
+**
+**  A node is named across this interface by its INDEX in the table. A
+**  backend keeps whatever it needs to find the native item again in the
+**  node's `native` - Gui_Tree_Add_Node's return value, stored by the
+**  shared layer - and the index on the native item, to answer which node
+**  was picked.
+**
+**  Events: `change` when the user picks another node - reported through
+**  Gui_Tree_Picked(), which filters, as a list-view's are - and `click`
+**  on a double click or Enter, queued by the backend itself.
+***********************************************************************/
+typedef struct Gui_Tree_Node {
+	REBINT  parent;   // the parent's index; -1 at the top
+	REBINT  first;    // the first child's index; -1 for none
+	REBINT  next;     // the next sibling's index; -1 for none
+	REBCNT  word;     // the symbol of the word naming it; 0 for none
+	REBYTE *label;    // UTF-8, NUL-terminated; owned by the table
+	REBCNT  len;      // bytes in `label`
+	void   *native;   // what Gui_Tree_Add_Node returned for it
+} GUITREENODE;
+
+typedef struct Gui_Tree {
+	GUITREENODE *nodes;
+	REBCNT       count;
+	REBCNT       capacity;
+} GUITREE;
+
+#define GUI_TREE_OF(wid) ((GUITREE*)(wid)->tree)
+
+REBOOL  Gui_Create_Tree_View(GUIWIDGET *wid, GUIWIN *owner,
+                             REBINT x, REBINT y, REBINT w, REBINT h);
+// Removes every node.
+void    Gui_Tree_Clear(GUIWIDGET *wid);
+// Adds node `n` - its label, under its parent, whose `native` is already
+// set - after its siblings. Returns what the backend wants kept in the
+// node's `native`; NULL is a failure, and the rest of that branch is left
+// out.
+void*   Gui_Tree_Add_Node(GUIWIDGET *wid, REBCNT n);
+// Every node has been added.
+void    Gui_Tree_End(GUIWIDGET *wid);
+// Picks node `n` (-1: none) and brings it into view, raising no event.
+// Its branches are already open - the shared layer sees to that.
+void    Gui_Tree_Select(GUIWIDGET *wid, REBINT n);
+// The node picked, or -1.
+REBINT  Gui_Tree_Selected(GUIWIDGET *wid);
+// Opens or closes node `n`'s branch. Opening a node whose parent is
+// closed is allowed: it shows open once the parent is.
+void    Gui_Tree_Expand(GUIWIDGET *wid, REBCNT n, REBOOL open);
+REBOOL  Gui_Tree_Is_Expanded(GUIWIDGET *wid, REBCNT n);
+
+// Provided by the SHARED layer: the user picked node `n` (-1 for none);
+// reports `change` when it differs from the node last reported.
+void    Gui_Tree_Picked(GUIWIDGET *wid, REBINT n);
+
+
 //-- panel --------------------------------------------------------------------
 // A container. Everything a panel holds is positioned inside IT rather than
 // inside the window, which is what both platforms do natively for a child.

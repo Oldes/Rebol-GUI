@@ -293,6 +293,19 @@ Cocoa flips offsets against the menu-bar screen; the content view answers
   with `LB_GETTOPINDEX` and the rows that fit, then sets the top index only
   when the item is outside the view. macOS uses `scrollRowToVisible:`, which
   already works that way.
+- **Tree-view:** the shared layer parses `items` into a flat table of nodes
+  (`GUITREE` in `wid->tree`, freed with the handle), parents first, and
+  pushes them at the backend one at a time with `Gui_Tree_Add_Node`, like the
+  menu bar. Nodes cross `gui.h` by index; a backend keeps what it needs in
+  the node's `native` (Windows: the `HTREEITEM`, lParam the index; macOS: one
+  `NSNumber` per node, since an outline knows items by identity; GTK: the
+  index, the store's iterators kept by index). Paths are built and resolved
+  in the shared layer. A branch's open state is remembered per node: a
+  Windows TreeView keeps it inside a closed branch, and the macOS and GTK
+  backends record it themselves and reapply it when the parent opens.
+  Changes made from code are silenced (`Setting_Tree`, `quiet`, `Quiet`),
+  and `picked` is re-read after `expanded` is set, since closing a branch
+  can move or drop the selection.
 - **Image widget:** the pixel pointer and size are read at every paint. BGRA
   is a 32-bit `BI_RGB` DIB and
   `kCGImageAlphaNoneSkipFirst | kCGBitmapByteOrder32Little`. `RXIARG`'s image

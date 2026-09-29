@@ -118,6 +118,7 @@ static REBOOL Tab_Notify(GUIWIDGET *wid, NMHDR *nm);
 #define WM_GUI_LIST_CHECK (WM_APP + 0x51)
 #define LV_HEADER(wid) ((HWND)SendMessageW(HWND_OF_WID(wid), LVM_GETHEADER, 0, 0))
 static REBOOL List_View_Notify(GUIWIDGET *wid, NMHDR *nm, LRESULT *res);
+static REBOOL Tree_View_Notify(GUIWIDGET *wid, NMHDR *nm, LRESULT *res);
 static REBOOL Gui_Handle_Key(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);
 
 // Whether OLE came up on this thread, decided once in Gui_Init_Platform,
@@ -1641,6 +1642,13 @@ static void Theme_Control(GUIWIDGET *wid, REBOOL dark)
 		Gui_Widget_Set_Color(wid);
 		Gui_Widget_Set_Background(wid);
 		break;
+	case W_GUI_WIDGET_TREE_VIEW:
+		// Explorer's look, as the list-view has: triangles rather than
+		// plus boxes, and whole-row highlights. Its colours are told to it.
+		set(hwnd, dark ? L"DarkMode_Explorer" : L"Explorer", NULL);
+		Gui_Widget_Set_Color(wid);
+		Gui_Widget_Set_Background(wid);
+		break;
 	case W_GUI_WIDGET_DROP_LIST:
 	case W_GUI_WIDGET_DROP_DOWN:
 		set(hwnd, dark ? L"DarkMode_CFD" : NULL, NULL);
@@ -1917,6 +1925,8 @@ static LRESULT CALLBACK Gui_Window_Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
 				if (nm->code == DTN_DATETIMECHANGE) return 0;
 			}
 			if (dw && dw->kind == W_GUI_WIDGET_LIST_VIEW && List_View_Notify(dw, nm, &r))
+				return r;
+			if (dw && dw->kind == W_GUI_WIDGET_TREE_VIEW && Tree_View_Notify(dw, nm, &r))
 				return r;
 		}
 		if (Dark_Custom_Draw(win, lp, &r)) return r;
@@ -2600,7 +2610,8 @@ void Gui_Init_Platform(void)
 	// have to be registered before either can be created.
 	controls.dwSize = sizeof(controls);
 	controls.dwICC  = ICC_BAR_CLASSES | ICC_PROGRESS_CLASS | ICC_STANDARD_CLASSES
-	                | ICC_DATE_CLASSES | ICC_TAB_CLASSES | ICC_LISTVIEW_CLASSES;
+	                | ICC_DATE_CLASSES | ICC_TAB_CLASSES | ICC_LISTVIEW_CLASSES
+	                | ICC_TREEVIEW_CLASSES;
 	InitCommonControlsEx(&controls);
 
 	/*******************************************************************
@@ -4337,11 +4348,12 @@ static LRESULT CALLBACK Nav_Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 	// A list-view reports Enter the same way, as its double click - but
 	// only with a row picked, as there is nothing to activate otherwise.
 	if (wid && (wid->kind == W_GUI_WIDGET_FIELD || wid->kind == W_GUI_WIDGET_DATE_FIELD
-	            || wid->kind == W_GUI_WIDGET_LIST_VIEW)
+	            || wid->kind == W_GUI_WIDGET_LIST_VIEW || wid->kind == W_GUI_WIDGET_TREE_VIEW)
 	    && wp == VK_RETURN
 	    && (msg == WM_KEYDOWN || msg == WM_CHAR)) {
 		if (msg == WM_KEYDOWN && wid->hob
-		    && (wid->kind != W_GUI_WIDGET_LIST_VIEW || Gui_Widget_Get_Index(wid) >= 0)) {
+		    && (wid->kind != W_GUI_WIDGET_LIST_VIEW || Gui_Widget_Get_Index(wid) >= 0)
+		    && (wid->kind != W_GUI_WIDGET_TREE_VIEW || Gui_Tree_Selected(wid) >= 0)) {
 			REBINT x = 0, y = 0, w = 0, h = 0;
 			Gui_Widget_Get_Box(wid, &x, &y, &w, &h);
 			Gui_Queue_Event(wid->hob, EVT_CLICK, x, y, Modifiers());
@@ -4376,7 +4388,8 @@ static LRESULT CALLBACK Nav_Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 	// A field's or an area's edge in a dark window - see Paint_Dark_Edge().
 	if (msg == WM_NCPAINT && wid
 	    && (wid->kind == W_GUI_WIDGET_FIELD || wid->kind == W_GUI_WIDGET_AREA
-	        || wid->kind == W_GUI_WIDGET_TEXT_LIST || wid->kind == W_GUI_WIDGET_LIST_VIEW)
+	        || wid->kind == W_GUI_WIDGET_TEXT_LIST || wid->kind == W_GUI_WIDGET_LIST_VIEW
+	        || wid->kind == W_GUI_WIDGET_TREE_VIEW)
 	    && Dark_For(wid->owner)) {
 		LRESULT r = base ? CallWindowProcW(base, hwnd, msg, wp, lp)
 		                 : DefWindowProcW(hwnd, msg, wp, lp);
@@ -4502,6 +4515,17 @@ static void Subclass_For_Transparency(GUIWIDGET *wid)
 void Gui_Widget_Set_Background(GUIWIDGET *wid)
 {
 	if (!wid || !wid->handle) return;
+
+	// A tree-view is told its background too, the same way.
+	if (wid->kind == W_GUI_WIDGET_TREE_VIEW) {
+		COLORREF c = GUI_COLOR_HAS(wid->background) && !GUI_BG_IS_CLEAR(wid->background)
+			? RGB(GUI_COLOR_R(wid->background), GUI_COLOR_G(wid->background),
+			      GUI_COLOR_B(wid->background))
+			: List_Default_Back(wid->owner);
+		SendMessageW(HWND_OF_WID(wid), TVM_SETBKCOLOR, 0, (LPARAM)c);
+		InvalidateRect(HWND_OF_WID(wid), NULL, TRUE);
+		return;
+	}
 
 	// ... and so is a list-view's background. Like an entry's, a colour is
 	// honoured and transparency is not.
@@ -5031,6 +5055,16 @@ REBOOL Gui_Widget_Set_Color(GUIWIDGET *wid)
 {
 	if (!wid || !wid->handle) return FALSE;
 
+	// A TreeView too.
+	if (wid->kind == W_GUI_WIDGET_TREE_VIEW) {
+		COLORREF c = GUI_COLOR_HAS(wid->color)
+			? RGB(GUI_COLOR_R(wid->color), GUI_COLOR_G(wid->color), GUI_COLOR_B(wid->color))
+			: Default_Text_Color(wid->owner);
+		SendMessageW(HWND_OF_WID(wid), TVM_SETTEXTCOLOR, 0, (LPARAM)c);
+		InvalidateRect(HWND_OF_WID(wid), NULL, TRUE);
+		return TRUE;
+	}
+
 	// A ListView paints its own rows and asks no one: it is told.
 	if (wid->kind == W_GUI_WIDGET_LIST_VIEW) {
 		COLORREF c = GUI_COLOR_HAS(wid->color)
@@ -5442,11 +5476,14 @@ REBOOL Gui_Widget_Natural_Size(GUIWIDGET *wid, REBINT *w, REBINT *h)
 	case W_GUI_WIDGET_AREA:
 	case W_GUI_WIDGET_TEXT_LIST:
 	case W_GUI_WIDGET_LIST_VIEW:
+	case W_GUI_WIDGET_TREE_VIEW:
 		// One line is not a useful multi-line box; four is the smallest
 		// that looks like one. A list gets a few more, as it is read by
-		// scanning down it - and a list-view one more for its header.
+		// scanning down it - and a list-view one more for its header. A
+		// tree is browsed more than glanced at, and gets eight.
 		lines = (wid->kind == W_GUI_WIDGET_TEXT_LIST) ? 6
-		      : (wid->kind == W_GUI_WIDGET_LIST_VIEW) ? 7 : 4;
+		      : (wid->kind == W_GUI_WIDGET_LIST_VIEW) ? 7
+		      : (wid->kind == W_GUI_WIDGET_TREE_VIEW) ? 8 : 4;
 		// A list-view is as wide as its columns, and the scroll bar.
 		if (wid->kind == W_GUI_WIDGET_LIST_VIEW) {
 			REBCNT n, count = Gui_List_Column_Count(wid);
@@ -6546,6 +6583,187 @@ static void List_View_Set_Scroll(HWND hwnd, REBDEC where)
 }
 
 
+//-- tree-view ----------------------------------------------------------------
+
+/***********************************************************************
+**  A TreeView whose items carry their node's index in lParam - see
+**  gui.h. The labels are copied into the control; the table of nodes
+**  stays in the shared layer.
+**
+**  Set while this file changes the selection or the branches itself:
+**  TVN_SELCHANGED is sent for those too, and collapsing a branch which
+**  holds the selection moves it to the branch - none of it the user's.
+***********************************************************************/
+static REBOOL Setting_Tree = FALSE;
+
+REBOOL Gui_Create_Tree_View(GUIWIDGET *wid, GUIWIN *owner,
+                            REBINT x, REBINT y, REBINT w, REBINT h)
+{
+	HWND hwnd;
+
+	if (!wid || !owner || !owner->handle) return FALSE;
+	Box_To_Device(Dpi_Of(HWND_OF(owner)), &x, &y, &w, &h);
+
+	// Buttons and lines at the top level too, and the selection kept
+	// visible while the focus is elsewhere, as in a text-list.
+	hwnd = CreateWindowExW(
+		WS_EX_CLIENTEDGE, WC_TREEVIEWW, L"",
+		WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_GROUP
+		| TVS_HASBUTTONS | TVS_HASLINES | TVS_LINESATROOT | TVS_SHOWSELALWAYS,
+		x, y, w, h,
+		Parent_Hwnd(wid, owner),
+		NULL,
+		App_Instance, NULL
+	);
+	if (!hwnd) return FALSE;
+
+	SetWindowLongPtrW(hwnd, GWLP_USERDATA, (LONG_PTR)wid);
+	SendMessageW(hwnd, TVM_SETEXTENDEDSTYLE, TVS_EX_DOUBLEBUFFER, TVS_EX_DOUBLEBUFFER);
+	SendMessageW(hwnd, WM_SETFONT, (WPARAM)Default_Font_At(Dpi_Of(hwnd)), TRUE);
+
+	wid->handle = (void*)hwnd;
+	Subclass_For_Nav(wid);
+	Theme_Control(wid, FALSE);
+	return TRUE;
+}
+
+// The node an item stands for, from its lParam; -1 for no item.
+static REBINT Tree_Node_Of(HWND hwnd, HTREEITEM item)
+{
+	TVITEMW it;
+	if (!item) return -1;
+	ZeroMemory(&it, sizeof(it));
+	it.mask  = TVIF_PARAM | TVIF_HANDLE;
+	it.hItem = item;
+	if (!SendMessageW(hwnd, TVM_GETITEMW, 0, (LPARAM)&it)) return -1;
+	return (REBINT)it.lParam;
+}
+
+static HTREEITEM Tree_Item_Of(GUIWIDGET *wid, REBINT n)
+{
+	GUITREE *tree = GUI_TREE_OF(wid);
+	if (!tree || n < 0 || (REBCNT)n >= tree->count) return NULL;
+	return (HTREEITEM)tree->nodes[n].native;
+}
+
+void Gui_Tree_Clear(GUIWIDGET *wid)
+{
+	if (!wid || !wid->handle) return;
+	Setting_Tree = TRUE;
+	SendMessageW(HWND_OF_WID(wid), TVM_DELETEITEM, 0, (LPARAM)TVI_ROOT);
+	Setting_Tree = FALSE;
+}
+
+void* Gui_Tree_Add_Node(GUIWIDGET *wid, REBCNT n)
+{
+	GUITREE *tree = GUI_TREE_OF(wid);
+	GUITREENODE *node;
+	TVINSERTSTRUCTW ins;
+	WCHAR *wide;
+	HTREEITEM item;
+
+	if (!wid || !wid->handle || !tree || n >= tree->count) return NULL;
+	node = &tree->nodes[n];
+	wide = To_Wide(node->label, node->len);
+
+	ZeroMemory(&ins, sizeof(ins));
+	ins.hParent      = node->parent >= 0 ? (HTREEITEM)tree->nodes[node->parent].native : TVI_ROOT;
+	ins.hInsertAfter = TVI_LAST;
+	ins.item.mask    = TVIF_TEXT | TVIF_PARAM;
+	ins.item.pszText = wide ? wide : L"";
+	ins.item.lParam  = (LPARAM)n;
+	Setting_Tree = TRUE;
+	item = (HTREEITEM)SendMessageW(HWND_OF_WID(wid), TVM_INSERTITEMW, 0, (LPARAM)&ins);
+	Setting_Tree = FALSE;
+	if (wide) FREE_MEM(wide);
+	return (void*)item;
+}
+
+void Gui_Tree_End(GUIWIDGET *wid)
+{
+	if (wid && wid->handle) InvalidateRect(HWND_OF_WID(wid), NULL, TRUE);
+}
+
+void Gui_Tree_Select(GUIWIDGET *wid, REBINT n)
+{
+	HTREEITEM item;
+	if (!wid || !wid->handle) return;
+	item = Tree_Item_Of(wid, n);
+	Setting_Tree = TRUE;
+	SendMessageW(HWND_OF_WID(wid), TVM_SELECTITEM, TVGN_CARET, (LPARAM)item);
+	if (item) SendMessageW(HWND_OF_WID(wid), TVM_ENSUREVISIBLE, 0, (LPARAM)item);
+	Setting_Tree = FALSE;
+}
+
+REBINT Gui_Tree_Selected(GUIWIDGET *wid)
+{
+	HWND hwnd;
+	if (!wid || !wid->handle) return -1;
+	hwnd = HWND_OF_WID(wid);
+	return Tree_Node_Of(hwnd, (HTREEITEM)SendMessageW(hwnd, TVM_GETNEXTITEM, TVGN_CARET, 0));
+}
+
+// A TreeView keeps an item's open state whether its parent is open or
+// not, which is exactly the contract.
+void Gui_Tree_Expand(GUIWIDGET *wid, REBCNT n, REBOOL open)
+{
+	HTREEITEM item = Tree_Item_Of(wid, (REBINT)n);
+	if (!item) return;
+	Setting_Tree = TRUE;
+	SendMessageW(HWND_OF_WID(wid), TVM_EXPAND, open ? TVE_EXPAND : TVE_COLLAPSE, (LPARAM)item);
+	Setting_Tree = FALSE;
+}
+
+REBOOL Gui_Tree_Is_Expanded(GUIWIDGET *wid, REBCNT n)
+{
+	HTREEITEM item = Tree_Item_Of(wid, (REBINT)n);
+	if (!item) return FALSE;
+	return (SendMessageW(HWND_OF_WID(wid), TVM_GETITEMSTATE, (WPARAM)item, TVIS_EXPANDED)
+	        & TVIS_EXPANDED) ? TRUE : FALSE;
+}
+
+static REBOOL Tree_View_Notify(GUIWIDGET *wid, NMHDR *nm, LRESULT *res)
+{
+	REBINT x = 0, y = 0, w = 0, h = 0;
+
+	*res = 0;
+	switch (nm->code) {
+	case TVN_SELCHANGEDW:
+	case TVN_SELCHANGEDA:
+		if (!Setting_Tree) {
+			NMTREEVIEWW *tv = (NMTREEVIEWW*)nm;
+			Gui_Tree_Picked(wid, Tree_Node_Of(nm->hwndFrom, tv->itemNew.hItem));
+		}
+		return TRUE;
+
+	case NM_DBLCLK: {
+		// On an item only - not on the empty part below the last one. The
+		// TreeView also opens or closes a branch on a double click, as the
+		// user expects of it.
+		TVHITTESTINFO hit;
+		DWORD at = GetMessagePos();
+		ZeroMemory(&hit, sizeof(hit));
+		hit.pt.x = GET_X_LPARAM(at);
+		hit.pt.y = GET_Y_LPARAM(at);
+		ScreenToClient(nm->hwndFrom, &hit.pt);
+		SendMessageW(nm->hwndFrom, TVM_HITTEST, 0, (LPARAM)&hit);
+		if (!hit.hItem || !(hit.flags & TVHT_ONITEM) || !wid->hob) return TRUE;
+		Gui_Widget_Get_Box(wid, &x, &y, &w, &h);
+		Gui_Queue_Event(wid->hob, EVT_CLICK, x, y, Modifiers());
+		return TRUE; }
+
+	case NM_SETFOCUS:
+	case NM_KILLFOCUS:
+		if (!wid->hob) return TRUE;
+		Gui_Widget_Get_Box(wid, &x, &y, &w, &h);
+		Gui_Queue_Event(wid->hob, nm->code == NM_SETFOCUS ? EVT_FOCUS : EVT_UNFOCUS,
+		                x, y, Modifiers());
+		return TRUE;
+	}
+	return FALSE;
+}
+
+
 /***********************************************************************
 **  The items of a drop-down and of a text-list.
 **
@@ -6863,6 +7081,12 @@ REBDEC Gui_Widget_Get_Scroll(GUIWIDGET *wid)
 
 	if (!wid || !wid->handle) return -1.0;
 	if (wid->kind == W_GUI_WIDGET_LIST_VIEW) return List_View_Get_Scroll(HWND_OF_WID(wid));
+	// A TreeView's scroll bar counts visible items, and is gone when
+	// they all fit - which is the top, not "does not scroll".
+	if (wid->kind == W_GUI_WIDGET_TREE_VIEW) {
+		if (!Scroll_Span_Of(HWND_OF_WID(wid), &si, &span) || span <= 0) return 0.0;
+		return (REBDEC)(si.nPos - si.nMin) / (REBDEC)span;
+	}
 	if (wid->kind == W_GUI_WIDGET_TEXT_LIST) {
 		span = List_Span_Of(HWND_OF_WID(wid));
 		if (span <= 0) return 0.0;
@@ -6885,6 +7109,15 @@ REBOOL Gui_Widget_Set_Scroll(GUIWIDGET *wid, REBDEC where)
 	if (!wid || !wid->handle) return FALSE;
 	hwnd = HWND_OF_WID(wid);
 	if (wid->kind == W_GUI_WIDGET_LIST_VIEW) { List_View_Set_Scroll(hwnd, where); return TRUE; }
+	// A TreeView scrolls by visible items, and moves to a thumb position
+	// it is sent - clamped by the control.
+	if (wid->kind == W_GUI_WIDGET_TREE_VIEW) {
+		if (!Scroll_Span_Of(hwnd, &si, &span) || span <= 0) return TRUE;
+		target = si.nMin + (REBINT)((REBDEC)span * where + 0.5);
+		SendMessageW(hwnd, WM_VSCROLL, MAKEWPARAM(SB_THUMBPOSITION, target), 0);
+		SendMessageW(hwnd, WM_VSCROLL, MAKEWPARAM(SB_ENDSCROLL, 0), 0);
+		return TRUE;
+	}
 	if (wid->kind == W_GUI_WIDGET_TEXT_LIST) {
 		span = List_Span_Of(hwnd);
 		if (span <= 0) return TRUE;

@@ -276,7 +276,8 @@ static GtkWidget *Inner_Of(GUIWIDGET *wid)
 }
 
 #define IS_TABLE(wid) ((wid)->kind == W_GUI_WIDGET_TEXT_LIST \
-                    || (wid)->kind == W_GUI_WIDGET_LIST_VIEW)
+                    || (wid)->kind == W_GUI_WIDGET_LIST_VIEW \
+                    || (wid)->kind == W_GUI_WIDGET_TREE_VIEW)
 
 // The entry of a drop-down, which is where its text and its focus are.
 static GtkWidget *Combo_Entry(GUIWIDGET *wid)
@@ -2297,6 +2298,7 @@ static void Apply_Background(GUIWIDGET *wid)
 		break;
 	case W_GUI_WIDGET_TEXT_LIST:
 	case W_GUI_WIDGET_LIST_VIEW:
+	case W_GUI_WIDGET_TREE_VIEW:
 		target = Inner_Of(wid);
 		selector = "treeview.view:not(:selected)";
 		break;
@@ -2834,6 +2836,13 @@ static void On_Selection(GtkTreeSelection *sel, gpointer data)
 	GtkTreeModel *model;
 	GtkTreeIter iter;
 	if (Quiet || !wid || !wid->hob) return;
+	if (wid->kind == W_GUI_WIDGET_TREE_VIEW) {
+		gint node = -1;
+		if (gtk_tree_selection_get_selected(sel, &model, &iter))
+			gtk_tree_model_get(model, &iter, 1, &node, -1);
+		Gui_Tree_Picked(wid, node);
+		return;
+	}
 	if (wid->kind == W_GUI_WIDGET_LIST_VIEW) {
 		// Filtered by the shared layer: only a row other than the last one
 		// reported is a `change`.
@@ -3265,6 +3274,228 @@ void Gui_List_Show_Sort(GUIWIDGET *wid)
 		if (on) gtk_tree_view_column_set_sort_order(col,
 			wid->sort > 0 ? GTK_SORT_ASCENDING : GTK_SORT_DESCENDING);
 	}
+}
+
+
+//== tree-view ================================================================
+//
+// A GtkTreeStore of two columns: the label, and the node's index in the
+// shared layer's table (see gui.h). The store's iterators persist, so
+// each node's is kept, by index, to find it again.
+//
+// Which branches are open is kept here too, per node. GTK forgets that a
+// branch was open once the one holding it closes - its rows are gone -
+// and cannot open a branch it is not showing; a Windows tree remembers,
+// and opens one whenever. So each node's wish is recorded, and applied
+// as the branch holding it opens.
+
+#define KEY_ITERS "rebol-gui-iters"   // GArray of GtkTreeIter, by node
+#define KEY_OPEN  "rebol-gui-open"    // GArray of guint8, by node
+
+static GArray *Tree_Iters(GUIWIDGET *wid)
+{
+	return wid && wid->handle
+		? (GArray*)g_object_get_data(G_OBJECT(wid->handle), KEY_ITERS) : NULL;
+}
+
+static GArray *Tree_Open(GUIWIDGET *wid)
+{
+	return wid && wid->handle
+		? (GArray*)g_object_get_data(G_OBJECT(wid->handle), KEY_OPEN) : NULL;
+}
+
+static GtkTreeStore *Tree_Store(GUIWIDGET *wid)
+{
+	GtkWidget *tree = Inner_Of(wid);
+	return tree ? GTK_TREE_STORE(gtk_tree_view_get_model(GTK_TREE_VIEW(tree))) : NULL;
+}
+
+static GtkTreePath *Tree_Path_Of(GUIWIDGET *wid, REBCNT n)
+{
+	GArray *iters = Tree_Iters(wid);
+	GtkTreeStore *store = Tree_Store(wid);
+	if (!iters || !store || n >= iters->len) return NULL;
+	return gtk_tree_model_get_path(GTK_TREE_MODEL(store),
+	                               &g_array_index(iters, GtkTreeIter, n));
+}
+
+static REBCNT Tree_Node_At(GtkTreeModel *model, GtkTreeIter *iter)
+{
+	gint node = -1;
+	gtk_tree_model_get(model, iter, 1, &node, -1);
+	return (REBCNT)node;
+}
+
+// A branch opened, by the user or from code: every branch inside it that
+// was open before, opens again.
+static void On_Row_Expanded(GtkTreeView *view, GtkTreeIter *iter, GtkTreePath *path,
+                            gpointer data)
+{
+	GUIWIDGET *wid = (GUIWIDGET*)data;
+	GArray *open = Tree_Open(wid);
+	GtkTreeModel *model = gtk_tree_view_get_model(view);
+	GtkTreeIter child;
+	REBCNT n = Tree_Node_At(model, iter);
+
+	if (!open) return;
+	if (n < open->len) g_array_index(open, guint8, n) = 1;
+	if (!gtk_tree_model_iter_children(model, &child, iter)) return;
+	do {
+		REBCNT c = Tree_Node_At(model, &child);
+		if (c < open->len && g_array_index(open, guint8, c)) {
+			GtkTreePath *p = gtk_tree_model_get_path(model, &child);
+			gtk_tree_view_expand_row(view, p, FALSE);
+			gtk_tree_path_free(p);
+		}
+	} while (gtk_tree_model_iter_next(model, &child));
+}
+
+static void On_Row_Collapsed(GtkTreeView *view, GtkTreeIter *iter, GtkTreePath *path,
+                             gpointer data)
+{
+	GArray *open = Tree_Open((GUIWIDGET*)data);
+	REBCNT n = Tree_Node_At(gtk_tree_view_get_model(view), iter);
+	if (open && n < open->len) g_array_index(open, guint8, n) = 0;
+}
+
+static void Tree_Cell(GtkTreeViewColumn *col, GtkCellRenderer *cell,
+                      GtkTreeModel *model, GtkTreeIter *iter, gpointer data)
+{
+	GUIWIDGET *wid = (GUIWIDGET*)data;
+	if (!wid || !wid->handle) return;
+	Paint_Cell(wid, cell, model, iter, 0);
+}
+
+REBOOL Gui_Create_Tree_View(GUIWIDGET *wid, GUIWIN *owner,
+                            REBINT x, REBINT y, REBINT w, REBINT h)
+{
+	GtkTreeStore *store;
+	GtkWidget *scroll, *tree;
+	GtkCellRenderer *cell;
+	GtkTreeViewColumn *col;
+
+	if (!wid || !owner || !owner->handle) return FALSE;
+	store  = gtk_tree_store_new(2, G_TYPE_STRING, G_TYPE_INT);
+	scroll = New_Table(wid, GTK_TREE_MODEL(store), TRUE);
+	g_object_unref(store);   // the tree view holds it
+	tree = gtk_bin_get_child(GTK_BIN(scroll));
+	gtk_tree_view_set_headers_visible(GTK_TREE_VIEW(tree), FALSE);
+
+	cell = gtk_cell_renderer_text_new();
+	col  = gtk_tree_view_column_new_with_attributes("", cell, "text", 0, NULL);
+	gtk_tree_view_column_set_cell_data_func(col, cell, Tree_Cell, wid, NULL);
+	gtk_tree_view_append_column(GTK_TREE_VIEW(tree), col);
+
+	g_object_set_data_full(G_OBJECT(scroll), KEY_ITERS,
+		g_array_new(FALSE, TRUE, sizeof(GtkTreeIter)), (GDestroyNotify)g_array_unref);
+	g_object_set_data_full(G_OBJECT(scroll), KEY_OPEN,
+		g_array_new(FALSE, TRUE, sizeof(guint8)), (GDestroyNotify)g_array_unref);
+
+	if (!Place(wid, owner, scroll, x, y, w, h)) return FALSE;
+	Connect(wid, gtk_tree_view_get_selection(GTK_TREE_VIEW(tree)), "changed",
+	        G_CALLBACK(On_Selection));
+	Connect(wid, tree, "row-activated", G_CALLBACK(On_Row_Activated));
+	Connect(wid, tree, "row-expanded", G_CALLBACK(On_Row_Expanded));
+	Connect(wid, tree, "row-collapsed", G_CALLBACK(On_Row_Collapsed));
+	Connect_Focus(wid, tree);
+	return TRUE;
+}
+
+void Gui_Tree_Clear(GUIWIDGET *wid)
+{
+	GtkTreeStore *store = Tree_Store(wid);
+	GArray *iters = Tree_Iters(wid), *open = Tree_Open(wid);
+	if (!store) return;
+	Quiet++;
+	gtk_tree_store_clear(store);
+	Quiet--;
+	if (iters) g_array_set_size(iters, 0);
+	if (open)  g_array_set_size(open, 0);
+}
+
+void* Gui_Tree_Add_Node(GUIWIDGET *wid, REBCNT n)
+{
+	GUITREE *tree = GUI_TREE_OF(wid);
+	GtkTreeStore *store = Tree_Store(wid);
+	GArray *iters = Tree_Iters(wid), *open = Tree_Open(wid);
+	GUITREENODE *node;
+	GtkTreeIter iter;
+
+	if (!tree || !store || !iters || !open || n >= tree->count) return NULL;
+	node = &tree->nodes[n];
+	if (iters->len <= n) g_array_set_size(iters, n + 1);
+	if (open->len <= n)  g_array_set_size(open, n + 1);
+
+	gtk_tree_store_append(store, &iter, node->parent >= 0
+		? &g_array_index(iters, GtkTreeIter, node->parent) : NULL);
+	gtk_tree_store_set(store, &iter, 0, (const gchar*)node->label, 1, (gint)n, -1);
+	g_array_index(iters, GtkTreeIter, n) = iter;
+	g_array_index(open, guint8, n) = 0;
+	// Anything not NULL: the iterator itself is kept here, by index.
+	return GUINT_TO_POINTER(n + 1);
+}
+
+void Gui_Tree_End(GUIWIDGET *wid)
+{
+	(void)wid;
+}
+
+void Gui_Tree_Select(GUIWIDGET *wid, REBINT n)
+{
+	GtkWidget *tree = Inner_Of(wid);
+	GtkTreeSelection *sel;
+	GtkTreePath *path;
+
+	if (!tree) return;
+	sel = gtk_tree_view_get_selection(GTK_TREE_VIEW(tree));
+	Quiet++;
+	if (n < 0 || !(path = Tree_Path_Of(wid, (REBCNT)n))) {
+		gtk_tree_selection_unselect_all(sel);
+	} else {
+		gtk_tree_selection_select_path(sel, path);
+		gtk_tree_view_scroll_to_cell(GTK_TREE_VIEW(tree), path, NULL, FALSE, 0, 0);
+		gtk_tree_path_free(path);
+	}
+	Quiet--;
+}
+
+REBINT Gui_Tree_Selected(GUIWIDGET *wid)
+{
+	GtkWidget *tree = Inner_Of(wid);
+	GtkTreeModel *model;
+	GtkTreeIter iter;
+	if (!tree || !gtk_tree_selection_get_selected(
+		gtk_tree_view_get_selection(GTK_TREE_VIEW(tree)), &model, &iter)) return -1;
+	return (REBINT)Tree_Node_At(model, &iter);
+}
+
+void Gui_Tree_Expand(GUIWIDGET *wid, REBCNT n, REBOOL on)
+{
+	GtkWidget *tree = Inner_Of(wid);
+	GArray *open = Tree_Open(wid);
+	GtkTreePath *path;
+
+	if (!tree || !open || n >= open->len) return;
+	g_array_index(open, guint8, n) = on ? 1 : 0;
+	path = Tree_Path_Of(wid, n);
+	if (!path) return;
+	// Shown or not; one inside a closed branch opens with it - see
+	// On_Row_Expanded.
+	// Quiet: closing a branch drops a selection inside it, which is the
+	// script's doing, not the user's.
+	Quiet++;
+	if (on) gtk_tree_view_expand_row(GTK_TREE_VIEW(tree), path, FALSE);
+	else    gtk_tree_view_collapse_row(GTK_TREE_VIEW(tree), path);
+	Quiet--;
+	// Collapsing a row takes its own wish with it; this one was asked for.
+	g_array_index(open, guint8, n) = on ? 1 : 0;
+	gtk_tree_path_free(path);
+}
+
+REBOOL Gui_Tree_Is_Expanded(GUIWIDGET *wid, REBCNT n)
+{
+	GArray *open = Tree_Open(wid);
+	return (open && n < open->len && g_array_index(open, guint8, n)) ? TRUE : FALSE;
 }
 
 
@@ -3998,6 +4229,7 @@ static GtkWidget *Focus_Target(GUIWIDGET *wid)
 	case W_GUI_WIDGET_AREA:
 	case W_GUI_WIDGET_TEXT_LIST:
 	case W_GUI_WIDGET_LIST_VIEW:
+	case W_GUI_WIDGET_TREE_VIEW:
 	case W_GUI_WIDGET_DROP_LIST:
 		return Inner_Of(wid);
 	case W_GUI_WIDGET_DROP_DOWN:
@@ -4125,6 +4357,13 @@ REBOOL Gui_Widget_Natural_Size(GUIWIDGET *wid, REBINT *w, REBINT *h)
 		GtkWidget *tree = Inner_Of(wid);
 		nw = 0;
 		nh = (Line_Height(tree) + 4) * 6 + 4;
+		break; }
+
+	case W_GUI_WIDGET_TREE_VIEW: {
+		// Eight rows: a tree is usually browsed rather than glanced at.
+		GtkWidget *tree = Inner_Of(wid);
+		nw = 0;
+		nh = (Line_Height(tree) + 4) * 8 + 4;
 		break; }
 
 	case W_GUI_WIDGET_LIST_VIEW: {
