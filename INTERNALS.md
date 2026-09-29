@@ -126,7 +126,10 @@ Cocoa flips offsets against the menu-bar screen; the content view answers
 - **Fonts** are read back from the control, not stored. Windows caches one
   `HFONT` per distinct face and frees them at shutdown. macOS converts
   families through `NSFontManager` and colours buttons through an attributed
-  title, rebuilt when text or font changes.
+  title, rebuilt when text or font changes. Sizes cross `gui.h` in real
+  points (1/72 inch): Windows converts with the DPI, GTK's CSS `pt` is the
+  same unit, and macOS multiplies by 96/72, since an `NSFont` size is in
+  logical units. The system size is left as each platform has it.
 - **Text colour** is stored per widget, because Win32 asks the parent at paint
   time and keeps none on the control.
 - **Read-only** is stored too: macOS merges enabled and editable, so a

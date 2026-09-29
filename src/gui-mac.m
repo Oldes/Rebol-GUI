@@ -3326,6 +3326,17 @@ REBOOL Gui_Widget_Set_Text(GUIWIDGET *wid, const REBYTE *utf8, REBCNT len)
 
 //== typography ===============================================================
 
+/***********************************************************************
+**  A font size crossing gui.h is in real POINTS, 1/72 of an inch - the
+**  same unit the Windows and GTK backends take it in. AppKit's "point"
+**  is a logical unit, 1/96 of an inch here as everywhere in this
+**  extension, and it is also what NSFont sizes are in. So 12 points is
+**  a 16 unit NSFont, and a layout set in one size of type is the same
+**  size of type on every platform.
+***********************************************************************/
+#define PT_TO_UNITS(pt)    ((CGFloat)(pt) * 96.0 / 72.0)
+#define UNITS_TO_PT(units) ((units) * 72.0 / 96.0)
+
 // Which object actually carries the font. Everything here answers -font and
 // -setFont: - NSControl declares both, the text view has its own, and the
 // panel declares them by hand - so one lookup serves every kind.
@@ -3358,7 +3369,7 @@ REBOOL Gui_Widget_Get_Font(GUIWIDGET *wid, REBSER **name, REBINT *size,
 		// "Georgia-BoldItalic", so that reading a font back and setting it
 		// on something else does not carry a style along with it.
 		if (name) *name = From_NSString([font familyName]);
-		if (size) *size = (REBINT)([font pointSize] + 0.5);
+		if (size) *size = (REBINT)(UNITS_TO_PT([font pointSize]) + 0.5);
 		if (style) {
 			traits = [[NSFontManager sharedFontManager] traitsOfFont:font];
 			if (traits & NSBoldFontMask)   *style |= GUI_FONT_BOLD;
@@ -3377,7 +3388,8 @@ REBOOL Gui_Widget_Set_Font(GUIWIDGET *wid, const REBYTE *utf8, REBCNT len,
 		NSFontManager *manager = [NSFontManager sharedFontManager];
 		NSString *family = To_NSString(utf8, len);
 		NSFont   *font = nil;
-		CGFloat   points = (size > 0) ? (CGFloat)size : [NSFont systemFontSize];
+		// NSFont's size, in logical units; the system size is one already.
+		CGFloat   points = (size > 0) ? PT_TO_UNITS(size) : [NSFont systemFontSize];
 		NSFontTraitMask mask = 0;
 
 		if (![target respondsToSelector:@selector(setFont:)]) return FALSE;

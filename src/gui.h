@@ -714,7 +714,9 @@ REBOOL  Gui_Widget_Set_Text(GUIWIDGET *wid, const REBYTE *utf8, REBCNT len);
 **  control every time, so what Rebol reports is what the control has.
 **
 **  `name` is a fresh Rebol string, the caller's to keep, and NULL when
-**  the control has no font of its own. `size` is in points, 0 when
+**  the control has no font of its own. `size` is in real points, 1/72
+**  of an inch - 12 points is 16 logical units on every platform, macOS
+**  included, whose own "point" is the logical unit - and 0 when
 **  unknown. `style` is GUI_FONT_* bits. Any of the three may be NULL.
 ***********************************************************************/
 REBOOL  Gui_Widget_Get_Font(GUIWIDGET *wid, REBSER **name, REBINT *size,

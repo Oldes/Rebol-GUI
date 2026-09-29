@@ -486,6 +486,10 @@ label/italic?:   false
 label/color:     30.90.170   ;; none: the platform's colour
 ```
 
+`font-size` is in points of 1/72 inch, so the same size is the same size on
+every platform: 12 points is 16 logical units, on macOS too (where AppKit's own
+"point" is the logical unit).
+
 A window's `font` and `font-size` are defaults for widgets created **after**
 they are set; widgets already on the window are not changed.
 
