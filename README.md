@@ -1,4 +1,5 @@
-[![Rebol-GUI](https://github.com/Siskin-framework/Rebol-GUI/actions/workflows/build.yml/badge.svg)](https://github.com/Siskin-framework/Rebol-GUI/actions/workflows/build.yml)
+[![rebol-gui](https://github.com/user-attachments/assets/6197970d-99b4-42f7-9ff1-2edf6c3b90e5)](https://github.com/Oldes/Rebol-GUI)
+
 
 # Rebol/GUI extension
 
