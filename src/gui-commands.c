@@ -610,6 +610,10 @@ static REBHOB *Screen_Handle(const REBYTE *key);
 **          (only a list-view has this third slot - see Hob_Scratch)
 **      [3] a list-view's columns spec, normalized - see List_Spec
 **
+**  and for a WINDOW:
+**
+**      [2] its `icon` image! - see Window_Icon
+**
 **  Marking the outer block marks both, and nothing outside these four
 **  functions knows the layout. A widget which is neither a container
 **  nor an image never allocates one.
@@ -617,6 +621,7 @@ static REBHOB *Screen_Handle(const REBYTE *key);
 #define SLOT_PAYLOAD  0
 #define SLOT_CHILDREN 1
 #define SLOT_SCRATCH  2
+#define SLOT_ICON     2   // a window's, where a list-view has its scratch
 
 static REBSER *Hob_Slots(REBHOB *hob)
 {
@@ -3480,6 +3485,21 @@ int GuiWindow_get_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 		arg->int32a = (win->flags & GUIW_MODAL) ? 1 : 0;
 		break;
 
+	case W_GUI_ARG_ICON: {
+		RXIARG val;
+		// The image! it was given, from the slot - not read back from the
+		// platform, which keeps only its own converted copy.
+		if (!hob->series || RL_GET_VALUE(hob->series, SLOT_ICON, &val) != RXT_IMAGE) {
+			*type = RXT_NONE;
+			break;
+		}
+		CLEARS(arg);
+		arg->image  = val.image;
+		arg->width  = (int)IMG_WIDE((REBSER*)val.image);
+		arg->height = (int)IMG_HIGH((REBSER*)val.image);
+		*type = RXT_IMAGE;
+		break; }
+
 	case W_GUI_ARG_KEYSQ:
 		*type = RXT_LOGIC;
 		arg->int32a = (win->flags & GUIW_KEYS) ? 1 : 0;
@@ -3740,6 +3760,41 @@ int GuiWindow_set_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 		if (*type != RXT_LOGIC) return PE_BAD_SET_TYPE;
 		Gui_Set_Title_Bar(win, arg->int32a ? TRUE : FALSE);
 		break;
+
+	/*******************************************************************
+	**  The icon. The image! is kept in the slot, so that `icon` reads
+	**  back the very value it was given; the platform gets a COPY of its
+	**  pixels now, since the series may move once this returns. Drawing
+	**  into the image afterwards therefore shows only when it is set
+	**  again - `win/icon: win/icon`.
+	**
+	**  The whole image, whatever its index: an image! crossing the ABI
+	**  has its dimensions where a series has its index - see the image
+	**  widget.
+	*******************************************************************/
+	case W_GUI_ARG_ICON: {
+		REBSER *blk;
+		RXIARG  none;
+		if (*type == RXT_NONE) {
+			if (!Gui_Window_Set_Icon(win, NULL, 0, 0)) return PE_BAD_SET;
+			if (hob->series) {
+				CLEARS(&none);
+				RL_SET_VALUE(hob->series, SLOT_ICON, none, RXT_NONE);
+			}
+			break;
+		}
+		if (*type != RXT_IMAGE) return PE_BAD_SET_TYPE;
+		if (!arg->image || IMG_WIDE((REBSER*)arg->image) == 0
+		    || IMG_HIGH((REBSER*)arg->image) == 0) return PE_BAD_SET;
+		if (!Gui_Window_Set_Icon(win, (const REBYTE*)IMG_DATA((REBSER*)arg->image),
+		                         (REBINT)IMG_WIDE((REBSER*)arg->image),
+		                         (REBINT)IMG_HIGH((REBSER*)arg->image)))
+			return PE_BAD_SET;
+		// [0] and [1] exist from Hob_Slots on, so [2] is appended the first
+		// time and replaced after that.
+		blk = Hob_Slots(hob);
+		if (blk) RL_SET_VALUE(blk, SLOT_ICON, *arg, RXT_IMAGE);
+		break; }
 
 	// Remembered either way; it only SHOWS while there is no title bar,
 	// and the backend applies it again whenever `title?` goes false.

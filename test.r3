@@ -57,6 +57,35 @@ print ["size:    " win/size]
 print ["offset:  " win/offset]
 print ["scale:   " win/scale "(device pixels per unit - sizes below are logical)"]
 print ["resizable?" win/resizable? " title?" win/title?]
+
+;; The icon, from an image!: a round spot with a transparent outside - the
+;; alpha channel is used, 255 opaque. It is copied when set, so the image is
+;; free to change afterwards; setting it again shows the change.
+;;
+;; WATCH: the title bar and the taskbar button (Windows, Linux X11) show the
+;; bird from %icon.png; on macOS the Dock icon does. "Repaint" from the
+;; canvas's context menu or the menu bar swaps it for a coloured disc, and
+;; back again.
+ico: make image! 32x32
+ico/rgb: red
+repeat y 32 [repeat x 32 [
+	d: (as-pair x y) - 16.5x16.5
+	ico/(as-pair x y): either 225 > ((d/x * d/x) + (d/y * d/y)) [230.120.30.255][0.0.0.0]
+]]
+print ["icon before:" win/icon "(expected none)"]
+win/icon: ico
+print ["icon set, the same image back?" same? win/icon ico "(expected true)"]
+win/icon: none
+print ["icon removed:" win/icon "(expected none)"]
+print ["a string is refused:" error? try [win/icon: "x"]]
+;; The real one, from a file next to this script. "Repaint" swaps it for the
+;; disc in a new colour and back - an icon changes at runtime as often as
+;; it is set.
+bird: load %icon.png
+win/icon: bird
+recolor-icon: does [
+	win/icon: either same? win/icon bird [ico/rgb: random 255.255.255  ico][bird]
+]
 ;; Asked of the system each time; `theme-change` reports when it switches.
 print ["dark?:   " win/dark?]
 
@@ -1272,7 +1301,7 @@ if all [type = 'alt-down  source == canvas] [
 	]
 	note ajoin ["context menu: " mold picked]
 	switch picked [
-		repaint   [paint pic random 400  redraw canvas]
+		repaint   [paint pic random 400  redraw canvas  recolor-icon]
 		clear-log [logged: copy ""  log/text: ""]
 	]
 ]
@@ -1376,7 +1405,7 @@ if all [type = 'alt-down  source == canvas] [
 			;; WATCH: the dialog blocks the main window until answered;
 			;; the window's own close box can't close it meanwhile.
 			quit      [if confirm-quit [close-window win  exit]]
-			repaint   [paint pic random 400  redraw canvas]
+			repaint   [paint pic random 400  redraw canvas  recolor-icon]
 			clear-log [logged: copy ""  log/text: ""]
 			;; Re-fit after the font change, which is what makes the
 			;; label grow down over the field's top edge and back - the

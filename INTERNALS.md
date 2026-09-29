@@ -314,6 +314,24 @@ is a fallback for programs that never `wait`.
 - Accelerator lookup runs only for keyboard messages; the window is found by
   class name, not `GWLP_USERDATA`.
 
+## Window icon
+
+`icon` keeps the image! in the window's slots (`[2]`, `SLOT_ICON`) so it
+reads back as given, and hands the backend a copy of its pixels
+(`Gui_Window_Set_Icon`), since the series may move. The whole image is used,
+whatever its index. An image! is B G R A in memory with straight alpha,
+255 opaque.
+
+- Windows: two `HICON`s from 32-bit top-down `BI_BITFIELDS` DIBs, at
+  `SM_CXICON` and `SM_CXSMICON` for the window's DPI, scaled with an
+  alpha-weighted box filter (`Scale_BGRA`) because Windows stretches icons
+  nearest-neighbour. Sent with `WM_SETICON`; kept in `GUIWIN.icon` and freed
+  when replaced and in `WM_NCDESTROY`. They are not remade on a DPI change.
+- macOS: `setApplicationIconImage:` with a `CGImage` over a `CFData` copy,
+  `kCGImageAlphaFirst | kCGBitmapByteOrder32Little` (straight alpha is
+  allowed for a CGImage). `none` sets `nil`, the bundle's icon.
+- GTK: a `GdkPixbuf` over an RGBA copy, `gtk_window_set_icon`.
+
 ## Menus
 
 Windows: `SetMenu` re-splits the window, so it is grown by the measured loss

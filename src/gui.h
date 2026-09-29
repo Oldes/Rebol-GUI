@@ -380,6 +380,13 @@ void    Gui_Window_Apply_Border(GUIWIN *win);
 REBSER* Gui_Get_Title(GUIWIN *win);
 REBOOL  Gui_Set_Title(GUIWIN *win, const REBYTE *utf8, REBCNT len);
 
+// The window's icon, from an image!'s pixels: `w` x `h` of 32 bits each,
+// B G R A in memory (the image! layout), alpha straight and 255 opaque.
+// The pixels are COPIED - they belong to a Rebol series which may move.
+// NULL puts the default back. On macOS this is the application's Dock
+// icon; on Linux under Wayland the compositor may ignore it.
+REBOOL  Gui_Window_Set_Icon(GUIWIN *win, const REBYTE *bgra, REBINT w, REBINT h);
+
 
 /***********************************************************************
 **  The menu bar.

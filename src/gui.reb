@@ -133,6 +133,11 @@ typedef struct Gui_Window_Context {
 	// where it is placed and what it stays above - the blocking is of
 	// every other window. See the modal stack in gui-commands.c.
 	void   *modal_owner;
+
+	// The native icons made from `icon` (Win32: HICON, the big one and the
+	// small one), freed when replaced and when the window goes. The image!
+	// itself is in the window's slots - see the shared slot in gui-commands.c.
+	void   *icon[2];
 } GUIWIN;
 
 // An image widget holds no pixels of its own: the image! it was given lives in
@@ -411,6 +416,7 @@ handles: [
 		children  block!   none      "Widgets the window holds directly, in the order they were added"
 		menu      block!   [block! none!] "The menu bar, as the dialect described in the README; none removes it"
 		menu-enabled? block! block!  "Which items are greyed out, as word/logic pairs; setting merges, it does not replace"
+		icon      image!   [image! none!] "Icon of the window - its title bar and taskbar button; on macOS the application's Dock icon, which the last one set wins; none for the default. Copied when set: drawing into the image changes it only when it is set again"
 	]
 	drop: [
 		"GUI drop handle - what a drop-file or drop-text event carries"

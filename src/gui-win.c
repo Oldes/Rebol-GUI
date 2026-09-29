@@ -117,6 +117,7 @@ static REBOOL Tab_Notify(GUIWIDGET *wid, NMHDR *nm);
 // is complete - see List_View_Notify.
 #define WM_GUI_LIST_CHECK (WM_APP + 0x51)
 #define LV_HEADER(wid) ((HWND)SendMessageW(HWND_OF_WID(wid), LVM_GETHEADER, 0, 0))
+static void Free_Icons(GUIWIN *win);
 static REBOOL List_View_Notify(GUIWIDGET *wid, NMHDR *nm, LRESULT *res);
 static REBOOL Gui_Handle_Key(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);
 
@@ -2170,6 +2171,8 @@ static LRESULT CALLBACK Gui_Window_Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
 			DestroyAcceleratorTable((HACCEL)win->accel);
 			win->accel = NULL;
 		}
+		// Its icons are ours too, and the window no longer shows them.
+		Free_Icons(win);
 		if (win->hob) Gui_Window_Closed(win->hob);
 		return 0;
 	}
@@ -3607,6 +3610,133 @@ REBOOL Gui_Set_Title(GUIWIN *win, const REBYTE *utf8, REBCNT len)
 {
 	if (!win || !win->handle) return FALSE;
 	return Set_Text_Of(HWND_OF(win), utf8, len);
+}
+
+
+/***********************************************************************
+**  The window's icon.
+**
+**  Made twice, at the two sizes Windows asks for - the small one for the
+**  title bar, the big one for Alt-Tab and the taskbar - each scaled down
+**  here with a box filter rather than left to Windows, whose stretching
+**  of an icon is nearest-neighbour and turns a 256 px picture into noise
+**  at 16. Colours are averaged weighted by their alpha, so a transparent
+**  pixel's colour does not bleed into its neighbours.
+**
+**  A 32-bit icon takes straight (not premultiplied) alpha in a top-down
+**  BGRA DIB, which is the image! layout already; the AND mask is only
+**  there because CreateIconIndirect wants one, and is ignored for 32 bits.
+***********************************************************************/
+static void Scale_BGRA(const REBYTE *src, int sw, int sh, REBYTE *dst, int dw, int dh)
+{
+	int x, y, sx, sy;
+	for (y = 0; y < dh; y++) {
+		int y0 = y * sh / dh, y1 = (y + 1) * sh / dh;
+		if (y1 <= y0) y1 = y0 + 1;
+		for (x = 0; x < dw; x++) {
+			int x0 = x * sw / dw, x1 = (x + 1) * sw / dw;
+			double b = 0, g = 0, r = 0, a = 0, n = 0;
+			REBYTE *d = dst + ((size_t)y * dw + x) * 4;
+			if (x1 <= x0) x1 = x0 + 1;
+			for (sy = y0; sy < y1; sy++) {
+				const REBYTE *p = src + ((size_t)sy * sw + x0) * 4;
+				for (sx = x0; sx < x1; sx++, p += 4) {
+					double w = p[3];
+					b += p[0] * w; g += p[1] * w; r += p[2] * w;
+					a += w; n += 1;
+				}
+			}
+			if (a > 0) {
+				d[0] = (REBYTE)(b / a + 0.5);
+				d[1] = (REBYTE)(g / a + 0.5);
+				d[2] = (REBYTE)(r / a + 0.5);
+			} else {
+				d[0] = d[1] = d[2] = 0;
+			}
+			d[3] = (REBYTE)(a / n + 0.5);
+		}
+	}
+}
+
+static HICON Make_Icon(const REBYTE *bgra, int w, int h, int size)
+{
+	BITMAPV5HEADER bi;
+	ICONINFO       ii;
+	HBITMAP        color, mask;
+	HICON          icon;
+	void          *bits = NULL;
+	HDC            dc;
+
+	if (size < 1) size = 1;
+	ZeroMemory(&bi, sizeof(bi));
+	bi.bV5Size        = sizeof(bi);
+	bi.bV5Width       = size;
+	bi.bV5Height      = -size;          // top-down, as an image! is
+	bi.bV5Planes      = 1;
+	bi.bV5BitCount    = 32;
+	bi.bV5Compression = BI_BITFIELDS;
+	bi.bV5RedMask     = 0x00FF0000;
+	bi.bV5GreenMask   = 0x0000FF00;
+	bi.bV5BlueMask    = 0x000000FF;
+	bi.bV5AlphaMask   = 0xFF000000;
+
+	dc    = GetDC(NULL);
+	color = CreateDIBSection(dc, (BITMAPINFO*)&bi, DIB_RGB_COLORS, &bits, NULL, 0);
+	ReleaseDC(NULL, dc);
+	if (!color || !bits) { if (color) DeleteObject(color); return NULL; }
+
+	if (w == size && h == size) memcpy(bits, bgra, (size_t)size * size * 4);
+	else Scale_BGRA(bgra, w, h, (REBYTE*)bits, size, size);
+
+	mask = CreateBitmap(size, size, 1, 1, NULL);
+	if (!mask) { DeleteObject(color); return NULL; }
+
+	ZeroMemory(&ii, sizeof(ii));
+	ii.fIcon    = TRUE;
+	ii.hbmMask  = mask;
+	ii.hbmColor = color;
+	icon = CreateIconIndirect(&ii);   // copies both bitmaps
+	DeleteObject(mask);
+	DeleteObject(color);
+	return icon;
+}
+
+static void Free_Icons(GUIWIN *win)
+{
+	int i;
+	for (i = 0; i < 2; i++) {
+		if (win->icon[i]) DestroyIcon((HICON)win->icon[i]);
+		win->icon[i] = NULL;
+	}
+}
+
+REBOOL Gui_Window_Set_Icon(GUIWIN *win, const REBYTE *bgra, REBINT w, REBINT h)
+{
+	HWND  hwnd;
+	HICON big = NULL, little = NULL;   // not `small`: rpcndr.h defines it
+	int   dpi;
+
+	if (!win || !win->handle) return FALSE;
+	hwnd = HWND_OF(win);
+
+	if (bgra && w > 0 && h > 0) {
+		dpi   = Dpi_Of(hwnd);
+		big   = Make_Icon(bgra, (int)w, (int)h, Metric(dpi, SM_CXICON));
+		little = Make_Icon(bgra, (int)w, (int)h, Metric(dpi, SM_CXSMICON));
+		if (!big || !little) {
+			if (big)   DestroyIcon(big);
+			if (little) DestroyIcon(little);
+			return FALSE;
+		}
+	}
+	// NULL for both puts the class's (the default) icon back. The old ones
+	// are freed only once the window no longer uses them.
+	SendMessageW(hwnd, WM_SETICON, ICON_BIG,   (LPARAM)big);
+	SendMessageW(hwnd, WM_SETICON, ICON_SMALL, (LPARAM)little);
+	Free_Icons(win);
+	win->icon[0] = big;
+	win->icon[1] = little;
+	return TRUE;
 }
 
 

@@ -1568,6 +1568,45 @@ REBOOL Gui_Set_Title(GUIWIN *win, const REBYTE *utf8, REBCNT len)
 
 
 /***********************************************************************
+**  The icon: a GdkPixbuf for the window, which GTK scales to whatever the
+**  window manager asks for. A pixbuf is R G B A in memory with straight
+**  alpha, so the image!'s B G R A is swapped into a buffer of its own -
+**  the series may move once this returns. Under Wayland the compositor
+**  takes the icon from the application's .desktop file instead, and this
+**  changes nothing there.
+***********************************************************************/
+REBOOL Gui_Window_Set_Icon(GUIWIN *win, const REBYTE *bgra, REBINT w, REBINT h)
+{
+	GdkPixbuf *pix;
+	guchar    *rgba;
+	size_t     n, count;
+
+	if (!win || !win->handle) return FALSE;
+	if (!bgra || w <= 0 || h <= 0) {
+		gtk_window_set_icon(GTKWINDOW(win), NULL);   // the default again
+		return TRUE;
+	}
+
+	count = (size_t)w * (size_t)h;
+	rgba  = (guchar*)g_malloc(count * 4);
+	if (!rgba) return FALSE;
+	for (n = 0; n < count; n++) {
+		rgba[n * 4 + 0] = bgra[n * 4 + 2];
+		rgba[n * 4 + 1] = bgra[n * 4 + 1];
+		rgba[n * 4 + 2] = bgra[n * 4 + 0];
+		rgba[n * 4 + 3] = bgra[n * 4 + 3];
+	}
+	// The pixbuf owns the buffer from here, and frees it with g_free.
+	pix = gdk_pixbuf_new_from_data(rgba, GDK_COLORSPACE_RGB, TRUE, 8, (int)w, (int)h,
+	                               (int)w * 4, (GdkPixbufDestroyNotify)g_free, NULL);
+	if (!pix) { g_free(rgba); return FALSE; }
+	gtk_window_set_icon(GTKWINDOW(win), pix);   // takes its own reference
+	g_object_unref(pix);
+	return TRUE;
+}
+
+
+/***********************************************************************
 **  The window's background: a colour is painted by the content box, the
 **  platform's own is GtkWindow's, and see-through is a window which
 **  paints nothing - on an RGBA visual, which a compositor then blends.

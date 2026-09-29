@@ -207,6 +207,25 @@ if all [grab  type = 'move] [win/offset: win/offset + position - grab]
 if type = 'up   [grab: none]
 ```
 
+### Icon
+
+```rebol
+win/icon: load %app.png   ;; any image!, alpha included
+win/icon: none            ;; the default again
+```
+
+The image is scaled to what the platform wants, so one of about 256x256
+looks good everywhere; its alpha channel is used, 255 being opaque. It is
+copied when set, so to show a change drawn into it, set it again
+(`win/icon: win/icon`) - which also makes it cheap to animate, say, a
+progress badge.
+
+On Windows it is the title bar's, the taskbar button's and Alt-Tab's. On
+Linux it is the window's under X11; under Wayland the compositor takes the
+icon from the application's `.desktop` file and ignores this. A Mac window
+has no icon of its own, so on macOS it sets the application's Dock icon,
+and the window which set it last wins.
+
 ### Background
 
 `background` is the client area's colour (`none` for the system colour), and
@@ -1355,6 +1374,7 @@ Creates a table - rows of cells under column headers - and returns its handle
 /children         block!              none                          "Widgets the window holds directly, in the order they were added"
 /menu             block!              [block! none!]                "The menu bar, as the dialect described in the README; none removes it"
 /menu-enabled?    block!              block!                        "Which items are greyed out, as word/logic pairs; setting merges, it does not replace"
+/icon             image!              [image! none!]                "Icon of the window - its title bar and taskbar button; on macOS the application's Dock icon, which the last one set wins; none for the default. Copied when set: drawing into the image changes it only when it is set again"
 ```
 
 #### __DROP__ - GUI drop handle - what a drop-file or drop-text event carries
