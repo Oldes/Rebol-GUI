@@ -12,4 +12,5 @@
 !/*.md
 */gen-*
 !/make-*.r3
+!/icon.png
 .DS_Store
