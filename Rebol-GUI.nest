@@ -39,9 +39,19 @@ flag:   shared
 	cflags: -fno-objc-arc
 	cflags: -Wno-deprecated-declarations
 ]
-;; There is no backend for X11/Wayland yet. Porting means one more file
-;; implementing the Gui_* API declared in gui.h - nothing above it knows what
-;; a window is made of.
+#if Linux? [
+	define: TO_LINUX
+	compiler: gcc
+	flag: -fPIC
+	;; GTK 3 (Debian/Ubuntu: libgtk-3-dev, Fedora: gtk3-devel). The flags
+	;; come from pkg-config - Siskin runs the compiler through a shell - so
+	;; the paths are whatever the distribution uses.
+	cflags: "`pkg-config --cflags gtk+-3.0`"
+	lflags: "`pkg-config --libs gtk+-3.0`"
+	;; GType names are process-wide, as Objective-C class names are - see
+	;; the note at the top of gui-gtk.c.
+	define: GUI_CLASS_PREFIX=RebolGuiRebx
+]
 
 target-x86: [
 	arch: x86
@@ -83,6 +93,9 @@ files: [
 	#if macOS? [
 		%src/gui-mac.m
 	]
+	#if Linux? [
+		%src/gui-gtk.c
+	]
 ]
 
 eggs: [
@@ -94,6 +107,16 @@ eggs: [
 		"Rebol GUI extension: win32_x64" [
 			name: %gui-x64
 			:target-x64
+		]
+	]
+	#if Linux? [
+		"Rebol GUI extension: Linux x64" [
+			name: %gui-x64
+			:target-x64
+		]
+		"Rebol GUI extension: Linux arm64" [
+			name: %gui-arm64
+			:target-arm64
 		]
 	]
 	#if macOS? [
