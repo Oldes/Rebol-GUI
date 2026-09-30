@@ -773,31 +773,46 @@ tree: add-tree-view win [
     "Notes.txt"
 ] 20x20 220x300
 
-tree/selected                  ;; [docs old "b.txt"] - the path to the picked node
+tree/selected                  ;; docs/old/"b.txt" - the path to the picked node
 tree/text                      ;; "b.txt" - its label
-tree/selected: [docs report]   ;; picks it, opening the branches above it
+tree/selected: 'docs/report    ;; picks it, opening the branches above it
 tree/selected: 'report         ;; the first node with that word...
 tree/selected: "Song.mp3"      ;; ... or that label
 tree/selected: none            ;; nothing picked
-tree/expanded                  ;; [[docs] [docs old]] - the open branches
-tree/expanded: [[docs old]]    ;; opens exactly those, and the ones above
+tree/expanded                  ;; [#(path! [docs]) docs/old] - the open branches
+tree/expanded: [docs/old]      ;; opens exactly those, and the ones above
+tree/nodes                     ;; every node's path, parents before children
 tree/items: [...]              ;; replaces the whole tree
 ```
 
 `items` is the menu bar's grammar without shortcuts: a label, then optionally
 a word naming the node, then optionally a block of its children. A node is
-found by its PATH - a block of each node's word on the way down, or its label
-where it has none - so words only have to be unique among siblings. Setting
-`selected` or `expanded` to a path that names nothing picks, or opens,
-nothing; a single word or label finds the first node with it, parents before
-children.
+found by its PATH - each node's word on the way down, or its label where it
+has none - so words only have to be unique among siblings. A label cannot be
+written in a path literal (`docs/"b.txt"` does not load), so such a path is
+made with `to path! [docs "b.txt"]`; a block with the same values is taken
+too. A one-node path molds as `#(path! [docs])`. Setting `selected` or
+`expanded` to a path that names nothing picks, or opens, nothing; a single
+word or label finds the first node with it, parents before children.
 
-`change` is reported when the user picks another node, and `click` on a
-double click or Enter. Setting `selected`, `expanded` or `items` reports
-nothing. A branch inside a closed one keeps its state and shows it again when
-its parent opens, and `expanded` lists it all the same. Fonts, `color`,
-`background`, `border?`, `/flat` and `scroll` (a percent or `top`, `bottom`,
-`end`) work as for a text-list; a zero size gives about eight rows.
+Events:
+
+| `type` | when | `code` |
+|---|---|---|
+| `change` | the user picks another node | |
+| `click` | a double click or Enter on a node | |
+| `open`, `close` | the user opens or closes a branch | the node's position in `nodes` |
+
+```rebol
+if find [open close] evt/type [print [evt/type pick tree/nodes evt/code]]
+```
+
+Setting `selected`, `expanded` or `items` reports nothing, and neither does a
+branch reopening because the one holding it did. A branch inside a closed one
+keeps its state and shows it again when its parent opens, and `expanded`
+lists it all the same. Fonts, `color`, `background`, `border?`, `/flat` and
+`scroll` (a percent or `top`, `bottom`, `end`) work as for a text-list; a
+zero size gives about eight rows.
 
 Windows uses the TreeView control with the Explorer look, macOS an
 `NSOutlineView`, Linux a `GtkTreeView`. On Windows a double click also opens
@@ -1460,8 +1475,9 @@ Creates a tree - nodes in branches which open and close - and returns its handle
 /secure?          logic!              none                          "Whether a field masks what is typed - made with `/secure`; none for other kinds"
 /columns          block!              block!                        "A list-view's columns: each a title, its width and, unless left, its alignment (center or right); a width of none fits the title, or fills the rest on the last shown column; 0 hides it, while its values stay in the rows; setting a different number of columns clears `items`; none for other kinds"
 /sort-column      integer!            [integer! none!]              "Which list-view column shows the sort arrow, 1-based, negative for descending; none for no arrow. Only the arrow - sorting `items` is the script's"
-/selected         [block!]            [block! word! string! none!]  "A tree-view's selected node, as the path to it: a block of each node's word, or its label where it has none; setting a word or a label picks the first node that has it; none for no selection or for other kinds"
-/expanded         block!              block!                        "A tree-view's open branches, each as a path; setting opens exactly those (with the branches above them) and closes the rest; none for other kinds"
+/selected         path!               [path! word! string! none!]   "A tree-view's selected node, as the path to it: each node's word, or its label where it has none; setting a word or a label picks the first node that has it; none for no selection or for other kinds"
+/expanded         block!              block!                        "A tree-view's open branches, a path for each; setting opens exactly those (with the branches above them) and closes the rest; none for other kinds"
+/nodes            block!              none                          "A tree-view's nodes, a path for each, parents before their children - the `code` of an `open` or `close` event is a position in it; none for other kinds"
 ```
 
 #### __SCREEN__ - GUI screen handle - one display; every read asks the platform again

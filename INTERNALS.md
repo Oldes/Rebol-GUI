@@ -305,7 +305,12 @@ Cocoa flips offsets against the menu-bar screen; the content view answers
   backends record it themselves and reapply it when the parent opens.
   Changes made from code are silenced (`Setting_Tree`, `quiet`, `Quiet`),
   and `picked` is re-read after `expanded` is set, since closing a branch
-  can move or drop the selection.
+  can move or drop the selection. `open` and `close` (`Gui_Tree_Toggled`)
+  carry the node's 1-based number, since an event has no room for a path;
+  the drain tells a tree's `close` from a window's by the source's handle
+  type. A GTK tree view selects its first row when it takes the focus with
+  no cursor; that selection is taken silently (`On_Selection` checks for a
+  focus-change event, and `set-focus` runs quiet).
 - **Image widget:** the pixel pointer and size are read at every paint. BGRA
   is a 32-bit `BI_RGB` DIB and
   `kCGImageAlphaNoneSkipFirst | kCGBitmapByteOrder32Little`. `RXIARG`'s image

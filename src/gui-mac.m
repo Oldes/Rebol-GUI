@@ -1417,17 +1417,24 @@ TEXT_FIELD_BODY
 	id item = [[note userInfo] objectForKey:@"NSObject"];
 	GUITREE *tree = [self table];
 	REBINT k;
+	BOOL was = quiet;
 	if (!item || !tree) return;
 	[[self open] addIndex:(NSUInteger)[(NSNumber*)item intValue]];
+	if (!quiet) Gui_Tree_Toggled(context, [(NSNumber*)item intValue], TRUE);
+	// Reopened because this one opened, not by the user: no `open`.
+	quiet = YES;
 	for (k = [self firstChildOf:item]; k >= 0; k = tree->nodes[k].next)
 		if ([open containsIndex:(NSUInteger)k] && (NSUInteger)k < [nodes count])
 			[self expandItem:[nodes objectAtIndex:(NSUInteger)k]];
+	quiet = was;
 }
 
 - (void)outlineViewItemDidCollapse:(NSNotification*)note
 {
 	id item = [[note userInfo] objectForKey:@"NSObject"];
-	if (item && !quiet) [[self open] removeIndex:(NSUInteger)[(NSNumber*)item intValue]];
+	if (!item || quiet) return;
+	[[self open] removeIndex:(NSUInteger)[(NSNumber*)item intValue]];
+	Gui_Tree_Toggled(context, [(NSNumber*)item intValue], FALSE);
 }
 
 - (void)report_click

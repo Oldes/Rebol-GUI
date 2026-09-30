@@ -370,7 +370,7 @@ words: [
 		line            ;; a static separator, horizontal or vertical; reports nothing
 		tab-panel       ;; tabs, each with a page (a panel) of its own; reports `change`
 		list-view       ;; a table of rows under column headers; reports `change`, `click` and `sort`
-		tree-view       ;; nodes in branches which open and close; reports `change` and `click`
+		tree-view       ;; nodes in branches which open and close; reports `change`, `click`, `open` and `close`
 	]
 	;; What a `theme-change` event carries in `code`.
 	theme: [
@@ -460,8 +460,9 @@ handles: [
 		secure?  logic!    none      "Whether a field masks what is typed - made with `/secure`; none for other kinds"
 		columns  block!    block!    "A list-view's columns: each a title, its width and, unless left, its alignment (center or right); a width of none fits the title, or fills the rest on the last shown column; 0 hides it, while its values stay in the rows; setting a different number of columns clears `items`; none for other kinds"
 		sort-column integer! [integer! none!] "Which list-view column shows the sort arrow, 1-based, negative for descending; none for no arrow. Only the arrow - sorting `items` is the script's"
-		selected [block!] [block! word! string! none!] "A tree-view's selected node, as the path to it: a block of each node's word, or its label where it has none; setting a word or a label picks the first node that has it; none for no selection or for other kinds"
-		expanded block!    block!    "A tree-view's open branches, each as a path; setting opens exactly those (with the branches above them) and closes the rest; none for other kinds"
+		selected path!    [path! word! string! none!] "A tree-view's selected node, as the path to it: each node's word, or its label where it has none; setting a word or a label picks the first node that has it; none for no selection or for other kinds"
+		expanded block!    block!    "A tree-view's open branches, a path for each; setting opens exactly those (with the branches above them) and closes the rest; none for other kinds"
+		nodes    block!    none      "A tree-view's nodes, a path for each, parents before their children - the `code` of an `open` or `close` event is a position in it; none for other kinds"
 	]
 	screen: [
 		"GUI screen handle - one display; every read asks the platform again"

@@ -6736,6 +6736,15 @@ static REBOOL Tree_View_Notify(GUIWIDGET *wid, NMHDR *nm, LRESULT *res)
 		}
 		return TRUE;
 
+	// Only the user's: TVM_EXPAND sends no notification at all.
+	case TVN_ITEMEXPANDEDW:
+	case TVN_ITEMEXPANDEDA: {
+		NMTREEVIEWW *tv = (NMTREEVIEWW*)nm;
+		if (!Setting_Tree && (tv->action & (TVE_EXPAND | TVE_COLLAPSE)))
+			Gui_Tree_Toggled(wid, (REBINT)tv->itemNew.lParam,
+			                 (tv->action & TVE_EXPAND) ? TRUE : FALSE);
+		return TRUE; }
+
 	case NM_DBLCLK: {
 		// On an item only - not on the empty part below the last one. The
 		// TreeView also opens or closes a branch on a double click, as the

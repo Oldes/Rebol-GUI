@@ -592,8 +592,9 @@ void    Gui_List_Picked(GUIWIDGET *wid, REBINT n);
 **  was picked.
 **
 **  Events: `change` when the user picks another node - reported through
-**  Gui_Tree_Picked(), which filters, as a list-view's are - and `click`
-**  on a double click or Enter, queued by the backend itself.
+**  Gui_Tree_Picked(), which filters, as a list-view's are - `click` on a
+**  double click or Enter, queued by the backend itself, and `open` and
+**  `close` through Gui_Tree_Toggled().
 ***********************************************************************/
 typedef struct Gui_Tree_Node {
 	REBINT  parent;   // the parent's index; -1 at the top
@@ -637,6 +638,10 @@ REBOOL  Gui_Tree_Is_Expanded(GUIWIDGET *wid, REBCNT n);
 // Provided by the SHARED layer: the user picked node `n` (-1 for none);
 // reports `change` when it differs from the node last reported.
 void    Gui_Tree_Picked(GUIWIDGET *wid, REBINT n);
+// ... and the user opened or closed node `n`'s branch: reports `open` or
+// `close`. Not for changes made from code, nor for a branch reopening
+// only because the one holding it did.
+void    Gui_Tree_Toggled(GUIWIDGET *wid, REBINT n, REBOOL open);
 
 
 //-- panel --------------------------------------------------------------------

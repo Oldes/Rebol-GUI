@@ -1026,9 +1026,13 @@ print as-yellow "^/== Tree-view"
 
 ;; The menu dialect's grammar: a label, a word naming the node if it needs
 ;; one, and a block of children if it has any. A node is found by its PATH -
-;; each node's word on the way down, or its label where it has no word.
+;; each node's word on the way down, or its label where it has no word. A
+;; label cannot be written in a path literal, so such a path is made with
+;; TO PATH! (a block with the same values is taken too).
 ;;
-;; WATCH: picking a node logs `change`; a double click or Enter logs `click`.
+;; WATCH: picking a node logs `change`; a double click or Enter logs `click`;
+;; opening and closing a branch - with the mouse or Left and Right - logs
+;; `open` and `close`, with the node's number in `tree/nodes` as the code.
 ;; A branch opened inside a closed one stays open when its parent opens.
 trees: open-window/title/at 240x260 "Tree" 1000x580
 tree: add-tree-view trees [
@@ -1041,20 +1045,23 @@ tree: add-tree-view trees [
 ] 10x10 220x240
 
 print ["tree-view:" tree/kind "nothing picked:" mold tree/selected "(expected none)"]
-tree/selected: [docs old "b.txt"]
+tree/selected: to path! [docs old "b.txt"]
 print ["picked by path:" mold tree/selected mold tree/text
-	"(expected [docs old ^"b.txt^"] ^"b.txt^")"]
-print ["its branches opened:" mold tree/expanded "(expected [[docs] [docs old]])"]
+	{(expected docs/old/"b.txt" "b.txt")}]
+print ["a path! it is:" path? tree/selected]
+print ["its branches opened:" mold tree/expanded "(expected [#(path! [docs]) docs/old])"]
 tree/selected: 'report
-print ["picked by word:" mold tree/selected "(expected [docs report])"]
+print ["picked by word:" mold tree/selected "(expected docs/report)"]
 tree/selected: "Song.mp3"
-print ["picked by label:" mold tree/selected "(expected [music ^"Song.mp3^"])"]
-tree/selected: [docs nothing]
+print ["picked by label:" mold tree/selected {(expected music/"Song.mp3")}]
+tree/selected: 'docs/nothing
 print ["a path to nothing:" mold tree/selected "(expected none)"]
-tree/expanded: [music [docs old]]
-print ["opened as asked:" mold tree/expanded "(expected [[docs] [docs old] [music]])"]
-tree/expanded: [[docs old]]
-print ["exactly those, and above:" mold tree/expanded "(expected [[docs] [docs old]])"]
+tree/expanded: [music docs/old]
+print ["opened as asked:" mold tree/expanded "(expected [#(path! [docs]) docs/old #(path! [music])])"]
+tree/expanded: [docs/old]
+print ["exactly those, and above:" mold tree/expanded "(expected [#(path! [docs]) docs/old])"]
+print ["every node:" length? tree/nodes "(expected 8)" "the fifth:" mold pick tree/nodes 5
+	{(expected docs/old/"b.txt")}]
 print ["the same block back:" same? tree/items tree/items]
 spare-tree: add-tree-view trees ["x"] 0x0 0x0
 print ["a zero size measures it:" spare-tree/size]

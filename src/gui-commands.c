@@ -1299,9 +1299,9 @@ static REBOOL Tree_Is(GUITREENODE *node, REBCNT type, RXIARG *val)
 }
 
 /***********************************************************************
-**  The node a value names: a path is followed from the top; a word or a
-**  label alone finds the first node with it, parents before children
-**  and in order. -1 for none.
+**  The node a value names: a path (or a block of the same) is followed
+**  from the top; a word or a label alone finds the first node with it,
+**  parents before children and in order. -1 for none.
 ***********************************************************************/
 static REBINT Tree_Find(GUIWIDGET *wid, REBCNT type, RXIARG *val)
 {
@@ -1310,7 +1310,7 @@ static REBINT Tree_Find(GUIWIDGET *wid, REBCNT type, RXIARG *val)
 
 	if (!tree || tree->count == 0) return -1;
 
-	if (type == RXT_BLOCK) {
+	if (type == RXT_PATH || type == RXT_BLOCK) {
 		REBSER *path = (REBSER*)val->series;
 		REBINT  at = -1, child;
 		RXIARG  step;
@@ -1397,10 +1397,44 @@ static REBSER *Tree_Expanded(GUIWIDGET *wid)
 		CLEARS(&val);
 		val.series = path;
 		val.index  = 0;
-		RL_SET_VALUE(blk, at++, val, RXT_BLOCK);
+		RL_SET_VALUE(blk, at++, val, RXT_PATH);
 	}
 	RL_PROTECT_GC(blk, 0);
 	return blk;
+}
+
+// Every node, as a path, in the order of the table - which is what the
+// `code` of an `open` or `close` event counts in.
+static REBSER *Tree_Nodes(GUIWIDGET *wid)
+{
+	GUITREE *tree = GUI_TREE_OF(wid);
+	REBSER  *blk;
+	REBCNT   n;
+	RXIARG   val;
+
+	blk = (REBSER*)RL_MAKE_BLOCK(tree ? tree->count : 0);
+	if (!blk || !tree) return blk;
+	RL_PROTECT_GC(blk, 1);
+	for (n = 0; n < tree->count; n++) {
+		REBSER *path = Tree_Path(wid, (REBINT)n);
+		CLEARS(&val);
+		if (path) {
+			val.series = path;
+			val.index  = 0;
+		}
+		RL_SET_VALUE(blk, n, val, path ? RXT_PATH : RXT_NONE);
+	}
+	RL_PROTECT_GC(blk, 0);
+	return blk;
+}
+
+void Gui_Tree_Toggled(GUIWIDGET *wid, REBINT n, REBOOL open)
+{
+	REBINT x = 0, y = 0, w = 0, h = 0;
+	if (!wid || !wid->hob || n < 0) return;
+	Gui_Widget_Get_Box(wid, &x, &y, &w, &h);
+	// 1-based, like every position a script sees.
+	Gui_Queue_Event(wid->hob, open ? EVT_OPEN : EVT_CLOSE, x, y, n + 1);
 }
 
 // Opens exactly the branches named - with those above them - and closes
@@ -2807,6 +2841,19 @@ COMMAND cmd_gui_poll_events(RXIFRM *frm, void *ctx)
 			// the core which, so `evt/key` reads a char! or a word.
 			ev.flags = (1 << EVF_HAS_CODE) | Event_Modifier_Bits(evt->value);
 			ev.data  = (u32)evt->x;
+			break;
+
+		case EVT_OPEN:
+		case EVT_CLOSE:
+			// A tree-view's branch: the node's number in `nodes`. A window's
+			// `close` is positional, like the rest.
+			if (ev.hob->sym != Handle_GuiWidget) {
+				ev.flags = (1 << EVF_HAS_XY) | Event_Modifier_Bits(evt->value);
+				ev.data  = (((u32)(evt->y & 0xffff)) << 16) | ((u32)evt->x & 0xffff);
+				break;
+			}
+			ev.flags = (1 << EVF_HAS_CODE);
+			ev.data  = (u32)evt->value;
 			break;
 
 		case EVT_SORT:
@@ -4610,6 +4657,16 @@ int GuiWidget_get_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 		if (!path) { *type = RXT_NONE; break; }
 		arg->series = path;
 		arg->index  = 0;
+		*type = RXT_PATH;
+		break; }
+
+	case W_GUI_ARG_NODES: {
+		REBSER *blk;
+		if (wid->kind != W_GUI_WIDGET_TREE_VIEW) { *type = RXT_NONE; break; }
+		blk = Tree_Nodes(wid);
+		if (!blk) { *type = RXT_NONE; break; }
+		arg->series = blk;
+		arg->index  = 0;
 		*type = RXT_BLOCK;
 		break; }
 
@@ -5063,7 +5120,8 @@ int GuiWidget_set_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 	case W_GUI_ARG_SELECTED:
 		if (wid->kind != W_GUI_WIDGET_TREE_VIEW) return PE_BAD_SET;
 		if (*type == RXT_NONE) { Tree_Select(wid, -1); break; }
-		if (*type != RXT_BLOCK && *type != RXT_WORD && *type != RXT_STRING)
+		if (*type != RXT_PATH && *type != RXT_BLOCK
+		 && *type != RXT_WORD && *type != RXT_STRING)
 			return PE_BAD_SET_TYPE;
 		Tree_Select(wid, Tree_Find(wid, *type, arg));
 		break;

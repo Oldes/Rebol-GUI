@@ -2835,7 +2835,23 @@ static void On_Selection(GtkTreeSelection *sel, gpointer data)
 	GUIWIDGET *wid = (GUIWIDGET*)data;
 	GtkTreeModel *model;
 	GtkTreeIter iter;
-	if (Quiet || !wid || !wid->hob) return;
+	GdkEvent *now;
+	if (!wid || !wid->hob) return;
+
+	/*******************************************************************
+	**  A tree view with no cursor puts it on its first row when it gets
+	**  the focus, and in single selection that selects the row. Not the
+	**  user's pick, and not what a Windows list does: it is taken in
+	**  silently, and recorded, so the next real pick is compared with it.
+	*******************************************************************/
+	now = gtk_get_current_event();
+	if (Quiet || (now && now->type == GDK_FOCUS_CHANGE)) {
+		if (now) gdk_event_free(now);
+		if (wid->kind == W_GUI_WIDGET_TREE_VIEW) wid->picked = Gui_Tree_Selected(wid);
+		else if (wid->kind == W_GUI_WIDGET_LIST_VIEW) wid->picked = Gui_Widget_Get_Index(wid);
+		return;
+	}
+	if (now) gdk_event_free(now);
 	if (wid->kind == W_GUI_WIDGET_TREE_VIEW) {
 		gint node = -1;
 		if (gtk_tree_selection_get_selected(sel, &model, &iter))
@@ -3339,7 +3355,10 @@ static void On_Row_Expanded(GtkTreeView *view, GtkTreeIter *iter, GtkTreePath *p
 
 	if (!open) return;
 	if (n < open->len) g_array_index(open, guint8, n) = 1;
+	if (!Quiet) Gui_Tree_Toggled(wid, (REBINT)n, TRUE);
 	if (!gtk_tree_model_iter_children(model, &child, iter)) return;
+	// Reopened because this one opened, not by the user: no `open`.
+	Quiet++;
 	do {
 		REBCNT c = Tree_Node_At(model, &child);
 		if (c < open->len && g_array_index(open, guint8, c)) {
@@ -3348,6 +3367,7 @@ static void On_Row_Expanded(GtkTreeView *view, GtkTreeIter *iter, GtkTreePath *p
 			gtk_tree_path_free(p);
 		}
 	} while (gtk_tree_model_iter_next(model, &child));
+	Quiet--;
 }
 
 static void On_Row_Collapsed(GtkTreeView *view, GtkTreeIter *iter, GtkTreePath *path,
@@ -3356,6 +3376,7 @@ static void On_Row_Collapsed(GtkTreeView *view, GtkTreeIter *iter, GtkTreePath *
 	GArray *open = Tree_Open((GUIWIDGET*)data);
 	REBCNT n = Tree_Node_At(gtk_tree_view_get_model(view), iter);
 	if (open && n < open->len) g_array_index(open, guint8, n) = 0;
+	if (!Quiet) Gui_Tree_Toggled((GUIWIDGET*)data, (REBINT)n, FALSE);
 }
 
 /***********************************************************************
@@ -4309,9 +4330,12 @@ REBOOL Gui_Widget_Set_Focus(GUIWIDGET *wid)
 	GtkWidget *target = Focus_Target(wid);
 	if (!target || !wid->owner || !wid->owner->handle) return FALSE;
 	if (!gtk_widget_get_can_focus(target) || !gtk_widget_is_sensitive(target)) return FALSE;
-	// Both platforms bring the window forward; so does this one.
+	// Both platforms bring the window forward; so does this one. Quiet:
+	// a list taking the focus may select its first row - see On_Selection.
 	gtk_window_present(GTKWINDOW(wid->owner));
+	Quiet++;
 	gtk_widget_grab_focus(target);
+	Quiet--;
 	return gtk_widget_is_focus(target) ? TRUE : FALSE;
 }
 
