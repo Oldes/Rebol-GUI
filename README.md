@@ -792,8 +792,8 @@ a word naming the node, then optionally a block of its children. A node is
 found by its PATH - each node's word on the way down, or its label where it
 has none - so words only have to be unique among siblings. A node at the top
 is named by its word or label alone (`docs`, `"Notes.txt"`) rather than by a
-path of one. A block with a path's values is taken too, which a build of
-Rebol that cannot read a label in a path literal (`'docs/old/"b.txt"`) needs.
+path of one. A label is written in a path as a string (`'docs/old/"b.txt"`),
+and a block with a path's values is taken too.
 Setting `selected` or `expanded` to a path that names nothing picks, or
 opens, nothing; a word or a label alone is a node at the top when there is
 one, and otherwise the first node with it, parents before children.
