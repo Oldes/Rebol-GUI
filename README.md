@@ -801,7 +801,9 @@ its parent opens, and `expanded` lists it all the same. Fonts, `color`,
 
 Windows uses the TreeView control with the Explorer look, macOS an
 `NSOutlineView`, Linux a `GtkTreeView`. On Windows a double click also opens
-or closes a branch, as it does in Explorer.
+or closes a branch, as it does in Explorer. Right opens a branch, or moves
+into an open one; Left closes it, or moves to the parent. macOS draws no
+lines between the nodes; Windows and Linux do.
 
 ### Date-fields
 

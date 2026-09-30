@@ -3358,6 +3358,55 @@ static void On_Row_Collapsed(GtkTreeView *view, GtkTreeIter *iter, GtkTreePath *
 	if (open && n < open->len) g_array_index(open, guint8, n) = 0;
 }
 
+/***********************************************************************
+**  Left and Right open and close branches, as in a Windows tree and an
+**  NSOutlineView: Right opens a closed branch, or goes to the first node
+**  in an open one; Left closes an open branch, or goes to the parent.
+**  GTK's own keys for that (+, - and Shift with the arrows) still work.
+***********************************************************************/
+static gboolean On_Tree_Key(GtkWidget *w, GdkEventKey *key, gpointer data)
+{
+	GtkTreeView  *view = GTK_TREE_VIEW(w);
+	GtkTreeModel *model = gtk_tree_view_get_model(view);
+	GtkTreePath  *path = NULL;
+	GtkTreeIter   iter;
+	gboolean      right, done = FALSE;
+
+	if (key->state & (GDK_SHIFT_MASK | GDK_CONTROL_MASK | GDK_MOD1_MASK)) return FALSE;
+	switch (key->keyval) {
+	case GDK_KEY_Right: case GDK_KEY_KP_Right: right = TRUE;  break;
+	case GDK_KEY_Left:  case GDK_KEY_KP_Left:  right = FALSE; break;
+	default: return FALSE;
+	}
+	gtk_tree_view_get_cursor(view, &path, NULL);
+	if (!path || !model || !gtk_tree_model_get_iter(model, &iter, path)) {
+		if (path) gtk_tree_path_free(path);
+		return FALSE;
+	}
+
+	if (right) {
+		if (gtk_tree_model_iter_has_child(model, &iter)) {
+			if (!gtk_tree_view_row_expanded(view, path))
+				gtk_tree_view_expand_row(view, path, FALSE);
+			else {
+				gtk_tree_path_down(path);
+				gtk_tree_view_set_cursor(view, path, NULL, FALSE);
+			}
+		}
+		done = TRUE;
+	} else {
+		if (gtk_tree_view_row_expanded(view, path))
+			gtk_tree_view_collapse_row(view, path);
+		else if (gtk_tree_path_get_depth(path) > 1) {
+			gtk_tree_path_up(path);
+			gtk_tree_view_set_cursor(view, path, NULL, FALSE);
+		}
+		done = TRUE;
+	}
+	gtk_tree_path_free(path);
+	return done;
+}
+
 static void Tree_Cell(GtkTreeViewColumn *col, GtkCellRenderer *cell,
                       GtkTreeModel *model, GtkTreeIter *iter, gpointer data)
 {
@@ -3380,6 +3429,9 @@ REBOOL Gui_Create_Tree_View(GUIWIDGET *wid, GUIWIN *owner,
 	g_object_unref(store);   // the tree view holds it
 	tree = gtk_bin_get_child(GTK_BIN(scroll));
 	gtk_tree_view_set_headers_visible(GTK_TREE_VIEW(tree), FALSE);
+	// Lines joining a node to its parent and siblings, as a Windows tree
+	// draws them.
+	gtk_tree_view_set_enable_tree_lines(GTK_TREE_VIEW(tree), TRUE);
 
 	cell = gtk_cell_renderer_text_new();
 	col  = gtk_tree_view_column_new_with_attributes("", cell, "text", 0, NULL);
@@ -3397,6 +3449,7 @@ REBOOL Gui_Create_Tree_View(GUIWIDGET *wid, GUIWIN *owner,
 	Connect(wid, tree, "row-activated", G_CALLBACK(On_Row_Activated));
 	Connect(wid, tree, "row-expanded", G_CALLBACK(On_Row_Expanded));
 	Connect(wid, tree, "row-collapsed", G_CALLBACK(On_Row_Collapsed));
+	Connect(wid, tree, "key-press-event", G_CALLBACK(On_Tree_Key));
 	Connect_Focus(wid, tree);
 	return TRUE;
 }
