@@ -776,25 +776,27 @@ tree: add-tree-view win [
 tree/selected                  ;; docs/old/"b.txt" - the path to the picked node
 tree/text                      ;; "b.txt" - its label
 tree/selected: 'docs/report    ;; picks it, opening the branches above it
-tree/selected: 'report         ;; the first node with that word...
-tree/selected: "Song.mp3"      ;; ... or that label
+tree/selected: 'music          ;; a node at the top: its word alone
+tree/selected: 'report         ;; a word not at the top: the first node with it
+tree/selected: "Song.mp3"      ;; ... or with that label
+tree/selected: [music "Song.mp3"]  ;; a block with a path's values
 tree/selected: none            ;; nothing picked
-tree/expanded                  ;; [#(path! [docs]) docs/old] - the open branches
-tree/selected: [music "Song.mp3"]  ;; a block, where a label is on the way
+tree/expanded                  ;; [docs docs/old] - the open branches
 tree/expanded: [docs/old]      ;; opens exactly those, and the ones above
-tree/nodes                     ;; every node's path, parents before children
+tree/nodes                     ;; every node, named the same way, parents first
 tree/items: [...]              ;; replaces the whole tree
 ```
 
 `items` is the menu bar's grammar without shortcuts: a label, then optionally
 a word naming the node, then optionally a block of its children. A node is
 found by its PATH - each node's word on the way down, or its label where it
-has none - so words only have to be unique among siblings. A label cannot be
-written in a path literal (`docs/"b.txt"` does not load), so a block with the
-same values is taken as well: `tree/selected: [docs "b.txt"]`. A one-node
-path molds as `#(path! [docs])`. Setting `selected` or
-`expanded` to a path that names nothing picks, or opens, nothing; a single
-word or label finds the first node with it, parents before children.
+has none - so words only have to be unique among siblings. A node at the top
+is named by its word or label alone (`docs`, `"Notes.txt"`) rather than by a
+path of one. A block with a path's values is taken too, which a build of
+Rebol that cannot read a label in a path literal (`'docs/old/"b.txt"`) needs.
+Setting `selected` or `expanded` to a path that names nothing picks, or
+opens, nothing; a word or a label alone is a node at the top when there is
+one, and otherwise the first node with it, parents before children.
 
 Events:
 
@@ -1476,9 +1478,9 @@ Creates a tree - nodes in branches which open and close - and returns its handle
 /secure?          logic!              none                          "Whether a field masks what is typed - made with `/secure`; none for other kinds"
 /columns          block!              block!                        "A list-view's columns: each a title, its width and, unless left, its alignment (center or right); a width of none fits the title, or fills the rest on the last shown column; 0 hides it, while its values stay in the rows; setting a different number of columns clears `items`; none for other kinds"
 /sort-column      integer!            [integer! none!]              "Which list-view column shows the sort arrow, 1-based, negative for descending; none for no arrow. Only the arrow - sorting `items` is the script's"
-/selected         path!               [path! block! word! string! none!]"A tree-view's selected node, as the path to it: each node's word, or its label where it has none; set a path, or a block of the same values (a label cannot be written in a path); a word or a label alone picks the first node that has it; none for no selection or for other kinds"
-/expanded         block!              block!                        "A tree-view's open branches, a path for each; setting takes paths, blocks, words or labels, opens exactly those (with the branches above them) and closes the rest; none for other kinds"
-/nodes            block!              none                          "A tree-view's nodes, a path for each, parents before their children - the `code` of an `open` or `close` event is a position in it; none for other kinds"
+/selected         [path! word! string!][path! block! word! string! none!]"A tree-view's selected node: the path to it - each node's word, or its label where it has none - or, for a node at the top, that word or label alone; a block of the same values is taken too; a word or a label alone is a node at the top when there is one, and otherwise the first node with it; none for no selection or for other kinds"
+/expanded         block!              block!                        "A tree-view's open branches, each as `selected` names a node; setting opens exactly those (with the branches above them) and closes the rest; none for other kinds"
+/nodes            block!              none                          "A tree-view's nodes, each as `selected` names it, parents before their children - the `code` of an `open` or `close` event is a position in it; none for other kinds"
 ```
 
 #### __SCREEN__ - GUI screen handle - one display; every read asks the platform again

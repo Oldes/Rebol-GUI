@@ -1283,6 +1283,31 @@ static REBSER *Tree_Path(GUIWIDGET *wid, REBINT n)
 	return blk;
 }
 
+/***********************************************************************
+**  Node `n` as a script sees it: a node at the top is its word, or its
+**  label, alone - a path of one would be `#(path! [docs])` - and any
+**  other the path to it. FALSE when there is no such node.
+***********************************************************************/
+static REBOOL Tree_Value(GUIWIDGET *wid, REBINT n, RXIARG *val, REBCNT *type)
+{
+	GUITREE *tree = GUI_TREE_OF(wid);
+	REBSER  *path;
+
+	CLEARS(val);
+	*type = RXT_NONE;
+	if (!tree || n < 0 || n >= (REBINT)tree->count) return FALSE;
+	if (tree->nodes[n].parent < 0) {
+		Tree_Id(&tree->nodes[n], val, type);
+		return *type != RXT_NONE;
+	}
+	path = Tree_Path(wid, n);
+	if (!path) return FALSE;
+	val->series = path;
+	val->index  = 0;
+	*type = RXT_PATH;
+	return TRUE;
+}
+
 // Whether a node is the one a word or a label names.
 static REBOOL Tree_Is(GUITREENODE *node, REBCNT type, RXIARG *val)
 {
@@ -1300,8 +1325,9 @@ static REBOOL Tree_Is(GUITREENODE *node, REBCNT type, RXIARG *val)
 
 /***********************************************************************
 **  The node a value names: a path (or a block of the same) is followed
-**  from the top; a word or a label alone finds the first node with it,
-**  parents before children and in order. -1 for none.
+**  from the top. A word or a label alone is a node at the top when there
+**  is one - it is what a top node reads back as - and otherwise the first
+**  node anywhere with it, parents before children. -1 for none.
 ***********************************************************************/
 static REBINT Tree_Find(GUIWIDGET *wid, REBCNT type, RXIARG *val)
 {
@@ -1337,6 +1363,9 @@ static REBINT Tree_Find(GUIWIDGET *wid, REBCNT type, RXIARG *val)
 	}
 
 	if (type == RXT_WORD || type == RXT_STRING) {
+		for (n = 0; n < tree->count; n++)
+			if (tree->nodes[n].parent < 0 && Tree_Is(&tree->nodes[n], type, val))
+				return (REBINT)n;
 		for (n = 0; n < tree->count; n++)
 			if (Tree_Is(&tree->nodes[n], type, val)) return (REBINT)n;
 	}
@@ -1389,15 +1418,11 @@ static REBSER *Tree_Expanded(GUIWIDGET *wid)
 	if (!blk || !tree) return blk;
 	RL_PROTECT_GC(blk, 1);
 	for (n = 0; n < tree->count; n++) {
-		REBSER *path;
+		REBCNT type;
 		if (tree->nodes[n].first < 0) continue;   // a leaf opens nothing
 		if (!Gui_Tree_Is_Expanded(wid, n)) continue;
-		path = Tree_Path(wid, (REBINT)n);
-		if (!path) continue;
-		CLEARS(&val);
-		val.series = path;
-		val.index  = 0;
-		RL_SET_VALUE(blk, at++, val, RXT_PATH);
+		if (!Tree_Value(wid, (REBINT)n, &val, &type)) continue;
+		RL_SET_VALUE(blk, at++, val, (int)type);
 	}
 	RL_PROTECT_GC(blk, 0);
 	return blk;
@@ -1416,13 +1441,9 @@ static REBSER *Tree_Nodes(GUIWIDGET *wid)
 	if (!blk || !tree) return blk;
 	RL_PROTECT_GC(blk, 1);
 	for (n = 0; n < tree->count; n++) {
-		REBSER *path = Tree_Path(wid, (REBINT)n);
-		CLEARS(&val);
-		if (path) {
-			val.series = path;
-			val.index  = 0;
-		}
-		RL_SET_VALUE(blk, n, val, path ? RXT_PATH : RXT_NONE);
+		REBCNT type;
+		Tree_Value(wid, (REBINT)n, &val, &type);
+		RL_SET_VALUE(blk, n, val, (int)type);
 	}
 	RL_PROTECT_GC(blk, 0);
 	return blk;
@@ -4650,15 +4671,10 @@ int GuiWidget_get_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 		*type = RXT_BLOCK;
 		break; }
 
-	case W_GUI_ARG_SELECTED: {
-		REBSER *path;
+	case W_GUI_ARG_SELECTED:
 		if (wid->kind != W_GUI_WIDGET_TREE_VIEW) { *type = RXT_NONE; break; }
-		path = Tree_Path(wid, Gui_Tree_Selected(wid));
-		if (!path) { *type = RXT_NONE; break; }
-		arg->series = path;
-		arg->index  = 0;
-		*type = RXT_PATH;
-		break; }
+		if (!Tree_Value(wid, Gui_Tree_Selected(wid), arg, type)) *type = RXT_NONE;
+		break;
 
 	case W_GUI_ARG_NODES: {
 		REBSER *blk;

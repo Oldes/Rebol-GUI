@@ -1026,9 +1026,10 @@ print as-yellow "^/== Tree-view"
 
 ;; The menu dialect's grammar: a label, a word naming the node if it needs
 ;; one, and a block of children if it has any. A node is found by its PATH -
-;; each node's word on the way down, or its label where it has no word. A
-;; label cannot be written in a path literal, so a block with the same values
-;; is taken as well.
+;; each node's word on the way down, or its label where it has no word - and
+;; a node at the top is just its word or label. A block with the same values
+;; is taken as well; it is used here because only newer builds of Rebol read
+;; a label inside a path literal (docs/old/"b.txt").
 ;;
 ;; WATCH: picking a node logs `change`; a double click or Enter logs `click`;
 ;; opening and closing a branch - with the mouse or Left and Right - logs
@@ -1049,17 +1050,21 @@ tree/selected: [docs old "b.txt"]
 print ["picked by path:" mold tree/selected mold tree/text
 	{(expected docs/old/"b.txt" "b.txt")}]
 print ["a path! it is:" path? tree/selected]
-print ["its branches opened:" mold tree/expanded "(expected [#(path! [docs]) docs/old])"]
+print ["its branches opened:" mold tree/expanded "(expected [docs docs/old])"]
 tree/selected: 'report
 print ["picked by word:" mold tree/selected "(expected docs/report)"]
 tree/selected: "Song.mp3"
 print ["picked by label:" mold tree/selected {(expected music/"Song.mp3")}]
+tree/selected: 'music
+print ["a node at the top:" mold tree/selected type? tree/selected "(expected music word!)"]
+tree/selected: "Notes.txt"
+print ["... without a word:" mold tree/selected {(expected "Notes.txt")}]
 tree/selected: 'docs/nothing
 print ["a path to nothing:" mold tree/selected "(expected none)"]
 tree/expanded: [music docs/old]
-print ["opened as asked:" mold tree/expanded "(expected [#(path! [docs]) docs/old #(path! [music])])"]
+print ["opened as asked:" mold tree/expanded "(expected [docs docs/old music])"]
 tree/expanded: [docs/old]
-print ["exactly those, and above:" mold tree/expanded "(expected [#(path! [docs]) docs/old])"]
+print ["exactly those, and above:" mold tree/expanded "(expected [docs docs/old])"]
 print ["every node:" length? tree/nodes "(expected 8)" "the fifth:" mold pick tree/nodes 5
 	{(expected docs/old/"b.txt")}]
 print ["the same block back:" same? tree/items tree/items]
