@@ -460,8 +460,8 @@ handles: [
 		secure?  logic!    none      "Whether a field masks what is typed - made with `/secure`; none for other kinds"
 		columns  block!    block!    "A list-view's columns: each a title, its width and, unless left, its alignment (center or right); a width of none fits the title, or fills the rest on the last shown column; 0 hides it, while its values stay in the rows; setting a different number of columns clears `items`; none for other kinds"
 		sort-column integer! [integer! none!] "Which list-view column shows the sort arrow, 1-based, negative for descending; none for no arrow. Only the arrow - sorting `items` is the script's"
-		selected path!    [path! word! string! none!] "A tree-view's selected node, as the path to it: each node's word, or its label where it has none; setting a word or a label picks the first node that has it; none for no selection or for other kinds"
-		expanded block!    block!    "A tree-view's open branches, a path for each; setting opens exactly those (with the branches above them) and closes the rest; none for other kinds"
+		selected path!    [path! block! word! string! none!] "A tree-view's selected node, as the path to it: each node's word, or its label where it has none; set a path, or a block of the same values (a label cannot be written in a path); a word or a label alone picks the first node that has it; none for no selection or for other kinds"
+		expanded block!    block!    "A tree-view's open branches, a path for each; setting takes paths, blocks, words or labels, opens exactly those (with the branches above them) and closes the rest; none for other kinds"
 		nodes    block!    none      "A tree-view's nodes, a path for each, parents before their children - the `code` of an `open` or `close` event is a position in it; none for other kinds"
 	]
 	screen: [

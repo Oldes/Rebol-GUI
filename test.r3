@@ -1027,8 +1027,8 @@ print as-yellow "^/== Tree-view"
 ;; The menu dialect's grammar: a label, a word naming the node if it needs
 ;; one, and a block of children if it has any. A node is found by its PATH -
 ;; each node's word on the way down, or its label where it has no word. A
-;; label cannot be written in a path literal, so such a path is made with
-;; TO PATH! (a block with the same values is taken too).
+;; label cannot be written in a path literal, so a block with the same values
+;; is taken as well.
 ;;
 ;; WATCH: picking a node logs `change`; a double click or Enter logs `click`;
 ;; opening and closing a branch - with the mouse or Left and Right - logs
@@ -1045,7 +1045,7 @@ tree: add-tree-view trees [
 ] 10x10 220x240
 
 print ["tree-view:" tree/kind "nothing picked:" mold tree/selected "(expected none)"]
-tree/selected: to path! [docs old "b.txt"]
+tree/selected: [docs old "b.txt"]
 print ["picked by path:" mold tree/selected mold tree/text
 	{(expected docs/old/"b.txt" "b.txt")}]
 print ["a path! it is:" path? tree/selected]
