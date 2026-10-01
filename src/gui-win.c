@@ -4221,15 +4221,67 @@ static void Release_Press(HWND hwnd, GUIWIDGET *wid)
 	                To_Logical(Dpi_Of(hwnd), p.y), Modifiers());
 }
 
+// Where a click at `lp` should land: on the expand button of its row when
+// it is in that button's column - from the icon back by an indent - but
+// missed it; anywhere else, where it is.
+static LPARAM Tree_Button_Point(HWND hwnd, LPARAM lp)
+{
+	TVHITTESTINFO ht;
+	RECT  text;
+	int   x = GET_X_LPARAM(lp), y = GET_Y_LPARAM(lp);
+	int   indent, icon_w = 0, icon_h = 0, left, right, px;
+	HIMAGELIST list = (HIMAGELIST)SendMessageW(hwnd, TVM_GETIMAGELIST, TVSIL_NORMAL, 0);
+	HTREEITEM  item;
+
+	ZeroMemory(&ht, sizeof(ht));
+	ht.pt.x = x; ht.pt.y = y;
+	item = (HTREEITEM)SendMessageW(hwnd, TVM_HITTEST, 0, (LPARAM)&ht);
+	if (!item || !(ht.flags & TVHT_ONITEMINDENT)) return lp;
+	if (!SendMessageW(hwnd, TVM_GETNEXTITEM, TVGN_CHILD, (LPARAM)item)) return lp;
+
+	*(HTREEITEM*)&text = item;
+	if (!SendMessageW(hwnd, TVM_GETITEMRECT, TRUE, (LPARAM)&text)) return lp;
+	if (list) ImageList_GetIconSize(list, &icon_w, &icon_h);
+	indent = (int)SendMessageW(hwnd, TVM_GETINDENT, 0, 0);
+	right  = text.left - icon_w;
+	left   = right - indent;
+	if (x < left || x >= right) return lp;
+
+	// The nearest point the control itself calls the button, either side.
+	for (px = 1; px <= indent; px++) {
+		int k;
+		for (k = 0; k < 2; k++) {
+			ht.pt.x = k ? x - px : x + px;
+			ht.pt.y = y;
+			if ((HTREEITEM)SendMessageW(hwnd, TVM_HITTEST, 0, (LPARAM)&ht) == item
+			    && (ht.flags & TVHT_ONITEMBUTTON))
+				return MAKELPARAM(ht.pt.x, y);
+		}
+	}
+	return lp;
+}
+
 static LRESULT CALLBACK Nav_Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
 	GUIWIDGET *wid  = (GUIWIDGET*)GetWindowLongPtrW(hwnd, GWLP_USERDATA);
 	WNDPROC    base = (wid && wid->wndproc) ? (WNDPROC)wid->wndproc : NULL;
+	LPARAM     at   = lp;  // where the pointer really is - see below
 
 	// A TreeView does not destroy the image list it was given.
 	if (msg == WM_NCDESTROY && wid && wid->kind == W_GUI_WIDGET_TREE_VIEW) {
 		HIMAGELIST list = (HIMAGELIST)SendMessageW(hwnd, TVM_GETIMAGELIST, TVSIL_NORMAL, 0);
 		if (list) ImageList_Destroy(list);
+	}
+
+	// A tree with icons: the themed expand arrow is not always drawn where
+	// the TreeView looks for it - at some sizes a click right on the arrow
+	// lands just left of the spot taken as the button. A click in the
+	// arrow's column is moved onto the button, so that the control itself
+	// takes it as one, and notifies as for any other.
+	if ((msg == WM_LBUTTONDOWN || msg == WM_LBUTTONDBLCLK)
+	    && wid && wid->kind == W_GUI_WIDGET_TREE_VIEW
+	    && SendMessageW(hwnd, TVM_GETIMAGELIST, TVSIL_NORMAL, 0)) {
+		lp = Tree_Button_Point(hwnd, lp);
 	}
 
 	// A list-view's selection has settled - see List_View_Notify.
@@ -4317,7 +4369,7 @@ static LRESULT CALLBACK Nav_Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 			Release_Press(old, (GUIWIDGET*)GetWindowLongPtrW(old, GWLP_USERDATA));
 		}
 		Pressed_Control = hwnd;
-		Queue_Widget_Mouse(wid, EVT_DOWN, lp,
+		Queue_Widget_Mouse(wid, EVT_DOWN, at,
 		                   msg == WM_LBUTTONDBLCLK ? GUI_FLAG_DOUBLE : 0);
 		break;  // on to the control, which captures and presses
 
