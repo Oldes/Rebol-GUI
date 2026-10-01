@@ -207,6 +207,9 @@ typedef struct Gui_Widget_Context {
 	                 // row asked for with `row-height`, in logical units;
 	                 // 0 for the platform's own, from the font. A backend
 	                 // keeps to it across font changes
+	void   *icons;   // text-list, list-view, tree-view: the icons its rows
+	                 // show (GUIICONS*), set up with `items` by the shared
+	                 // layer and freed with the handle
 } GUIWIDGET;
 
 #define GUIW_VISIBLE       1
@@ -631,7 +634,7 @@ commands: [
 	add-text-list: [
 		"Creates a list of strings in a fixed box, which scrolls when they do not fit, and returns its handle"
 		parent [handle!] "Window, panel or image widget to put it in"
-		items  [block!]  "Strings to show"
+		items  [block!]  "Strings to show, each optionally followed by its icon: an image!, or a get-word holding one"
 		offset [pair!]   "Position inside the parent"
 		size   [pair!]
 		/index n [integer!] "Item picked to start with, 1-based (default: none)"
@@ -692,7 +695,7 @@ commands: [
 		columns [block!]  "Column titles, each optionally followed by its width (integer!, 0 to hide it, or none: fit the title, or fill the rest on the last shown column) and alignment (left, center or right)"
 		offset  [pair!]   "Position inside the parent"
 		size    [pair!]
-		/with cells [block!] "Cells to show, row by row in one flat block; any values, shown as FORM shows them"
+		/with cells [block!] "Cells to show, row by row in one flat block; any values, shown as FORM shows them - but an image!, or a get-word holding one, in a row's first cell is that row's icon"
 		/index n [integer!] "Row picked to start with, 1-based (default: none)"
 		/flat "Without the border"
 	]

@@ -796,8 +796,10 @@ REBOOL Gui_List_Cell(GUIWIDGET *wid, REBCNT row, REBCNT col, REBYTE **utf8, REBC
 
 	type = RL_GET_VALUE(blk, index + row * cols + col, &val);
 	if (type == 0 || type == RXT_END) return FALSE;  // the block got shorter
-	// A missing value is an empty cell, not the word "none".
-	if (type == RXT_NONE || type == RXT_UNSET) return TRUE;
+	// A missing value is an empty cell, not the word "none"; an icon is
+	// drawn, not written.
+	if (type == RXT_NONE || type == RXT_UNSET || type == RXT_IMAGE) return TRUE;
+	if (type == RXT_GET_WORD && col == 0) return TRUE;
 
 	str = Hob_Scratch(wid->hob, FALSE);
 	if (!str) return FALSE;
@@ -1063,6 +1065,8 @@ static REBSER *List_Columns_Block(GUIWIDGET *wid)
 	return blk;
 }
 
+static void Icons_Free(GUIWIDGET *wid);
+
 // FALSE when the cells do not make whole rows.
 static REBOOL List_Set_Items(GUIWIDGET *wid, REBSER *blk, REBCNT index)
 {
@@ -1081,10 +1085,208 @@ static REBOOL List_Set_Items(GUIWIDGET *wid, REBSER *blk, REBCNT index)
 		Hob_Set_Payload(wid->hob, NULL, RXT_NONE);
 	}
 	wid->picked = -1;
+	// The icons, from the first field of every row - so the backend knows
+	// up front whether to keep room for them.
+	Icons_Free(wid);
+	{
+		REBCNT row, rows = Gui_List_Rows(wid);
+		for (row = 0; row < rows; row++) Gui_Row_Icon(wid, row);
+	}
+	Gui_Icons_Changed(wid);
 	Gui_List_Reload(wid, Gui_List_Rows(wid));
 	return TRUE;
 }
 
+
+/***********************************************************************
+**  Icons - see gui.h.
+***********************************************************************/
+
+static GUIICONS *Icons_Of(GUIWIDGET *wid, REBOOL make)
+{
+	GUIICONS *icons = (GUIICONS*)wid->icons;
+	if (!icons && make) {
+		icons = (GUIICONS*)MAKE_MEM(sizeof(GUIICONS));
+		if (icons) { CLEARS(icons); wid->icons = icons; }
+	}
+	return icons;
+}
+
+static void Icons_Free(GUIWIDGET *wid)
+{
+	GUIICONS *icons = (GUIICONS*)wid->icons;
+	REBCNT n;
+	if (!icons) return;
+	for (n = 0; n < icons->count; n++)
+		if (icons->images[n].pixels) FREE_MEM(icons->images[n].pixels);
+	if (icons->images) FREE_MEM(icons->images);
+	if (icons->rows) FREE_MEM(icons->rows);
+	FREE_MEM(icons);
+	wid->icons = NULL;
+}
+
+// The image! a value stands for - itself, or what a get-word holds - or
+// NULL. `blk` and `n` are where it is, for the get-word to be looked up.
+static REBSER *Icon_Value(REBSER *blk, REBCNT n, REBCNT type, RXIARG *val)
+{
+	RXIARG got;
+	if (type == RXT_IMAGE) return (REBSER*)val->series;
+	if (type == RXT_GET_WORD && RL_GET_VALUE_RESOLVED(blk, n, &got) == RXT_IMAGE)
+		return (REBSER*)got.series;
+	return NULL;
+}
+
+// The image! `img` in the widget's table: its index, or -1. One already
+// there - the same image! for every folder, say - is not copied again.
+static REBINT Icons_Add(GUIWIDGET *wid, REBSER *img)
+{
+	GUIICONS *icons;
+	GUIICON  *slot;
+	REBINT w, h;
+	REBCNT n;
+
+	if (!img) return -1;
+	w = (REBINT)IMG_WIDE(img);
+	h = (REBINT)IMG_HIGH(img);
+	if (w <= 0 || h <= 0 || !IMG_DATA(img)) return -1;
+	icons = Icons_Of(wid, TRUE);
+	if (!icons) return -1;
+	for (n = 0; n < icons->count; n++)
+		if (icons->images[n].source == (void*)img
+		    && icons->images[n].w == w && icons->images[n].h == h)
+			return (REBINT)n;
+
+	if (icons->count == icons->capacity) {
+		REBCNT cap = icons->capacity ? icons->capacity * 2 : 4;
+		GUIICON *images = (GUIICON*)MAKE_MEM(sizeof(GUIICON) * cap);
+		if (!images) return -1;
+		if (icons->images) {
+			COPY_MEM(images, icons->images, sizeof(GUIICON) * icons->count);
+			FREE_MEM(icons->images);
+		}
+		icons->images = images;
+		icons->capacity = cap;
+	}
+	slot = &icons->images[icons->count];
+	slot->pixels = (REBYTE*)MAKE_MEM((size_t)w * (size_t)h * 4);
+	if (!slot->pixels) return -1;
+	COPY_MEM(slot->pixels, IMG_DATA(img), (size_t)w * (size_t)h * 4);
+	slot->w = w;
+	slot->h = h;
+	slot->source = (void*)img;
+	return (REBINT)icons->count++;
+}
+
+// Records `image` as the icon of text-list item `row`.
+static void Icons_Set_Row(GUIWIDGET *wid, REBCNT row, REBINT image)
+{
+	GUIICONS *icons = Icons_Of(wid, image >= 0);
+	REBCNT n;
+	if (!icons) return;
+	if (row >= icons->row_count) {
+		REBCNT  cap = icons->row_count ? icons->row_count : 16;
+		REBINT *rows;
+		while (cap <= row) cap *= 2;
+		rows = (REBINT*)MAKE_MEM(sizeof(REBINT) * cap);
+		if (!rows) return;
+		for (n = 0; n < cap; n++) rows[n] = (n < icons->row_count) ? icons->rows[n] : -1;
+		if (icons->rows) FREE_MEM(icons->rows);
+		icons->rows = rows;
+		icons->row_count = cap;
+	}
+	icons->rows[row] = image;
+}
+
+REBCNT Gui_Icon_Count(GUIWIDGET *wid)
+{
+	GUIICONS *icons = wid ? (GUIICONS*)wid->icons : NULL;
+	return icons ? icons->count : 0;
+}
+
+const GUIICON *Gui_Icon(GUIWIDGET *wid, REBINT n)
+{
+	GUIICONS *icons = wid ? (GUIICONS*)wid->icons : NULL;
+	if (!icons || n < 0 || (REBCNT)n >= icons->count) return NULL;
+	return &icons->images[n];
+}
+
+REBINT Gui_Row_Icon(GUIWIDGET *wid, REBCNT row)
+{
+	GUIICONS *icons = wid ? (GUIICONS*)wid->icons : NULL;
+	if (!wid) return -1;
+	if (wid->kind == W_GUI_WIDGET_TEXT_LIST)
+		return (icons && row < icons->row_count) ? icons->rows[row] : -1;
+	if (wid->kind == W_GUI_WIDGET_LIST_VIEW && wid->fields > 0) {
+		// Looked at again each time: the cells are read as they are shown.
+		REBCNT  index = 0, type;
+		REBSER *blk = List_Items(wid, &index);
+		RXIARG  val;
+		if (!blk) return -1;
+		index += row * wid->fields;
+		type = RL_GET_VALUE(blk, index, &val);
+		return Icons_Add(wid, Icon_Value(blk, index, type, &val));
+	}
+	return -1;
+}
+
+REBINT Gui_Icon_Size(GUIWIDGET *wid)
+{
+	REBINT size = Gui_Widget_Get_Row_Height(wid) - 4;
+	return (size < 4) ? 4 : size;
+}
+
+// An area average: every source pixel under a destination pixel counts by
+// how much of it is covered, and by its alpha - so a transparent pixel's
+// colour does not bleed into its neighbours' edges.
+void Gui_Scale_Icon(const GUIICON *img, REBINT size, REBYTE *dst,
+                    REBINT stride, REBOOL premultiply)
+{
+	REBINT dw = size, dh = size, ox, oy, dx, dy, sx, sy;
+	double fx, fy;
+
+	for (dy = 0; dy < size; dy++) CLEAR(dst + dy * stride, (size_t)size * 4);
+	if (!img || !img->pixels || img->w <= 0 || img->h <= 0 || size <= 0) return;
+
+	if (img->w >= img->h) dh = (REBINT)((double)img->h * size / img->w + 0.5);
+	else                  dw = (REBINT)((double)img->w * size / img->h + 0.5);
+	if (dw < 1) dw = 1;
+	if (dh < 1) dh = 1;
+	ox = (size - dw) / 2;
+	oy = (size - dh) / 2;
+	fx = (double)img->w / dw;
+	fy = (double)img->h / dh;
+
+	for (dy = 0; dy < dh; dy++) {
+		double y0 = dy * fy, y1 = y0 + fy;
+		REBYTE *out = dst + (oy + dy) * stride + ox * 4;
+		for (dx = 0; dx < dw; dx++, out += 4) {
+			double x0 = dx * fx, x1 = x0 + fx;
+			double b = 0, g = 0, r = 0, a = 0, area = 0;
+			for (sy = (REBINT)y0; sy < img->h && sy < y1; sy++) {
+				double wy = ((sy + 1 < y1) ? sy + 1 : y1) - ((sy > y0) ? sy : y0);
+				const REBYTE *in = img->pixels + ((size_t)sy * img->w) * 4;
+				for (sx = (REBINT)x0; sx < img->w && sx < x1; sx++) {
+					double wx = ((sx + 1 < x1) ? sx + 1 : x1) - ((sx > x0) ? sx : x0);
+					double wa = wx * wy * in[sx * 4 + 3] / 255.0;
+					b += in[sx * 4]     * wa;
+					g += in[sx * 4 + 1] * wa;
+					r += in[sx * 4 + 2] * wa;
+					a += wa;
+					area += wx * wy;
+				}
+			}
+			if (a <= 0 || area <= 0) continue;
+			{
+				double alpha = a / area;           // 0..1
+				double k = premultiply ? alpha / a : 1.0 / a;
+				out[0] = (REBYTE)(b * k + 0.5);
+				out[1] = (REBYTE)(g * k + 0.5);
+				out[2] = (REBYTE)(r * k + 0.5);
+				out[3] = (REBYTE)(alpha * 255.0 + 0.5);
+			}
+		}
+	}
+}
 
 /***********************************************************************
 **  tree-view: the nodes.
@@ -1116,9 +1318,6 @@ static void Tree_Free(GUIWIDGET *wid)
 	for (n = 0; n < tree->count; n++)
 		if (tree->nodes[n].label) FREE_MEM(tree->nodes[n].label);
 	if (tree->nodes) FREE_MEM(tree->nodes);
-	for (n = 0; n < tree->image_count; n++)
-		if (tree->images[n].pixels) FREE_MEM(tree->images[n].pixels);
-	if (tree->images) FREE_MEM(tree->images);
 	FREE_MEM(tree);
 	wid->tree = NULL;
 }
@@ -1174,103 +1373,10 @@ static REBINT Tree_Add(GUITREE *tree, REBINT parent, REBCNT word,
 	return n;
 }
 
-// The icon `img` in the table: its index, or -1. One already there - the
-// same image! for every folder, say - is not copied again.
-static REBINT Tree_Image(GUITREE *tree, REBSER *img)
-{
-	GUITREEIMAGE *slot;
-	REBINT w = (REBINT)IMG_WIDE(img), h = (REBINT)IMG_HIGH(img);
-	REBCNT n;
-
-	if (w <= 0 || h <= 0 || !IMG_DATA(img)) return -1;
-	for (n = 0; n < tree->image_count; n++)
-		if (tree->images[n].source == (void*)img
-		    && tree->images[n].w == w && tree->images[n].h == h)
-			return (REBINT)n;
-
-	if (tree->image_count == tree->image_capacity) {
-		REBCNT cap = tree->image_capacity ? tree->image_capacity * 2 : 4;
-		GUITREEIMAGE *images = (GUITREEIMAGE*)MAKE_MEM(sizeof(GUITREEIMAGE) * cap);
-		if (!images) return -1;
-		if (tree->images) {
-			COPY_MEM(images, tree->images, sizeof(GUITREEIMAGE) * tree->image_count);
-			FREE_MEM(tree->images);
-		}
-		tree->images = images;
-		tree->image_capacity = cap;
-	}
-	slot = &tree->images[tree->image_count];
-	slot->pixels = (REBYTE*)MAKE_MEM((size_t)w * (size_t)h * 4);
-	if (!slot->pixels) return -1;
-	COPY_MEM(slot->pixels, IMG_DATA(img), (size_t)w * (size_t)h * 4);
-	slot->w = w;
-	slot->h = h;
-	slot->source = (void*)img;
-	return (REBINT)tree->image_count++;
-}
-
-REBINT Gui_Tree_Icon_Size(GUIWIDGET *wid)
-{
-	REBINT size = Gui_Widget_Get_Row_Height(wid) - 4;
-	return (size < 4) ? 4 : size;
-}
-
-// An area average: every source pixel under a destination pixel counts by
-// how much of it is covered, and by its alpha - so a transparent pixel's
-// colour does not bleed into its neighbours' edges.
-void Gui_Scale_Icon(const GUITREEIMAGE *img, REBINT size, REBYTE *dst,
-                    REBINT stride, REBOOL premultiply)
-{
-	REBINT dw = size, dh = size, ox, oy, dx, dy, sx, sy;
-	double fx, fy;
-
-	for (dy = 0; dy < size; dy++) CLEAR(dst + dy * stride, (size_t)size * 4);
-	if (!img || !img->pixels || img->w <= 0 || img->h <= 0 || size <= 0) return;
-
-	if (img->w >= img->h) dh = (REBINT)((double)img->h * size / img->w + 0.5);
-	else                  dw = (REBINT)((double)img->w * size / img->h + 0.5);
-	if (dw < 1) dw = 1;
-	if (dh < 1) dh = 1;
-	ox = (size - dw) / 2;
-	oy = (size - dh) / 2;
-	fx = (double)img->w / dw;
-	fy = (double)img->h / dh;
-
-	for (dy = 0; dy < dh; dy++) {
-		double y0 = dy * fy, y1 = y0 + fy;
-		REBYTE *out = dst + (oy + dy) * stride + ox * 4;
-		for (dx = 0; dx < dw; dx++, out += 4) {
-			double x0 = dx * fx, x1 = x0 + fx;
-			double b = 0, g = 0, r = 0, a = 0, area = 0;
-			for (sy = (REBINT)y0; sy < img->h && sy < y1; sy++) {
-				double wy = ((sy + 1 < y1) ? sy + 1 : y1) - ((sy > y0) ? sy : y0);
-				const REBYTE *in = img->pixels + ((size_t)sy * img->w) * 4;
-				for (sx = (REBINT)x0; sx < img->w && sx < x1; sx++) {
-					double wx = ((sx + 1 < x1) ? sx + 1 : x1) - ((sx > x0) ? sx : x0);
-					double wa = wx * wy * in[sx * 4 + 3] / 255.0;
-					b += in[sx * 4]     * wa;
-					g += in[sx * 4 + 1] * wa;
-					r += in[sx * 4 + 2] * wa;
-					a += wa;
-					area += wx * wy;
-				}
-			}
-			if (a <= 0 || area <= 0) continue;
-			{
-				double alpha = a / area;           // 0..1
-				double k = premultiply ? alpha / a : 1.0 / a;
-				out[0] = (REBYTE)(b * k + 0.5);
-				out[1] = (REBYTE)(g * k + 0.5);
-				out[2] = (REBYTE)(r * k + 0.5);
-				out[3] = (REBYTE)(alpha * 255.0 + 0.5);
-			}
-		}
-	}
-}
 
 // One level of the dialect, into `parent`. Anything which is not a label
 // where one is expected is skipped, as in a menu.
-static void Block_To_Tree(GUITREE *tree, REBSER *blk, REBCNT index, REBINT parent)
+static void Block_To_Tree(GUIWIDGET *wid, GUITREE *tree, REBSER *blk, REBCNT index, REBINT parent)
 {
 	REBCNT n, type;
 	RXIARG val;
@@ -1296,19 +1402,13 @@ static void Block_To_Tree(GUITREE *tree, REBSER *blk, REBCNT index, REBINT paren
 		node = Tree_Add(tree, parent, word, label, (REBCNT)len);
 		if (node < 0) return;
 		// The icon: an image!, or a get-word holding one - `:folder`.
-		if (next_type == RXT_GET_WORD) {
-			RXIARG got;
-			if (RL_GET_VALUE_RESOLVED(blk, n + 1, &got) == RXT_IMAGE)
-				tree->nodes[node].image = Tree_Image(tree, (REBSER*)got.series);
-			n++;
-			next_type = RL_GET_VALUE(blk, n + 1, &next);
-		} else if (next_type == RXT_IMAGE) {
-			tree->nodes[node].image = Tree_Image(tree, (REBSER*)next.series);
+		if (next_type == RXT_GET_WORD || next_type == RXT_IMAGE) {
+			tree->nodes[node].image = Icons_Add(wid, Icon_Value(blk, n + 1, next_type, &next));
 			n++;
 			next_type = RL_GET_VALUE(blk, n + 1, &next);
 		}
 		if (next_type == RXT_BLOCK) {
-			Block_To_Tree(tree, (REBSER*)next.series, next.index, node);
+			Block_To_Tree(wid, tree, (REBSER*)next.series, next.index, node);
 			n++;
 		}
 	}
@@ -1323,6 +1423,7 @@ static REBOOL Tree_Set_Items(GUIWIDGET *wid, REBSER *blk, REBCNT index)
 
 	Gui_Tree_Clear(wid);
 	Tree_Free(wid);
+	Icons_Free(wid);
 	wid->picked = -1;
 
 	if (!blk) {
@@ -1335,7 +1436,7 @@ static REBOOL Tree_Set_Items(GUIWIDGET *wid, REBSER *blk, REBCNT index)
 	if (!tree) return FALSE;
 	CLEARS(tree);
 	wid->tree = tree;
-	Block_To_Tree(tree, blk, index, -1);
+	Block_To_Tree(wid, tree, blk, index, -1);
 
 	CLEARS(&val);
 	val.series = blk;
@@ -1926,17 +2027,19 @@ static REBSER* Items_To_Block(GUIWIDGET *wid)
 
 // Replaces the list. Anything in the block which is not a string is
 // skipped rather than refused - a block of words or files is a reasonable
-// thing to hand over, and FORM-ing it is the caller's business.
+// thing to hand over, and FORM-ing it is the caller's business. In a
+// text-list, an image! - or a get-word holding one - after a string is
+// that item's icon.
 static void Block_To_Items(GUIWIDGET *wid, REBSER *blk)
 {
-	REBCNT n;
+	REBCNT n, rows = 0;
 	REBCNT type;
 	RXIARG val;
+	REBOOL icons = (wid->kind == W_GUI_WIDGET_TEXT_LIST);
 
 	Gui_Widget_Clear_Items(wid);
-	if (!blk) return;
-
-	for (n = 0; (type = RL_GET_VALUE(blk, n, &val)) != 0; n++) {
+	if (icons) Icons_Free(wid);
+	if (blk) for (n = 0; (type = RL_GET_VALUE(blk, n, &val)) != 0; n++) {
 		REBYTE *utf8 = NULL;
 		int len;
 
@@ -1945,8 +2048,18 @@ static void Block_To_Items(GUIWIDGET *wid, REBSER *blk)
 
 		len = RL_GET_UTF8_STRING((REBSER*)val.series, val.index, (void**)&utf8);
 		if (len < 0) continue;
-		Gui_Widget_Add_Item(wid, utf8, (REBCNT)len);
+		if (!Gui_Widget_Add_Item(wid, utf8, (REBCNT)len)) continue;
+		if (icons) {
+			RXIARG next;
+			REBCNT next_type = RL_GET_VALUE(blk, n + 1, &next);
+			if (next_type == RXT_IMAGE || next_type == RXT_GET_WORD) {
+				Icons_Set_Row(wid, rows, Icons_Add(wid, Icon_Value(blk, n + 1, next_type, &next)));
+				n++;
+			}
+		}
+		rows++;
 	}
+	if (icons) Gui_Icons_Changed(wid);
 }
 
 
@@ -4455,6 +4568,7 @@ int GuiWidget_free(void *hndl)
 	}
 	debug_print("releasing GUI widget handle: %p\n", (void*)wid);
 	Tree_Free(wid);
+	Icons_Free(wid);
 	CLEARS(wid);
 	UNMARK_HOB(hob);
 	return 0;
@@ -4504,6 +4618,9 @@ int GuiWidget_get_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 			RXIARG  val;
 			if (n < 0 || !blk || wid->fields == 0) { *type = RXT_NONE; break; }
 			cell = RL_GET_VALUE(blk, index + (REBCNT)n * wid->fields, &val);
+			// A row's icon is not its text: the cell after it is.
+			if ((cell == RXT_IMAGE || cell == RXT_GET_WORD) && wid->fields > 1)
+				cell = RL_GET_VALUE(blk, index + (REBCNT)n * wid->fields + 1, &val);
 			if (cell == 0 || cell == RXT_END) { *type = RXT_NONE; break; }
 			str = (REBSER*)RL_MAKE_STRING(16, FALSE);
 			if (!str) { *type = RXT_NONE; break; }

@@ -311,24 +311,30 @@ Cocoa flips offsets against the menu-bar screen; the content view answers
   type. A GTK tree view selects its first row when it takes the focus with
   no cursor; that selection is taken silently (`On_Selection` checks for a
   focus-change event, and `set-focus` runs quiet).
-- **Tree icons:** an image! in `items` (or a get-word, looked up with
-  `RL_GET_VALUE_RESOLVED`) is copied into the table once per
-  series (`GUITREEIMAGE`; a node holds its index), as a series can move.
-  The square is `Gui_Tree_Icon_Size` - the row height less 4 - and
-  `Gui_Scale_Icon` fits an image into it with an alpha-weighted area
-  average, so every platform scales the same way. A backend keeps the
-  scaled icons by image index, plus a blank one for a node without, and
-  remakes them when the size changes: GTK, cairo surfaces at the widget's
-  scale factor drawn by a pixbuf renderer before the label (its height is
-  left out of the row height the size comes from, or the two would chase
-  each other); Windows, an image list of icons (32-bit straight alpha),
-  rebuilt by `Tree_Icons` after the nodes, `row-height`, a font or a DPI
-  change, and destroyed at `WM_NCDESTROY`, as a TreeView does not; macOS,
-  `NSImage`s at the backing scale drawn by `RebolGuiTreeCell`, an
+- **Icons** (text-list, list-view, tree-view): an image! in `items` (or a
+  get-word, looked up with `RL_GET_VALUE_RESOLVED`) is copied into the
+  widget's table (`GUIICONS` in `wid->icons`) once per series, as a series
+  can move; a tree node holds its index, a text-list keeps one per item,
+  and a list-view's row is looked at again as it is shown (its first cell),
+  so the table can grow. The square is `Gui_Icon_Size` - the row height
+  less 4 - and `Gui_Scale_Icon` fits an image into it with an
+  alpha-weighted area average, so every platform scales the same way. A
+  backend keeps the scaled icons by index plus a blank one, for a row
+  without, and remakes them when the size or the items change
+  (`Gui_Icons_Changed`): GTK, cairo surfaces at the widget's scale factor
+  drawn by a pixbuf renderer at the start of the column (its height is left
+  out of the row height the size comes from, or the two would chase each
+  other); Windows, image lists of icons (32-bit straight alpha), blank at 0,
+  made by `Refresh_Icons` - a TreeView's (destroyed at `WM_NCDESTROY`, as
+  it does not), a ListView's small one (which also sets its row height),
+  and a text-list's in a window property, which an owner-drawn list box
+  (`Text_List_Draw`, colours from `WM_CTLCOLORLISTBOX`) draws from; macOS,
+  `NSImage`s at the backing scale drawn by `RebolGuiIconCell`, an
   `NSTextFieldCell` given room on its left.
 - **`row-height`:** kept in `wid->row_height` (0 = the platform's own) and
   counted with the gap between rows, so the same number gives the same pitch
-  everywhere. Windows: `LB_SETITEMHEIGHT` (at most 255 px) and
+  everywhere. Windows: `LB_SETITEMHEIGHT` (at most 255 px; an owner-drawn
+  list box keeps it across fonts, so the font's is set too) and
   `TVM_SETITEMHEIGHT` (-1 resets); a report ListView has no such message, so
   a small image list of 1-pixel-wide images sets it - and it can make rows
   taller than the font, never shorter. `WM_SETFONT` puts the font's height

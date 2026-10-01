@@ -578,6 +578,58 @@ void    Gui_List_Picked(GUIWIDGET *wid, REBINT n);
 
 
 /***********************************************************************
+**  Icons - an image at the start of a row of a text-list, a list-view
+**  or a tree-view.
+**
+**  Given in `items` as an image! or a get-word holding one: after an
+**  item's string in a text-list, after a node's label (and word) in a
+**  tree-view, and as the cell of the first field in a list-view. The
+**  shared layer copies each image! once - a series can move - into the
+**  widget's table, and names it by its index there.
+**
+**  A backend draws an icon in a square of Gui_Icon_Size() logical units,
+**  scaled with Gui_Scale_Icon() so every platform scales the same way.
+**  When the widget has any icons at all (Gui_Icon_Count() > 0), a row
+**  without one keeps an empty square, so the labels stay in line.
+***********************************************************************/
+typedef struct Gui_Icon {
+	REBYTE *pixels;   // BGRA, alpha straight, 255 opaque; owned by the table
+	REBINT  w, h;
+	void   *source;   // the image!'s series: how a reused one is recognised
+} GUIICON;
+
+typedef struct Gui_Icons {
+	GUIICON *images;
+	REBCNT   count;
+	REBCNT   capacity;
+	REBINT  *rows;      // text-list: each item's icon, -1 for none
+	REBCNT   row_count;
+} GUIICONS;
+
+// How many distinct icons the widget has; 0 when it shows none. A
+// list-view's can grow as its rows are shown, if its cells were changed
+// in place.
+REBCNT  Gui_Icon_Count(GUIWIDGET *wid);
+// Icon `n`, or NULL.
+const GUIICON *Gui_Icon(GUIWIDGET *wid, REBINT n);
+// The icon of row `row` (0-based) of a text-list or a list-view, or -1.
+REBINT  Gui_Row_Icon(GUIWIDGET *wid, REBCNT row);
+// The side of the square an icon is drawn in, in logical units: the row's
+// height less a margin above and below. A backend asks again whenever the
+// row height may have changed - `row-height`, the font, the DPI.
+REBINT  Gui_Icon_Size(GUIWIDGET *wid);
+// Scales `img` to fit a `size` x `size` square of BGRA pixels at `dst`
+// (rows `stride` bytes apart), centred, keeping its proportions; the
+// rest is transparent. Premultiplied or straight alpha, as asked.
+void    Gui_Scale_Icon(const GUIICON *img, REBINT size, REBYTE *dst,
+                       REBINT stride, REBOOL premultiply);
+// The icons of a text-list or a list-view were replaced, with its items:
+// whatever a backend made from the old ones goes. (A tree-view's go with
+// Gui_Tree_Clear.)
+void    Gui_Icons_Changed(GUIWIDGET *wid);
+
+
+/***********************************************************************
 **  tree-view - nodes in branches which open and close.
 **
 **  The `items` block is parsed by the shared layer, once, into a table
@@ -604,35 +656,14 @@ typedef struct Gui_Tree_Node {
 	REBYTE *label;    // UTF-8, NUL-terminated; owned by the table
 	REBCNT  len;      // bytes in `label`
 	void   *native;   // what Gui_Tree_Add_Node returned for it
-	REBINT  image;    // its icon's index in the table's `images`; -1 for none
+	REBINT  image;    // its icon - see Gui_Icon() - or -1 for none
 } GUITREENODE;
-
-// An icon, copied out of the image! - a series can move - once per image!,
-// however many nodes show it. BGRA, alpha straight, 255 opaque.
-typedef struct Gui_Tree_Image {
-	REBYTE *pixels;   // owned by the table
-	REBINT  w, h;
-	void   *source;   // the image!'s series: how a reused one is recognised
-} GUITREEIMAGE;
 
 typedef struct Gui_Tree {
 	GUITREENODE  *nodes;
 	REBCNT        count;
 	REBCNT        capacity;
-	GUITREEIMAGE *images;
-	REBCNT        image_count;
-	REBCNT        image_capacity;
 } GUITREE;
-
-// The side of the square an icon is drawn in, in logical units: the row's
-// height less a margin above and below. A backend asks again whenever the
-// row height may have changed - `row-height`, the font, the DPI.
-REBINT  Gui_Tree_Icon_Size(GUIWIDGET *wid);
-// Scales `img` to fit a `size` x `size` square of BGRA pixels at `dst`
-// (rows `stride` bytes apart), centred, keeping its proportions; the
-// rest is transparent. Premultiplied or straight alpha, as asked.
-void    Gui_Scale_Icon(const GUITREEIMAGE *img, REBINT size, REBYTE *dst,
-                       REBINT stride, REBOOL premultiply);
 
 #define GUI_TREE_OF(wid) ((GUITREE*)(wid)->tree)
 

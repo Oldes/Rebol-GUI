@@ -621,6 +621,18 @@ trees/index: 4            ;; picks and scrolls it into view, without a `change`
 `items` and `index` work as for a drop-list. `change` is reported only when
 the user picks. A zero size gives about twenty characters by six rows.
 
+An item can have an icon: an image! after its string, or a get-word holding
+one. It is drawn before the text, sized from the row height as a tree-view's
+icons are (see [Tree-views](#tree-views)); `row-height` makes it bigger.
+
+```rebol
+files: add-text-list win ["Docs" :folder  "a.txt" :file  "plain"] 20x20 200x120
+```
+
+Reading `items` gives the strings back, without the icons. On Windows a
+text-list draws its own rows (an owner-drawn list box), in the colours the
+list box itself would use.
+
 A field made with `/secure` masks what is typed, for a password, and refuses
 to copy it out. `text` still reads and writes the real contents. `secure?`
 reads it back. It is fixed at creation, because on macOS a masked field is a
@@ -689,6 +701,19 @@ files: add-list-view/with win ["id" 0  "Name" 140  "path" 0] 20x20 200x160 [
     102 "logo"    %img/logo.png
 ]
 files/text                ;; the id of the picked row - the first value, hidden or not
+```
+
+A row's icon is its first cell, when that is an image! or a get-word holding
+one. It is drawn at the start of the first column, sized from the row height
+(see [Tree-views](#tree-views)); give that column a width of its own, or a
+title, to show the icon alone or next to one:
+
+```rebol
+files: add-list-view/with win ["" 28  "Name" 140  "Size" none right] 20x20 300x160 [
+    :folder "docs"   0
+    :file   "a.txt" 12
+]
+files/text                ;; "a.txt" - the cell after an icon
 ```
 
 `sort` reports a column by its position in the row, hidden columns counted, so
@@ -1345,7 +1370,7 @@ Creates a toggle - a push button which stays pushed - and returns its handle
 #### `add-text-list` `:parent` `:items` `:offset` `:size`
 Creates a list of strings in a fixed box, which scrolls when they do not fit, and returns its handle
 * `parent` `[handle!]` Window, panel or image widget to put it in
-* `items` `[block!]` Strings to show
+* `items` `[block!]` Strings to show, each optionally followed by its icon: an image!, or a get-word holding one
 * `offset` `[pair!]` Position inside the parent
 * `size` `[pair!]`
 * `/index`
@@ -1405,7 +1430,7 @@ Creates a table - rows of cells under column headers - and returns its handle
 * `offset` `[pair!]` Position inside the parent
 * `size` `[pair!]`
 * `/with`
-* `cells` `[block!]` Cells to show, row by row in one flat block; any values, shown as FORM shows them
+* `cells` `[block!]` Cells to show, row by row in one flat block; any values, shown as FORM shows them - but an image!, or a get-word holding one, in a row's first cell is that row's icon
 * `/index`
 * `n` `[integer!]` Row picked to start with, 1-based (default: none)
 * `/flat` Without the border

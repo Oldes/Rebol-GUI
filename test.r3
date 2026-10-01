@@ -1047,7 +1047,7 @@ icon: func [color [tuple!] /local img] [
 ]
 folder: icon 200.150.0
 file:   icon 80.120.200
-trees: open-window/title/at 470x260 "Tree" 1000x580
+trees: open-window/title/at 470x420 "Tree" 1000x420
 tree: add-tree-view trees [
 	"Documents" docs :folder [
 		"Report.txt" report :file
@@ -1061,6 +1061,17 @@ big-tree: add-tree-view trees [
 ] 240x10 220x240
 big-tree/row-height: 40
 big-tree/expanded: ["Pictures"]
+
+;; A text-list takes an icon after an item's string, a list-view as a row's
+;; first cell - the same image! or get-word.
+icon-list: add-text-list/index trees ["Docs" :folder  "a.txt" :file  "plain"] 10x260 220x150 2
+print ["text-list with icons:" icon-list/text length? icon-list/items "(expected a.txt 3 - items reads back the strings)"]
+icon-view: add-list-view/with/index trees ["" 28  "Name" 100  "Size" none right] 240x260 220x150 [
+	:folder "docs"   0
+	:file   "a.txt" 12
+	none    "plain"  3
+] 2
+print ["list-view text skips the icon:" mold icon-view/text {(expected "a.txt")}]
 
 print ["tree-view:" tree/kind "nothing picked:" mold tree/selected "(expected none)"]
 tree/selected: 'docs/old/"b.txt"
