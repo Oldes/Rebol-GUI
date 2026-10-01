@@ -1090,7 +1090,8 @@ static REBOOL List_Set_Items(GUIWIDGET *wid, REBSER *blk, REBCNT index)
 **  tree-view: the nodes.
 **
 **  `items` is the menu dialect's grammar without the shortcuts: a label,
-**  then optionally a word naming the node, then optionally an image! - its
+**  then optionally a word naming the node, then optionally an image! (or a
+**  get-word holding one, looked up when the items are set) - its
 **  icon, scaled to the row's height - then optionally a block of its
 **  children in the same grammar.
 **
@@ -1294,7 +1295,14 @@ static void Block_To_Tree(GUITREE *tree, REBSER *blk, REBCNT index, REBINT paren
 		}
 		node = Tree_Add(tree, parent, word, label, (REBCNT)len);
 		if (node < 0) return;
-		if (next_type == RXT_IMAGE) {
+		// The icon: an image!, or a get-word holding one - `:folder`.
+		if (next_type == RXT_GET_WORD) {
+			RXIARG got;
+			if (RL_GET_VALUE_RESOLVED(blk, n + 1, &got) == RXT_IMAGE)
+				tree->nodes[node].image = Tree_Image(tree, (REBSER*)got.series);
+			n++;
+			next_type = RL_GET_VALUE(blk, n + 1, &next);
+		} else if (next_type == RXT_IMAGE) {
 			tree->nodes[node].image = Tree_Image(tree, (REBSER*)next.series);
 			n++;
 			next_type = RL_GET_VALUE(blk, n + 1, &next);

@@ -1035,7 +1035,8 @@ print as-yellow "^/== Tree-view"
 ;; `open` and `close`, with the node's number in `tree/nodes` as the code.
 ;; A branch opened inside a closed one stays open when its parent opens.
 ;;
-;; An image! after the label (and the word) is the node's icon, scaled to
+;; An image! - or a get-word holding one - after the label (and the word)
+;; is the node's icon, scaled to
 ;; fit the row's height - `row-height` makes it bigger. One image! shown by
 ;; many nodes is stored once. A node without one keeps its label in line.
 icon: func [color [tuple!] /local img] [
@@ -1047,16 +1048,16 @@ icon: func [color [tuple!] /local img] [
 folder: icon 200.150.0
 file:   icon 80.120.200
 trees: open-window/title/at 470x260 "Tree" 1000x580
-tree: add-tree-view trees compose/deep [
-	"Documents" docs (folder) [
-		"Report.txt" report (file)
-		"Old" old (folder) ["a.txt" a (file)  "b.txt"]
+tree: add-tree-view trees [
+	"Documents" docs :folder [
+		"Report.txt" report :file
+		"Old" old :folder ["a.txt" a :file  "b.txt"]
 	]
-	"Music" music (folder) ["Song.mp3" (file)]
+	"Music" music :folder ["Song.mp3" :file]
 	"Notes.txt"
 ] 10x10 220x240
-big-tree: add-tree-view trees compose/deep [
-	"Pictures" (folder) ["Cat.png" (file)  "Dog.png" (file)]
+big-tree: add-tree-view trees [
+	"Pictures" :folder ["Cat.png" :file  "Dog.png" :file]
 ] 240x10 220x240
 big-tree/row-height: 40
 big-tree/expanded: ["Pictures"]

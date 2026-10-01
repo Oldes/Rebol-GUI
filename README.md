@@ -800,14 +800,15 @@ one, and otherwise the first node with it, parents before children.
 
 An image! after the label (and the word) is the node's icon, drawn before the
 label in a square as tall as the row less a small margin, scaled to fit and
-keeping its proportions; transparent pixels show the row behind. Use
-`compose` to put images in, and `row-height` for bigger icons. One image!
+keeping its proportions; transparent pixels show the row behind. A get-word
+(`:folder`) is looked up and stands for the image! it holds, so no `compose`
+is needed. `row-height` gives bigger icons. One image!
 used by many nodes is stored once; a node without one keeps its label in
 line with the rest.
 
 ```rebol
-tree: add-tree-view win compose/deep [
-    "Pictures" pics (folder-icon) ["Cat.png" (file-icon)  "Dog.png" (file-icon)]
+tree: add-tree-view win [
+    "Pictures" pics :folder ["Cat.png" :file  "Dog.png" :file]
 ] 20x20 220x300
 tree/row-height: 32            ;; icons of about 28 units
 ```
@@ -1412,7 +1413,7 @@ Creates a table - rows of cells under column headers - and returns its handle
 #### `add-tree-view` `:parent` `:items` `:offset` `:size`
 Creates a tree - nodes in branches which open and close - and returns its handle
 * `parent` `[handle!]` Window, panel or image widget to put it in
-* `items` `[block!]` Nodes: a label, then optionally a word naming it, then optionally an image! for its icon, then optionally a block of its children in the same grammar
+* `items` `[block!]` Nodes: a label, then optionally a word naming it, then optionally its icon - an image!, or a get-word holding one - then optionally a block of its children in the same grammar
 * `offset` `[pair!]` Position inside the parent
 * `size` `[pair!]`
 * `/flat` Without the border

@@ -311,7 +311,8 @@ Cocoa flips offsets against the menu-bar screen; the content view answers
   type. A GTK tree view selects its first row when it takes the focus with
   no cursor; that selection is taken silently (`On_Selection` checks for a
   focus-change event, and `set-focus` runs quiet).
-- **Tree icons:** an image! in `items` is copied into the table once per
+- **Tree icons:** an image! in `items` (or a get-word, looked up with
+  `RL_GET_VALUE_RESOLVED`) is copied into the table once per
   series (`GUITREEIMAGE`; a node holds its index), as a series can move.
   The square is `Gui_Tree_Icon_Size` - the row height less 4 - and
   `Gui_Scale_Icon` fits an image into it with an alpha-weighted area
