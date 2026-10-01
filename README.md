@@ -1481,6 +1481,7 @@ Creates a tree - nodes in branches which open and close - and returns its handle
 /selected         [path! word! string!][path! block! word! string! none!]"A tree-view's selected node: the path to it - each node's word, or its label where it has none - or, for a node at the top, that word or label alone; a block of the same values is taken too; a word or a label alone is a node at the top when there is one, and otherwise the first node with it; none for no selection or for other kinds"
 /expanded         block!              block!                        "A tree-view's open branches, each as `selected` names a node; setting opens exactly those (with the branches above them) and closes the rest; none for other kinds"
 /nodes            block!              none                          "A tree-view's nodes, each as `selected` names it, parents before their children - the `code` of an `open` or `close` event is a position in it; none for other kinds"
+/row-height       integer!            [integer! none!]              "Height of a row of a text-list, a list-view or a tree-view, in logical units; none goes back to the platform's own, which follows the font; none for other kinds"
 ```
 
 #### __SCREEN__ - GUI screen handle - one display; every read asks the platform again

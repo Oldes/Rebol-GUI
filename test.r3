@@ -1074,6 +1074,17 @@ spare-tree: add-tree-view trees ["x"] 0x0 0x0
 print ["a zero size measures it:" spare-tree/size]
 remove-widget spare-tree
 
+;; `row-height` is the height of a row of any of the three kinds with rows,
+;; in logical units; none hands it back to the platform, which follows the
+;; font.
+print ["platform's row height:" tree/row-height]
+tree/row-height: 32
+tree/font-size: 14
+print ["set, and kept past a new font:" tree/row-height "(expected 32)"]
+tree/row-height: none
+tree/font-size: none
+print ["none puts the platform's back:" tree/row-height]
+
 ;;=============================================================================
 print as-yellow "^/== Menu bar"
 ;;=============================================================================

@@ -1726,6 +1726,8 @@ REBOOL Gui_Window_Dark(GUIWIN *win)
 **  Children first, then the window: WM_SIZE from the window's own resize
 **  then reports a `resize` whose logical size has not changed.
 ***********************************************************************/
+static void Apply_Row_Height(GUIWIDGET *wid, int dpi);
+
 static void Rescale_Window(GUIWIN *win, HWND hwnd, int was, int now, const RECT *suggested)
 {
 	GUIWIDGET *wid;
@@ -1766,6 +1768,8 @@ static void Rescale_Window(GUIWIN *win, HWND hwnd, int was, int now, const RECT 
 			} else {
 				SendMessageW(child, WM_SETFONT, (WPARAM)Default_Font_At(now), FALSE);
 			}
+			// A new font puts the platform's own row height back.
+			if (wid->row_height > 0) Apply_Row_Height(wid, now);
 		}
 
 		if (GetClientRect(hwnd, &client)) {
@@ -5046,8 +5050,109 @@ REBOOL Gui_Widget_Set_Font(GUIWIDGET *wid, const REBYTE *utf8, REBCNT len,
 	// caller laid out is the box it keeps - which is the same promise the
 	// panel's frame makes.
 	SendMessageW(hwnd, WM_SETFONT, (WPARAM)font, MAKELPARAM(TRUE, 0));
+	// ... and puts the platform's own row height back: one set by the
+	// script is kept.
+	if (wid->row_height > 0) Apply_Row_Height(wid, Dpi_Of(hwnd));
 	InvalidateRect(hwnd, NULL, TRUE);
 	return TRUE;
+}
+
+
+/***********************************************************************
+**  Row height of a text-list, a list-view or a tree-view, at `dpi`.
+**
+**  A list box and a TreeView take one directly. A ListView in report
+**  mode has no such message: its rows are as tall as the font or as its
+**  small image list, whichever is taller - so an image list of 1-pixel
+**  wide, blank images sets it (but never below the font's). WM_SETFONT
+**  puts all three back to what the font asks for, which is how a height
+**  of none is undone.
+***********************************************************************/
+static void Apply_Row_Height(GUIWIDGET *wid, int dpi)
+{
+	HWND   hwnd;
+	REBINT h;
+
+	if (!wid || !wid->handle) return;
+	hwnd = HWND_OF_WID(wid);
+	h = (wid->row_height > 0) ? To_Device(dpi, wid->row_height) : 0;
+
+	switch (wid->kind) {
+	case W_GUI_WIDGET_TEXT_LIST:
+		if (h > 255) h = 255; // a list box keeps the height in a byte
+		if (h > 0) SendMessageW(hwnd, LB_SETITEMHEIGHT, 0, MAKELPARAM(h, 0));
+		break;
+	case W_GUI_WIDGET_TREE_VIEW:
+		SendMessageW(hwnd, TVM_SETITEMHEIGHT, (WPARAM)(h > 0 ? h : -1), 0);
+		break;
+	case W_GUI_WIDGET_LIST_VIEW: {
+		HIMAGELIST list = h > 0 ? ImageList_Create(1, h, ILC_COLOR32, 0, 0) : NULL;
+		HIMAGELIST old  = (HIMAGELIST)SendMessageW(hwnd, LVM_SETIMAGELIST,
+		                                           LVSIL_SMALL, (LPARAM)list);
+		if (old) ImageList_Destroy(old);
+		break;
+	}
+	default:
+		return;
+	}
+	InvalidateRect(hwnd, NULL, TRUE);
+}
+
+void Gui_Widget_Set_Row_Height(GUIWIDGET *wid)
+{
+	HWND  hwnd;
+	HFONT font;
+
+	if (!wid || !wid->handle) return;
+	hwnd = HWND_OF_WID(wid);
+	Apply_Row_Height(wid, Dpi_Of(hwnd));
+	if (wid->row_height <= 0 && wid->kind != W_GUI_WIDGET_TREE_VIEW) {
+		// The same font again: the platform works the height out anew.
+		font = (HFONT)SendMessageW(hwnd, WM_GETFONT, 0, 0);
+		if (!font) font = Default_Font_At(Dpi_Of(hwnd));
+		SendMessageW(hwnd, WM_SETFONT, (WPARAM)font, MAKELPARAM(TRUE, 0));
+	}
+}
+
+REBINT Gui_Widget_Get_Row_Height(GUIWIDGET *wid)
+{
+	HWND    hwnd;
+	LRESULT h = 0;
+	RECT    r;
+
+	if (!wid || !wid->handle) return 0;
+	if (wid->row_height > 0) return wid->row_height;
+	hwnd = HWND_OF_WID(wid);
+
+	switch (wid->kind) {
+	case W_GUI_WIDGET_TEXT_LIST:
+		h = SendMessageW(hwnd, LB_GETITEMHEIGHT, 0, 0);
+		break;
+	case W_GUI_WIDGET_TREE_VIEW:
+		h = SendMessageW(hwnd, TVM_GETITEMHEIGHT, 0, 0);
+		break;
+	case W_GUI_WIDGET_LIST_VIEW:
+		r.left = LVIR_BOUNDS;
+		if (SendMessageW(hwnd, LVM_GETITEMCOUNT, 0, 0) > 0
+		    && SendMessageW(hwnd, LVM_GETITEMRECT, 0, (LPARAM)&r)) {
+			h = r.bottom - r.top;
+		} else {
+			// No row to measure: the font's line, as the ListView pads it.
+			HDC        dc = GetDC(hwnd);
+			HFONT      font, old = NULL;
+			TEXTMETRICW tm;
+			if (!dc) return 0;
+			font = (HFONT)SendMessageW(hwnd, WM_GETFONT, 0, 0);
+			if (font) old = (HFONT)SelectObject(dc, font);
+			if (GetTextMetricsW(dc, &tm)) h = tm.tmHeight + To_Device(Dpi_Of(hwnd), 4);
+			if (old) SelectObject(dc, old);
+			ReleaseDC(hwnd, dc);
+		}
+		break;
+	default:
+		return 0;
+	}
+	return (h > 0) ? To_Logical(Dpi_Of(hwnd), (REBINT)h) : 0;
 }
 
 
@@ -5409,6 +5514,7 @@ REBOOL Gui_Widget_Natural_Size(GUIWIDGET *wid, REBINT *w, REBINT *h)
 	WCHAR  *caption = NULL;
 	REBINT  pad_x = 0, pad_y = 0;
 	REBINT  lines = 1;
+	LONG    line;
 	int     dpi;
 
 	if (!wid || !wid->handle) return FALSE;
@@ -5521,8 +5627,12 @@ REBOOL Gui_Widget_Natural_Size(GUIWIDGET *wid, REBINT *w, REBINT *h)
 	// for a single line it is a pixel or two of slack in the only direction
 	// that matters, since a static draws from the top and anything short
 	// clips the descenders.
-	if (h) *h = To_Logical(dpi, (REBINT)(tm.tmHeight + tm.tmExternalLeading) * lines
-	                       + pad_y);
+	line = tm.tmHeight + tm.tmExternalLeading;
+	if (lines > 1 && wid->kind != W_GUI_WIDGET_AREA) {
+		REBINT row = Gui_Widget_Get_Row_Height(wid);
+		if (row > 0) line = To_Device(dpi, row);
+	}
+	if (h) *h = To_Logical(dpi, (REBINT)line * lines + pad_y);
 	return TRUE;
 }
 

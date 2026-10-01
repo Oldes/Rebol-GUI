@@ -2106,6 +2106,11 @@ static REBOOL Kind_Has_Enabled(REBCNT kind)
 #define Kind_Has_Read_Only(kind) \
 	((kind) == W_GUI_WIDGET_FIELD || (kind) == W_GUI_WIDGET_AREA)
 
+// Which kinds show their items in rows, which `row-height` sets.
+#define Kind_Has_Rows(kind) \
+	((kind) == W_GUI_WIDGET_TEXT_LIST || (kind) == W_GUI_WIDGET_LIST_VIEW \
+	 || (kind) == W_GUI_WIDGET_TREE_VIEW)
+
 // Which kinds scroll, and can be asked where they are. A drop-list's or a
 // drop-down's list scrolls too, but is not addressable.
 #define Kind_Scrolls(kind) \
@@ -4676,6 +4681,12 @@ int GuiWidget_get_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 		if (!Tree_Value(wid, Gui_Tree_Selected(wid), arg, type)) *type = RXT_NONE;
 		break;
 
+	case W_GUI_ARG_ROW_HEIGHT:
+		if (!Kind_Has_Rows(wid->kind)) { *type = RXT_NONE; break; }
+		*type = RXT_INTEGER;
+		arg->int64 = (i64)Gui_Widget_Get_Row_Height(wid);
+		break;
+
 	case W_GUI_ARG_NODES: {
 		REBSER *blk;
 		if (wid->kind != W_GUI_WIDGET_TREE_VIEW) { *type = RXT_NONE; break; }
@@ -5140,6 +5151,19 @@ int GuiWidget_set_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 		 && *type != RXT_WORD && *type != RXT_STRING)
 			return PE_BAD_SET_TYPE;
 		Tree_Select(wid, Tree_Find(wid, *type, arg));
+		break;
+
+	// A row is at least as tall as a pixel, and no taller than a screen
+	// - anything else is a mistake rather than a layout.
+	case W_GUI_ARG_ROW_HEIGHT:
+		if (!Kind_Has_Rows(wid->kind)) return PE_BAD_SET;
+		if (*type == RXT_NONE) wid->row_height = 0;
+		else if (*type == RXT_INTEGER) {
+			if (arg->int64 < 1 || arg->int64 > 1000) return PE_BAD_RANGE;
+			wid->row_height = (REBINT)arg->int64;
+		}
+		else return PE_BAD_SET_TYPE;
+		Gui_Widget_Set_Row_Height(wid);
 		break;
 
 	case W_GUI_ARG_EXPANDED:

@@ -2899,6 +2899,7 @@ static GtkWidget *New_Table(GUIWIDGET *wid, GtkTreeModel *model, REBOOL both_bar
 
 static void Text_List_Cell(GtkTreeViewColumn *col, GtkCellRenderer *cell,
                            GtkTreeModel *model, GtkTreeIter *iter, gpointer data);
+static void Apply_Row_Height(GUIWIDGET *wid);
 
 REBOOL Gui_Create_Text_List(GUIWIDGET *wid, GUIWIN *owner,
                             REBINT x, REBINT y, REBINT w, REBINT h)
@@ -3204,8 +3205,10 @@ REBOOL Gui_List_Add_Column(GUIWIDGET *wid, REBCNT field, const REBYTE *utf8, REB
 
 	gtk_tree_view_append_column(GTK_TREE_VIEW(tree), col);
 	Connect(wid, col, "clicked", G_CALLBACK(On_Header_Clicked));
-	// A new header button, which has not had the font and colour yet.
+	// A new header button, which has not had the font and colour yet, and
+	// a new cell, which has not had the row height.
 	Apply_Text_Style(wid);
+	if (wid->row_height > 0) Apply_Row_Height(wid);
 	return TRUE;
 }
 
@@ -3570,6 +3573,82 @@ REBOOL Gui_Tree_Is_Expanded(GUIWIDGET *wid, REBCNT n)
 {
 	GArray *open = Tree_Open(wid);
 	return (open && n < open->len && g_array_index(open, guint8, n)) ? TRUE : FALSE;
+}
+
+
+//-- row height ---------------------------------------------------------------
+//
+// A row is as tall as its tallest cell, plus the tree view's vertical
+// separator. An explicit height is a fixed height on every cell renderer,
+// so it stays whatever the font does; none is -1, the renderers' own.
+
+static gint Line_Height(GtkWidget *w);
+
+static void Apply_Row_Height(GUIWIDGET *wid)
+{
+	GtkWidget *tree = Inner_Of(wid);
+	gint n, count, sep = 0, h;
+
+	if (!tree || !IS_TABLE(wid)) return;
+	gtk_widget_style_get(tree, "vertical-separator", &sep, NULL);
+	h = wid->row_height > 0 ? wid->row_height - sep : -1;
+	if (wid->row_height > 0 && h < 1) h = 1;
+
+	count = (gint)gtk_tree_view_get_n_columns(GTK_TREE_VIEW(tree));
+	for (n = 0; n < count; n++) {
+		GtkTreeViewColumn *col = gtk_tree_view_get_column(GTK_TREE_VIEW(tree), n);
+		GList *cells = gtk_cell_layout_get_cells(GTK_CELL_LAYOUT(col)), *l;
+		for (l = cells; l; l = l->next)
+			gtk_cell_renderer_set_fixed_size(GTK_CELL_RENDERER(l->data), -1, h);
+		g_list_free(cells);
+	}
+	gtk_tree_view_columns_autosize(GTK_TREE_VIEW(tree));
+	gtk_widget_queue_resize(tree);
+}
+
+void Gui_Widget_Set_Row_Height(GUIWIDGET *wid)
+{
+	Apply_Row_Height(wid);
+}
+
+REBINT Gui_Widget_Get_Row_Height(GUIWIDGET *wid)
+{
+	GtkWidget *tree = Inner_Of(wid);
+	GtkTreeViewColumn *col;
+	GList *cells;
+	GdkRectangle r;
+	GtkTreePath *path;
+	GtkTreeModel *model;
+	GtkTreeIter iter;
+	gint sep = 0, h = 0;
+
+	if (!tree || !IS_TABLE(wid)) return 0;
+	if (wid->row_height > 0) return wid->row_height;
+
+	// A row there is the answer, when it has been measured.
+	model = gtk_tree_view_get_model(GTK_TREE_VIEW(tree));
+	if (model && gtk_tree_model_get_iter_first(model, &iter)) {
+		path = gtk_tree_model_get_path(model, &iter);
+		gtk_tree_view_get_background_area(GTK_TREE_VIEW(tree), path, NULL, &r);
+		gtk_tree_path_free(path);
+		if (r.height > 0) return r.height;
+	}
+	// Otherwise what the first column's cells ask for.
+	gtk_widget_style_get(tree, "vertical-separator", &sep, NULL);
+	col = gtk_tree_view_get_column(GTK_TREE_VIEW(tree), 0);
+	if (!col) return Line_Height(tree) + 4 + sep;
+	cells = gtk_cell_layout_get_cells(GTK_CELL_LAYOUT(col));
+	if (cells) {
+		gint min = 0, nat = 0, best = 0;
+		GList *l;
+		for (l = cells; l; l = l->next) {
+			gtk_cell_renderer_get_preferred_height(GTK_CELL_RENDERER(l->data), tree, &min, &nat);
+			if (nat > best) best = nat;
+		}
+		h = best;
+		g_list_free(cells);
+	}
+	return h + sep;
 }
 
 
@@ -4431,23 +4510,21 @@ REBOOL Gui_Widget_Natural_Size(GUIWIDGET *wid, REBINT *w, REBINT *h)
 
 	case W_GUI_WIDGET_TEXT_LIST: {
 		// Six rows, and the frame round them.
-		GtkWidget *tree = Inner_Of(wid);
 		nw = 0;
-		nh = (Line_Height(tree) + 4) * 6 + 4;
+		nh = Gui_Widget_Get_Row_Height(wid) * 6 + 4;
 		break; }
 
 	case W_GUI_WIDGET_TREE_VIEW: {
 		// Eight rows: a tree is usually browsed rather than glanced at.
-		GtkWidget *tree = Inner_Of(wid);
 		nw = 0;
-		nh = (Line_Height(tree) + 4) * 8 + 4;
+		nh = Gui_Widget_Get_Row_Height(wid) * 8 + 4;
 		break; }
 
 	case W_GUI_WIDGET_LIST_VIEW: {
 		// Six rows under the header, and as wide as the columns.
 		GtkWidget *tree = Inner_Of(wid);
 		gint n, count = (gint)gtk_tree_view_get_n_columns(GTK_TREE_VIEW(tree));
-		gint row = Line_Height(tree) + 4;
+		gint row = Gui_Widget_Get_Row_Height(wid);
 		nw = 4 + 16;
 		for (n = 0; n < count; n++)
 			nw += Gui_List_Column_Width(wid, (REBCNT)GPOINTER_TO_UINT(

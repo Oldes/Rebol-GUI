@@ -311,6 +311,16 @@ Cocoa flips offsets against the menu-bar screen; the content view answers
   type. A GTK tree view selects its first row when it takes the focus with
   no cursor; that selection is taken silently (`On_Selection` checks for a
   focus-change event, and `set-focus` runs quiet).
+- **`row-height`:** kept in `wid->row_height` (0 = the platform's own) and
+  counted with the gap between rows, so the same number gives the same pitch
+  everywhere. Windows: `LB_SETITEMHEIGHT` (at most 255 px) and
+  `TVM_SETITEMHEIGHT` (-1 resets); a report ListView has no such message, so
+  a small image list of 1-pixel-wide images sets it - and it can make rows
+  taller than the font, never shorter. `WM_SETFONT` puts the font's height
+  back, so a set height is reapplied after `font-*` and after a DPI change.
+  macOS: `setFont:` of the three tables sets `rowHeight` from the context,
+  minus `intercellSpacing`. GTK: a fixed height on every cell renderer, minus
+  the `vertical-separator` style property.
 - **Image widget:** the pixel pointer and size are read at every paint. BGRA
   is a 32-bit `BI_RGB` DIB and
   `kCGImageAlphaNoneSkipFirst | kCGBitmapByteOrder32Little`. `RXIARG`'s image

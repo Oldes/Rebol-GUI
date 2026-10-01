@@ -852,6 +852,18 @@ REBOOL  Gui_Widget_Set_Scroll(GUIWIDGET *wid, REBDEC where);
 // scroll bar. Whatever scrolls it from code must keep working either way.
 void    Gui_Widget_Set_Scrollable(GUIWIDGET *wid, REBOOL on);
 
+/***********************************************************************
+**  The height of a row of a text-list, a list-view or a tree-view.
+**
+**  Set_Row_Height applies `wid->row_height`, which the caller has already
+**  set: logical units, or 0 for the platform's own, which follows the
+**  font. A backend keeps an explicit height through later font changes.
+**  Get_Row_Height answers what the control really uses, in logical units
+**  - asked, not kept, as a font is.
+***********************************************************************/
+void    Gui_Widget_Set_Row_Height(GUIWIDGET *wid);
+REBINT  Gui_Widget_Get_Row_Height(GUIWIDGET *wid);
+
 // Brings a text-list's item `n` (0-based, already clamped to the list by
 // the caller) into view, scrolling as little as it takes: not at all when
 // it is visible, and otherwise so that it sits at the nearer edge. The

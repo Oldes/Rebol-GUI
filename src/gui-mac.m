@@ -1058,6 +1058,18 @@ TEXT_FIELD_BODY
 @end
 
 
+// The height of a row of `table` in `font`: the font's line and a little
+// air, or the one the script set in `row-height` - which counts the gap
+// between rows, as a row's height does on the other platforms.
+static CGFloat Row_Height_For(GUIWIDGET *ctx, NSTableView *table, NSFont *font)
+{
+	if (ctx && ctx->row_height > 0) {
+		CGFloat h = (CGFloat)ctx->row_height - [table intercellSpacing].height;
+		return (h < 1.0) ? 1.0 : h;
+	}
+	return ceil([font ascender] - [font descender] + [font leading]) + 2.0;
+}
+
 @implementation RebolGuiList
 
 - (void)setContext:(GUIWIDGET*)ctx { context = ctx; }
@@ -1155,7 +1167,7 @@ TEXT_FIELD_BODY
 	NSTableColumn *column = [[self tableColumns] firstObject];
 	if (!font) font = [NSFont systemFontOfSize:[NSFont systemFontSize]];
 	[[column dataCell] setFont:font];
-	[self setRowHeight:ceil([font ascender] - [font descender] + [font leading]) + 2.0];
+	[self setRowHeight:Row_Height_For(context, self, font)];
 	[self reloadData];
 }
 
@@ -1265,7 +1277,7 @@ TEXT_FIELD_BODY
 	if (!font) font = [NSFont systemFontOfSize:[NSFont systemFontSize]];
 	for (NSTableColumn *column in [self tableColumns])
 		[[column dataCell] setFont:font];
-	[self setRowHeight:ceil([font ascender] - [font descender] + [font leading]) + 2.0];
+	[self setRowHeight:Row_Height_For(context, self, font)];
 	[self reloadData];
 }
 
@@ -1484,7 +1496,7 @@ TEXT_FIELD_BODY
 	NSTableColumn *column = [[self tableColumns] firstObject];
 	if (!font) font = [NSFont systemFontOfSize:[NSFont systemFontSize]];
 	[[column dataCell] setFont:font];
-	[self setRowHeight:ceil([font ascender] - [font descender] + [font leading]) + 2.0];
+	[self setRowHeight:Row_Height_For(context, self, font)];
 	[self reloadData];
 }
 
@@ -3722,6 +3734,25 @@ static void Apply_Button_Color(GUIWIDGET *wid)
 			NSFontAttributeName: [button font],
 			NSForegroundColorAttributeName: color
 		}] autorelease]];
+}
+
+
+// The font again: setFont: of the three tables works the row height out
+// from it - or takes the one in the widget's context.
+void Gui_Widget_Set_Row_Height(GUIWIDGET *wid)
+{
+	@autoreleasepool {
+		RebolGuiList *table = List_View_Of(wid);
+		if (table) [table setFont:[table font]];
+	}
+}
+
+REBINT Gui_Widget_Get_Row_Height(GUIWIDGET *wid)
+{
+	RebolGuiList *table = List_View_Of(wid);
+	if (!table) return 0;
+	if (wid->row_height > 0) return wid->row_height;
+	return (REBINT)ceil([table rowHeight] + [table intercellSpacing].height);
 }
 
 
