@@ -1727,6 +1727,7 @@ REBOOL Gui_Window_Dark(GUIWIN *win)
 **  then reports a `resize` whose logical size has not changed.
 ***********************************************************************/
 static void Apply_Row_Height(GUIWIDGET *wid, int dpi);
+static void Tree_Icons(GUIWIDGET *wid, int dpi);
 
 static void Rescale_Window(GUIWIN *win, HWND hwnd, int was, int now, const RECT *suggested)
 {
@@ -1768,8 +1769,10 @@ static void Rescale_Window(GUIWIN *win, HWND hwnd, int was, int now, const RECT 
 			} else {
 				SendMessageW(child, WM_SETFONT, (WPARAM)Default_Font_At(now), FALSE);
 			}
-			// A new font puts the platform's own row height back.
+			// A new font puts the platform's own row height back - and a
+			// tree's icons follow the row height.
 			if (wid->row_height > 0) Apply_Row_Height(wid, now);
+			else Tree_Icons(wid, now);
 		}
 
 		if (GetClientRect(hwnd, &client)) {
@@ -4223,6 +4226,12 @@ static LRESULT CALLBACK Nav_Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 	GUIWIDGET *wid  = (GUIWIDGET*)GetWindowLongPtrW(hwnd, GWLP_USERDATA);
 	WNDPROC    base = (wid && wid->wndproc) ? (WNDPROC)wid->wndproc : NULL;
 
+	// A TreeView does not destroy the image list it was given.
+	if (msg == WM_NCDESTROY && wid && wid->kind == W_GUI_WIDGET_TREE_VIEW) {
+		HIMAGELIST list = (HIMAGELIST)SendMessageW(hwnd, TVM_GETIMAGELIST, TVSIL_NORMAL, 0);
+		if (list) ImageList_Destroy(list);
+	}
+
 	// A list-view's selection has settled - see List_View_Notify.
 	if (msg == WM_GUI_LIST_CHECK) {
 		if (wid && wid->kind == W_GUI_WIDGET_LIST_VIEW)
@@ -5053,6 +5062,7 @@ REBOOL Gui_Widget_Set_Font(GUIWIDGET *wid, const REBYTE *utf8, REBCNT len,
 	// ... and puts the platform's own row height back: one set by the
 	// script is kept.
 	if (wid->row_height > 0) Apply_Row_Height(wid, Dpi_Of(hwnd));
+	else Tree_Icons(wid, Dpi_Of(hwnd));
 	InvalidateRect(hwnd, NULL, TRUE);
 	return TRUE;
 }
@@ -5084,6 +5094,7 @@ static void Apply_Row_Height(GUIWIDGET *wid, int dpi)
 		break;
 	case W_GUI_WIDGET_TREE_VIEW:
 		SendMessageW(hwnd, TVM_SETITEMHEIGHT, (WPARAM)(h > 0 ? h : -1), 0);
+		Tree_Icons(wid, dpi);
 		break;
 	case W_GUI_WIDGET_LIST_VIEW: {
 		HIMAGELIST list = h > 0 ? ImageList_Create(1, h, ILC_COLOR32, 0, 0) : NULL;
@@ -6782,6 +6793,12 @@ void* Gui_Tree_Add_Node(GUIWIDGET *wid, REBCNT n)
 	ins.item.mask    = TVIF_TEXT | TVIF_PARAM;
 	ins.item.pszText = wide ? wide : L"";
 	ins.item.lParam  = (LPARAM)n;
+	// The blank icon after the others, for a node with none - see Tree_Icons.
+	if (tree->image_count > 0) {
+		ins.item.mask |= TVIF_IMAGE | TVIF_SELECTEDIMAGE;
+		ins.item.iImage = ins.item.iSelectedImage
+			= node->image >= 0 ? node->image : (int)tree->image_count;
+	}
 	Setting_Tree = TRUE;
 	item = (HTREEITEM)SendMessageW(HWND_OF_WID(wid), TVM_INSERTITEMW, 0, (LPARAM)&ins);
 	Setting_Tree = FALSE;
@@ -6791,7 +6808,96 @@ void* Gui_Tree_Add_Node(GUIWIDGET *wid, REBCNT n)
 
 void Gui_Tree_End(GUIWIDGET *wid)
 {
-	if (wid && wid->handle) InvalidateRect(HWND_OF_WID(wid), NULL, TRUE);
+	if (!wid || !wid->handle) return;
+	Tree_Icons(wid, Dpi_Of(HWND_OF_WID(wid)));
+	InvalidateRect(HWND_OF_WID(wid), NULL, TRUE);
+}
+
+/***********************************************************************
+**  The icons, as an image list, made anew for the row height: each of
+**  the table's images by its index, and a blank one after them for a
+**  node with none, which keeps the labels in line.
+**
+**  Each goes in as an icon: a 32-bit colour bitmap with straight alpha,
+**  which is the one form every comctl32 6 image list draws with its
+**  alpha. The mask is all "transparent", which only the blank one uses.
+***********************************************************************/
+static void Tree_Icons(GUIWIDGET *wid, int dpi)
+{
+	GUITREE   *tree;
+	HWND       hwnd;
+	HIMAGELIST list, old;
+	BITMAPINFO bmi;
+	REBYTE    *mask_bits;
+	HBITMAP    mask;
+	LRESULT    row;
+	REBINT     px;
+	REBCNT     n;
+
+	if (!wid || !wid->handle || wid->kind != W_GUI_WIDGET_TREE_VIEW) return;
+	hwnd = HWND_OF_WID(wid);
+	tree = GUI_TREE_OF(wid);
+
+	// None first: a TreeView makes its rows at least as tall as its
+	// images, and the height read below must be the font's - or the one set.
+	old = (HIMAGELIST)SendMessageW(hwnd, TVM_SETIMAGELIST, TVSIL_NORMAL, 0);
+	if (old) ImageList_Destroy(old);
+	if (!tree || tree->image_count == 0) return;
+
+	row = (wid->row_height > 0) ? To_Device(dpi, wid->row_height)
+	                            : SendMessageW(hwnd, TVM_GETITEMHEIGHT, 0, 0);
+	px = (REBINT)row - To_Device(dpi, 4);
+	if (px < 4) px = 4;
+
+	list = ImageList_Create(px, px, ILC_COLOR32 | ILC_MASK, (int)tree->image_count + 1, 0);
+	if (!list) return;
+
+	mask_bits = (REBYTE*)MAKE_MEM((size_t)((px + 15) / 16) * 2 * px);
+	if (!mask_bits) { ImageList_Destroy(list); return; }
+	memset(mask_bits, 0xFF, (size_t)((px + 15) / 16) * 2 * px);
+	mask = CreateBitmap(px, px, 1, 1, mask_bits);
+	FREE_MEM(mask_bits);
+
+	ZeroMemory(&bmi, sizeof(bmi));
+	bmi.bmiHeader.biSize        = sizeof(BITMAPINFOHEADER);
+	bmi.bmiHeader.biWidth       = px;
+	bmi.bmiHeader.biHeight      = -px;   // top-down, as an image! is
+	bmi.bmiHeader.biPlanes      = 1;
+	bmi.bmiHeader.biBitCount    = 32;
+	bmi.bmiHeader.biCompression = BI_RGB;
+
+	for (n = 0; n <= tree->image_count; n++) {
+		void    *bits = NULL;
+		HBITMAP  color = CreateDIBSection(NULL, &bmi, DIB_RGB_COLORS, &bits, NULL, 0);
+		ICONINFO info;
+		HICON    icon = NULL;
+
+		if (color && bits) {
+			if (n < tree->image_count)
+				Gui_Scale_Icon(&tree->images[n], px, (REBYTE*)bits, px * 4, FALSE);
+			else
+				ZeroMemory(bits, (size_t)px * px * 4);
+			GdiFlush();
+			ZeroMemory(&info, sizeof(info));
+			info.fIcon    = TRUE;
+			info.hbmMask  = mask;
+			info.hbmColor = color;
+			icon = CreateIconIndirect(&info);
+		}
+		// Every index must be there, or the ones after it would move.
+		if (icon) {
+			ImageList_ReplaceIcon(list, -1, icon);
+			DestroyIcon(icon);
+		} else {
+			ImageList_AddMasked(list, mask, 0); // stands in, blank
+		}
+		if (color) DeleteObject(color);
+	}
+	if (mask) DeleteObject(mask);
+
+	SendMessageW(hwnd, TVM_SETIMAGELIST, TVSIL_NORMAL, (LPARAM)list);
+	if (wid->row_height > 0)
+		SendMessageW(hwnd, TVM_SETITEMHEIGHT, (WPARAM)To_Device(dpi, wid->row_height), 0);
 }
 
 void Gui_Tree_Select(GUIWIDGET *wid, REBINT n)

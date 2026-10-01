@@ -3439,6 +3439,65 @@ static void Tree_Cell(GtkTreeViewColumn *col, GtkCellRenderer *cell,
 	Paint_Cell(wid, cell, model, iter, 0);
 }
 
+// The icons, scaled for the row height they were made for, by image
+// index; the last is a blank one, for a node with none, which keeps the
+// labels in line. Made as they are first drawn, and dropped when the
+// nodes are replaced or the size changes.
+#define KEY_ICONS     "rebol-gui-icons"     // GPtrArray of cairo_surface_t
+#define KEY_ICON_SIZE "rebol-gui-icon-size" // device pixels they are made at
+
+static cairo_surface_t *Tree_Icon(GUIWIDGET *wid, GtkWidget *view, REBINT image)
+{
+	GUITREE   *tree  = GUI_TREE_OF(wid);
+	GPtrArray *icons = (GPtrArray*)g_object_get_data(G_OBJECT(wid->handle), KEY_ICONS);
+	gint scale = gtk_widget_get_scale_factor(view);
+	gint size  = (gint)Gui_Tree_Icon_Size(wid);
+	gint px    = size * scale;
+	cairo_surface_t *surface;
+	guint at;
+
+	if (!tree || !icons || tree->image_count == 0) return NULL;
+	if (GPOINTER_TO_INT(g_object_get_data(G_OBJECT(wid->handle), KEY_ICON_SIZE)) != px) {
+		g_ptr_array_set_size(icons, 0);
+		g_object_set_data(G_OBJECT(wid->handle), KEY_ICON_SIZE, GINT_TO_POINTER(px));
+	}
+	at = (image >= 0 && (REBCNT)image < tree->image_count) ? (guint)image : tree->image_count;
+	if (icons->len <= at) g_ptr_array_set_size(icons, (gint)tree->image_count + 1);
+	surface = (cairo_surface_t*)g_ptr_array_index(icons, at);
+	if (surface) return surface;
+
+	// Premultiplied BGRA in memory is cairo's ARGB32 on a little-endian
+	// machine - see Draw_Image.
+	surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, px, px);
+	cairo_surface_flush(surface);
+	if (at < tree->image_count)
+		Gui_Scale_Icon(&tree->images[at], px, cairo_image_surface_get_data(surface),
+		               cairo_image_surface_get_stride(surface), TRUE);
+	cairo_surface_mark_dirty(surface);
+	cairo_surface_set_device_scale(surface, scale, scale);
+	g_ptr_array_index(icons, at) = surface;
+	return surface;
+}
+
+static void Tree_Icon_Cell(GtkTreeViewColumn *col, GtkCellRenderer *cell,
+                           GtkTreeModel *model, GtkTreeIter *iter, gpointer data)
+{
+	GUIWIDGET *wid = (GUIWIDGET*)data;
+	GUITREE *tree;
+	REBCNT n;
+
+	if (!wid || !wid->handle) return;
+	tree = GUI_TREE_OF(wid);
+	if (!tree || tree->image_count == 0) {
+		g_object_set(cell, "visible", FALSE, "surface", NULL, NULL);
+		return;
+	}
+	n = Tree_Node_At(model, iter);
+	g_object_set(cell, "visible", TRUE, "surface",
+	             Tree_Icon(wid, gtk_tree_view_column_get_tree_view(col),
+	                       n < tree->count ? tree->nodes[n].image : -1), NULL);
+}
+
 REBOOL Gui_Create_Tree_View(GUIWIDGET *wid, GUIWIN *owner,
                             REBINT x, REBINT y, REBINT w, REBINT h)
 {
@@ -3457,8 +3516,15 @@ REBOOL Gui_Create_Tree_View(GUIWIDGET *wid, GUIWIN *owner,
 	// draws them.
 	gtk_tree_view_set_enable_tree_lines(GTK_TREE_VIEW(tree), TRUE);
 
+	// The icon, then the label, in the one column.
+	col  = gtk_tree_view_column_new();
+	cell = gtk_cell_renderer_pixbuf_new();
+	g_object_set(cell, "xpad", 1, "ypad", 0, NULL);
+	gtk_tree_view_column_pack_start(col, cell, FALSE);
+	gtk_tree_view_column_set_cell_data_func(col, cell, Tree_Icon_Cell, wid, NULL);
 	cell = gtk_cell_renderer_text_new();
-	col  = gtk_tree_view_column_new_with_attributes("", cell, "text", 0, NULL);
+	gtk_tree_view_column_pack_start(col, cell, TRUE);
+	gtk_tree_view_column_add_attribute(col, cell, "text", 0);
 	gtk_tree_view_column_set_cell_data_func(col, cell, Tree_Cell, wid, NULL);
 	gtk_tree_view_append_column(GTK_TREE_VIEW(tree), col);
 
@@ -3466,6 +3532,9 @@ REBOOL Gui_Create_Tree_View(GUIWIDGET *wid, GUIWIN *owner,
 		g_array_new(FALSE, TRUE, sizeof(GtkTreeIter)), (GDestroyNotify)g_array_unref);
 	g_object_set_data_full(G_OBJECT(scroll), KEY_OPEN,
 		g_array_new(FALSE, TRUE, sizeof(guint8)), (GDestroyNotify)g_array_unref);
+	g_object_set_data_full(G_OBJECT(scroll), KEY_ICONS,
+		g_ptr_array_new_with_free_func((GDestroyNotify)cairo_surface_destroy),
+		(GDestroyNotify)g_ptr_array_unref);
 
 	if (!Place(wid, owner, scroll, x, y, w, h)) return FALSE;
 	Connect(wid, gtk_tree_view_get_selection(GTK_TREE_VIEW(tree)), "changed",
@@ -3488,6 +3557,11 @@ void Gui_Tree_Clear(GUIWIDGET *wid)
 	Quiet--;
 	if (iters) g_array_set_size(iters, 0);
 	if (open)  g_array_set_size(open, 0);
+	// The images are numbered anew with the nodes.
+	if (wid->handle) {
+		GPtrArray *icons = (GPtrArray*)g_object_get_data(G_OBJECT(wid->handle), KEY_ICONS);
+		if (icons) g_ptr_array_set_size(icons, 0);
+	}
 }
 
 void* Gui_Tree_Add_Node(GUIWIDGET *wid, REBCNT n)
@@ -3625,9 +3699,11 @@ REBINT Gui_Widget_Get_Row_Height(GUIWIDGET *wid)
 	if (!tree || !IS_TABLE(wid)) return 0;
 	if (wid->row_height > 0) return wid->row_height;
 
-	// A row there is the answer, when it has been measured.
+	// A row there is the answer, when it has been measured - but not a
+	// tree's: its icons are sized from this, and must not size it.
 	model = gtk_tree_view_get_model(GTK_TREE_VIEW(tree));
-	if (model && gtk_tree_model_get_iter_first(model, &iter)) {
+	if (model && wid->kind != W_GUI_WIDGET_TREE_VIEW
+	    && gtk_tree_model_get_iter_first(model, &iter)) {
 		path = gtk_tree_model_get_path(model, &iter);
 		gtk_tree_view_get_background_area(GTK_TREE_VIEW(tree), path, NULL, &r);
 		gtk_tree_path_free(path);
@@ -3642,6 +3718,7 @@ REBINT Gui_Widget_Get_Row_Height(GUIWIDGET *wid)
 		gint min = 0, nat = 0, best = 0;
 		GList *l;
 		for (l = cells; l; l = l->next) {
+			if (GTK_IS_CELL_RENDERER_PIXBUF(l->data)) continue; // an icon
 			gtk_cell_renderer_get_preferred_height(GTK_CELL_RENDERER(l->data), tree, &min, &nat);
 			if (nat > best) best = nat;
 		}

@@ -798,6 +798,26 @@ Setting `selected` or `expanded` to a path that names nothing picks, or
 opens, nothing; a word or a label alone is a node at the top when there is
 one, and otherwise the first node with it, parents before children.
 
+An image! after the label (and the word) is the node's icon, drawn before the
+label in a square as tall as the row less a small margin, scaled to fit and
+keeping its proportions; transparent pixels show the row behind. Use
+`compose` to put images in, and `row-height` for bigger icons. One image!
+used by many nodes is stored once; a node without one keeps its label in
+line with the rest.
+
+```rebol
+tree: add-tree-view win compose/deep [
+    "Pictures" pics (folder-icon) ["Cat.png" (file-icon)  "Dog.png" (file-icon)]
+] 20x20 220x300
+tree/row-height: 32            ;; icons of about 28 units
+```
+
+`row-height` works the same on a text-list and a list-view: the pitch of
+their rows in logical units, the gap between rows included; `none` gives
+back the platform's own, which follows the font. A height set this way is
+kept when the font changes. A Windows list-view's rows can be made taller
+than its font, but not shorter.
+
 Events:
 
 | `type` | when | `code` |
@@ -1392,7 +1412,7 @@ Creates a table - rows of cells under column headers - and returns its handle
 #### `add-tree-view` `:parent` `:items` `:offset` `:size`
 Creates a tree - nodes in branches which open and close - and returns its handle
 * `parent` `[handle!]` Window, panel or image widget to put it in
-* `items` `[block!]` Nodes: a label, then optionally a word naming it, then optionally a block of its children in the same grammar
+* `items` `[block!]` Nodes: a label, then optionally a word naming it, then optionally an image! for its icon, then optionally a block of its children in the same grammar
 * `offset` `[pair!]` Position inside the parent
 * `size` `[pair!]`
 * `/flat` Without the border

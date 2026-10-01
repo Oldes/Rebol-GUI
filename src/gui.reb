@@ -700,7 +700,7 @@ commands: [
 	add-tree-view: [
 		"Creates a tree - nodes in branches which open and close - and returns its handle"
 		parent [handle!] "Window, panel or image widget to put it in"
-		items  [block!]  {Nodes: a label, then optionally a word naming it, then optionally a block of its children in the same grammar}
+		items  [block!]  {Nodes: a label, then optionally a word naming it, then optionally an image! for its icon, then optionally a block of its children in the same grammar}
 		offset [pair!]   "Position inside the parent"
 		size   [pair!]
 		/flat "Without the border"

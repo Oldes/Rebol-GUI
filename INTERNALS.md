@@ -311,6 +311,20 @@ Cocoa flips offsets against the menu-bar screen; the content view answers
   type. A GTK tree view selects its first row when it takes the focus with
   no cursor; that selection is taken silently (`On_Selection` checks for a
   focus-change event, and `set-focus` runs quiet).
+- **Tree icons:** an image! in `items` is copied into the table once per
+  series (`GUITREEIMAGE`; a node holds its index), as a series can move.
+  The square is `Gui_Tree_Icon_Size` - the row height less 4 - and
+  `Gui_Scale_Icon` fits an image into it with an alpha-weighted area
+  average, so every platform scales the same way. A backend keeps the
+  scaled icons by image index, plus a blank one for a node without, and
+  remakes them when the size changes: GTK, cairo surfaces at the widget's
+  scale factor drawn by a pixbuf renderer before the label (its height is
+  left out of the row height the size comes from, or the two would chase
+  each other); Windows, an image list of icons (32-bit straight alpha),
+  rebuilt by `Tree_Icons` after the nodes, `row-height`, a font or a DPI
+  change, and destroyed at `WM_NCDESTROY`, as a TreeView does not; macOS,
+  `NSImage`s at the backing scale drawn by `RebolGuiTreeCell`, an
+  `NSTextFieldCell` given room on its left.
 - **`row-height`:** kept in `wid->row_height` (0 = the platform's own) and
   counted with the gap between rows, so the same number gives the same pitch
   everywhere. Windows: `LB_SETITEMHEIGHT` (at most 255 px) and

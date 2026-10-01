@@ -1090,7 +1090,8 @@ static REBOOL List_Set_Items(GUIWIDGET *wid, REBSER *blk, REBCNT index)
 **  tree-view: the nodes.
 **
 **  `items` is the menu dialect's grammar without the shortcuts: a label,
-**  then optionally a word naming the node, then optionally a block of its
+**  then optionally a word naming the node, then optionally an image! - its
+**  icon, scaled to the row's height - then optionally a block of its
 **  children in the same grammar.
 **
 **      ["Documents" docs ["Report.txt" report  "Old" ["a.txt"]]  "Music"]
@@ -1114,6 +1115,9 @@ static void Tree_Free(GUIWIDGET *wid)
 	for (n = 0; n < tree->count; n++)
 		if (tree->nodes[n].label) FREE_MEM(tree->nodes[n].label);
 	if (tree->nodes) FREE_MEM(tree->nodes);
+	for (n = 0; n < tree->image_count; n++)
+		if (tree->images[n].pixels) FREE_MEM(tree->images[n].pixels);
+	if (tree->images) FREE_MEM(tree->images);
 	FREE_MEM(tree);
 	wid->tree = NULL;
 }
@@ -1149,6 +1153,7 @@ static REBINT Tree_Add(GUITREE *tree, REBINT parent, REBCNT word,
 	node->parent = parent;
 	node->first  = -1;
 	node->next   = -1;
+	node->image  = -1;
 	tree->count++;
 
 	// At the end of its parent's children, which keeps the dialect's order.
@@ -1166,6 +1171,100 @@ static REBINT Tree_Add(GUITREE *tree, REBINT parent, REBCNT word,
 			}
 	}
 	return n;
+}
+
+// The icon `img` in the table: its index, or -1. One already there - the
+// same image! for every folder, say - is not copied again.
+static REBINT Tree_Image(GUITREE *tree, REBSER *img)
+{
+	GUITREEIMAGE *slot;
+	REBINT w = (REBINT)IMG_WIDE(img), h = (REBINT)IMG_HIGH(img);
+	REBCNT n;
+
+	if (w <= 0 || h <= 0 || !IMG_DATA(img)) return -1;
+	for (n = 0; n < tree->image_count; n++)
+		if (tree->images[n].source == (void*)img
+		    && tree->images[n].w == w && tree->images[n].h == h)
+			return (REBINT)n;
+
+	if (tree->image_count == tree->image_capacity) {
+		REBCNT cap = tree->image_capacity ? tree->image_capacity * 2 : 4;
+		GUITREEIMAGE *images = (GUITREEIMAGE*)MAKE_MEM(sizeof(GUITREEIMAGE) * cap);
+		if (!images) return -1;
+		if (tree->images) {
+			COPY_MEM(images, tree->images, sizeof(GUITREEIMAGE) * tree->image_count);
+			FREE_MEM(tree->images);
+		}
+		tree->images = images;
+		tree->image_capacity = cap;
+	}
+	slot = &tree->images[tree->image_count];
+	slot->pixels = (REBYTE*)MAKE_MEM((size_t)w * (size_t)h * 4);
+	if (!slot->pixels) return -1;
+	COPY_MEM(slot->pixels, IMG_DATA(img), (size_t)w * (size_t)h * 4);
+	slot->w = w;
+	slot->h = h;
+	slot->source = (void*)img;
+	return (REBINT)tree->image_count++;
+}
+
+REBINT Gui_Tree_Icon_Size(GUIWIDGET *wid)
+{
+	REBINT size = Gui_Widget_Get_Row_Height(wid) - 4;
+	return (size < 4) ? 4 : size;
+}
+
+// An area average: every source pixel under a destination pixel counts by
+// how much of it is covered, and by its alpha - so a transparent pixel's
+// colour does not bleed into its neighbours' edges.
+void Gui_Scale_Icon(const GUITREEIMAGE *img, REBINT size, REBYTE *dst,
+                    REBINT stride, REBOOL premultiply)
+{
+	REBINT dw = size, dh = size, ox, oy, dx, dy, sx, sy;
+	double fx, fy;
+
+	for (dy = 0; dy < size; dy++) CLEAR(dst + dy * stride, (size_t)size * 4);
+	if (!img || !img->pixels || img->w <= 0 || img->h <= 0 || size <= 0) return;
+
+	if (img->w >= img->h) dh = (REBINT)((double)img->h * size / img->w + 0.5);
+	else                  dw = (REBINT)((double)img->w * size / img->h + 0.5);
+	if (dw < 1) dw = 1;
+	if (dh < 1) dh = 1;
+	ox = (size - dw) / 2;
+	oy = (size - dh) / 2;
+	fx = (double)img->w / dw;
+	fy = (double)img->h / dh;
+
+	for (dy = 0; dy < dh; dy++) {
+		double y0 = dy * fy, y1 = y0 + fy;
+		REBYTE *out = dst + (oy + dy) * stride + ox * 4;
+		for (dx = 0; dx < dw; dx++, out += 4) {
+			double x0 = dx * fx, x1 = x0 + fx;
+			double b = 0, g = 0, r = 0, a = 0, area = 0;
+			for (sy = (REBINT)y0; sy < img->h && sy < y1; sy++) {
+				double wy = ((sy + 1 < y1) ? sy + 1 : y1) - ((sy > y0) ? sy : y0);
+				const REBYTE *in = img->pixels + ((size_t)sy * img->w) * 4;
+				for (sx = (REBINT)x0; sx < img->w && sx < x1; sx++) {
+					double wx = ((sx + 1 < x1) ? sx + 1 : x1) - ((sx > x0) ? sx : x0);
+					double wa = wx * wy * in[sx * 4 + 3] / 255.0;
+					b += in[sx * 4]     * wa;
+					g += in[sx * 4 + 1] * wa;
+					r += in[sx * 4 + 2] * wa;
+					a += wa;
+					area += wx * wy;
+				}
+			}
+			if (a <= 0 || area <= 0) continue;
+			{
+				double alpha = a / area;           // 0..1
+				double k = premultiply ? alpha / a : 1.0 / a;
+				out[0] = (REBYTE)(b * k + 0.5);
+				out[1] = (REBYTE)(g * k + 0.5);
+				out[2] = (REBYTE)(r * k + 0.5);
+				out[3] = (REBYTE)(alpha * 255.0 + 0.5);
+			}
+		}
+	}
 }
 
 // One level of the dialect, into `parent`. Anything which is not a label
@@ -1195,6 +1294,11 @@ static void Block_To_Tree(GUITREE *tree, REBSER *blk, REBCNT index, REBINT paren
 		}
 		node = Tree_Add(tree, parent, word, label, (REBCNT)len);
 		if (node < 0) return;
+		if (next_type == RXT_IMAGE) {
+			tree->nodes[node].image = Tree_Image(tree, (REBSER*)next.series);
+			n++;
+			next_type = RL_GET_VALUE(blk, n + 1, &next);
+		}
 		if (next_type == RXT_BLOCK) {
 			Block_To_Tree(tree, (REBSER*)next.series, next.index, node);
 			n++;

@@ -604,13 +604,35 @@ typedef struct Gui_Tree_Node {
 	REBYTE *label;    // UTF-8, NUL-terminated; owned by the table
 	REBCNT  len;      // bytes in `label`
 	void   *native;   // what Gui_Tree_Add_Node returned for it
+	REBINT  image;    // its icon's index in the table's `images`; -1 for none
 } GUITREENODE;
 
+// An icon, copied out of the image! - a series can move - once per image!,
+// however many nodes show it. BGRA, alpha straight, 255 opaque.
+typedef struct Gui_Tree_Image {
+	REBYTE *pixels;   // owned by the table
+	REBINT  w, h;
+	void   *source;   // the image!'s series: how a reused one is recognised
+} GUITREEIMAGE;
+
 typedef struct Gui_Tree {
-	GUITREENODE *nodes;
-	REBCNT       count;
-	REBCNT       capacity;
+	GUITREENODE  *nodes;
+	REBCNT        count;
+	REBCNT        capacity;
+	GUITREEIMAGE *images;
+	REBCNT        image_count;
+	REBCNT        image_capacity;
 } GUITREE;
+
+// The side of the square an icon is drawn in, in logical units: the row's
+// height less a margin above and below. A backend asks again whenever the
+// row height may have changed - `row-height`, the font, the DPI.
+REBINT  Gui_Tree_Icon_Size(GUIWIDGET *wid);
+// Scales `img` to fit a `size` x `size` square of BGRA pixels at `dst`
+// (rows `stride` bytes apart), centred, keeping its proportions; the
+// rest is transparent. Premultiplied or straight alpha, as asked.
+void    Gui_Scale_Icon(const GUITREEIMAGE *img, REBINT size, REBYTE *dst,
+                       REBINT stride, REBOOL premultiply);
 
 #define GUI_TREE_OF(wid) ((GUITREE*)(wid)->tree)
 

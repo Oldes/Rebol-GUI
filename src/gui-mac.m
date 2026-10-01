@@ -86,6 +86,7 @@
 #define RebolGuiComboBox  GUI_CLASS(ComboBox)
 #define RebolGuiList      GUI_CLASS(List)
 #define RebolGuiTree      GUI_CLASS(Tree)
+#define RebolGuiTreeCell  GUI_CLASS(TreeCell)
 #define RebolGuiDatePicker GUI_CLASS(DatePicker)
 #define RebolGuiPanel     GUI_CLASS(Panel)
 #define RebolGuiTabView   GUI_CLASS(TabView)
@@ -1303,19 +1304,89 @@ static CGFloat Row_Height_For(GUIWIDGET *ctx, NSTableView *table, NSFont *font)
 **  branch inside a closed one as open - so the wish is recorded, and
 **  applied as the branch holding it opens.
 ***********************************************************************/
+// A tree's label cell, with room for an icon before the label: `side`
+// points square, the icon drawn in it - or nothing, for a node with none
+// in a tree with some, which keeps the labels in line.
+@interface RebolGuiTreeCell : NSTextFieldCell
+{
+	NSImage *icon;
+	CGFloat  side;
+}
+- (void)setIcon:(NSImage*)image side:(CGFloat)size;
+@end
+
 @interface RebolGuiTree : NSOutlineView <NSOutlineViewDataSource, NSOutlineViewDelegate>
 {
 	GUIWIDGET         *context;
 	NSMutableArray    *nodes;
 	NSMutableIndexSet *open;
+	NSMutableArray    *icons;      // NSImage or NSNull, by image index
+	CGFloat            icon_side;  // the size they were made for
 	BOOL               quiet;
 }
 - (void)setContext:(GUIWIDGET*)ctx;
 - (void)setQuiet:(BOOL)on;
 - (NSMutableArray*)nodes;
 - (NSMutableIndexSet*)open;
+- (void)forgetIcons;
 - (void)activated:(id)sender;
 @end
+
+// Hands an icon's pixels back once its CGImage is done with them.
+static void Free_Pixels(void *info, const void *data, size_t size)
+{
+	(void)info; (void)size;
+	free((void*)data);
+}
+
+@implementation RebolGuiTreeCell
+
+- (void)setIcon:(NSImage*)image side:(CGFloat)size
+{
+	if (image != icon) { [icon release]; icon = [image retain]; }
+	side = size;
+}
+
+// A table copies its cell to draw with: the copy must own its icon too.
+- (id)copyWithZone:(NSZone*)zone
+{
+	RebolGuiTreeCell *copy = [super copyWithZone:zone];
+	if (copy) { copy->icon = [icon retain]; copy->side = side; }
+	return copy;
+}
+
+- (void)dealloc
+{
+	[icon release];
+	[super dealloc];
+}
+
+- (void)drawWithFrame:(NSRect)frame inView:(NSView*)view
+{
+	if (side > 0) {
+		NSRect box = NSMakeRect(frame.origin.x + 2.0,
+		                        frame.origin.y + floor((frame.size.height - side) / 2.0),
+		                        side, side);
+		if (icon)
+			[icon drawInRect:box fromRect:NSZeroRect
+			       operation:NSCompositingOperationSourceOver fraction:1.0
+			  respectFlipped:YES hints:nil];
+		frame.origin.x   += side + 4.0;
+		frame.size.width -= side + 4.0;
+		if (frame.size.width < 0) frame.size.width = 0;
+	}
+	[super drawWithFrame:frame inView:view];
+}
+
+- (NSSize)cellSize
+{
+	NSSize size = [super cellSize];
+	if (side > 0) size.width += side + 4.0;
+	return size;
+}
+
+@end
+
 
 @implementation RebolGuiTree
 
@@ -1338,7 +1409,55 @@ static CGFloat Row_Height_For(GUIWIDGET *ctx, NSTableView *table, NSFont *font)
 {
 	[nodes release];
 	[open release];
+	[icons release];
 	[super dealloc];
+}
+
+// Dropped as the nodes are replaced: the images are numbered anew.
+- (void)forgetIcons { [icons removeAllObjects]; }
+
+// The icon for image `image` of the table, made as it is first drawn, at
+// the screen's resolution, and again when the row height changes.
+- (NSImage*)iconFor:(REBINT)image side:(CGFloat)side
+{
+	GUITREE *tree = [self table];
+	id       found;
+	REBYTE  *bits;
+	CGFloat  scale;
+	size_t   px;
+	CGColorSpaceRef   space;
+	CGDataProviderRef provider;
+	CGImageRef        cg;
+	NSImage          *made = nil;
+
+	if (!tree || image < 0 || (REBCNT)image >= tree->image_count || side <= 0) return nil;
+	if (!icons) icons = [[NSMutableArray alloc] init];
+	if (side != icon_side) { [icons removeAllObjects]; icon_side = side; }
+	while ([icons count] < tree->image_count) [icons addObject:[NSNull null]];
+	found = [icons objectAtIndex:(NSUInteger)image];
+	if (found != [NSNull null]) return (NSImage*)found;
+
+	scale = [self window] ? [[self window] backingScaleFactor] : 2.0;
+	px = (size_t)ceil(side * scale);
+	bits = (REBYTE*)malloc(px * px * 4);
+	if (!bits) return nil;
+	Gui_Scale_Icon(&tree->images[image], (REBINT)px, bits, (REBINT)(px * 4), TRUE);
+
+	// Premultiplied BGRA is "alpha first, 32 bits little-endian", as the
+	// image widget's pixels are without the alpha - see its drawRect:.
+	space    = CGColorSpaceCreateDeviceRGB();
+	provider = CGDataProviderCreateWithData(NULL, bits, px * px * 4, Free_Pixels);
+	cg = CGImageCreate(px, px, 8, 32, px * 4, space,
+	                   kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little,
+	                   provider, NULL, true, kCGRenderingIntentDefault);
+	CGDataProviderRelease(provider);
+	CGColorSpaceRelease(space);
+	if (cg) {
+		made = [[[NSImage alloc] initWithCGImage:cg size:NSMakeSize(side, side)] autorelease];
+		CGImageRelease(cg);
+	}
+	if (made) [icons replaceObjectAtIndex:(NSUInteger)image withObject:made];
+	return made;
 }
 
 // The node an item stands for, and the first child of one: -1 for none.
@@ -1411,6 +1530,18 @@ static CGFloat Row_Height_For(GUIWIDGET *ctx, NSTableView *table, NSFont *font)
 	if ([cell respondsToSelector:@selector(setTextColor:)]) {
 		[cell setTextColor:(color && ![view isRowSelected:[view rowForItem:item]])
 			? color : [NSColor controlTextColor]];
+	}
+	// The node's icon, when the tree has any.
+	if ([cell isKindOfClass:[RebolGuiTreeCell class]]) {
+		GUITREE *tree = [self table];
+		int      n    = [(NSNumber*)item intValue];
+		if (tree && tree->image_count > 0 && n >= 0 && (REBCNT)n < tree->count) {
+			CGFloat side = (CGFloat)Gui_Tree_Icon_Size(context);
+			[(RebolGuiTreeCell*)cell setIcon:[self iconFor:tree->nodes[n].image side:side]
+			                            side:side];
+		} else {
+			[(RebolGuiTreeCell*)cell setIcon:nil side:0];
+		}
 	}
 }
 
@@ -4653,6 +4784,12 @@ REBOOL Gui_Create_Tree_View(GUIWIDGET *wid, GUIWIN *owner,
 		column = [[[NSTableColumn alloc] initWithIdentifier:@"node"] autorelease];
 		[column setEditable:NO];
 		[column setResizingMask:NSTableColumnAutoresizingMask];
+		{
+			RebolGuiTreeCell *cell = [[[RebolGuiTreeCell alloc] initTextCell:@""] autorelease];
+			[cell setEditable:NO];
+			[cell setLineBreakMode:NSLineBreakByTruncatingTail];
+			[column setDataCell:cell];
+		}
 		[tree addTableColumn:column];
 		[tree setOutlineTableColumn:column];
 		[tree setHeaderView:nil];
@@ -4685,6 +4822,7 @@ void Gui_Tree_Clear(GUIWIDGET *wid)
 		[tree setQuiet:YES];
 		[[tree nodes] removeAllObjects];
 		[[tree open] removeAllIndexes];
+		[tree forgetIcons];
 		[tree reloadData];
 		[tree setQuiet:NO];
 	}
