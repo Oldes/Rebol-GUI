@@ -12,7 +12,7 @@ REBOL [
 		add-check add-radio add-slider add-progress add-drop-down add-drop-list add-panel
 		remove-widget redraw set-focus screens track-mouse add-toggle
 		add-text-list add-date-field add-line add-tab-panel within? popup-menu
-		add-list-view add-tree-view
+		add-list-view add-tree-view capture
 		gui-device gui-device-polls gui-device-events
 		gui-device-pumps gui-device-messages
 		poll-events do-events
@@ -522,6 +522,10 @@ commands: [
 	redraw: [
 		"Repaints a window or a widget - use after drawing into a displayed image"
 		target [handle!]
+	]
+	capture: [
+		"Returns what a window's client area, or a widget, looks like on screen, as an image! - in device pixels, so at 200% scaling twice its size in logical units"
+		target [handle!] "Window or widget"
 	]
 	add-text: [
 		"Creates a static label and returns its handle"

@@ -3834,6 +3834,41 @@ COMMAND cmd_gui_redraw(RXIFRM *frm, void *ctx)
 
 
 /***********************************************************************
+**  capture target
+**
+**  A window's client area or a widget, as an image! of device pixels.
+**  The backend draws it offscreen into its own memory, and it is copied
+**  into the image here - the image's series is Rebol's to allocate.
+***********************************************************************/
+COMMAND cmd_gui_capture(RXIFRM *frm, void *ctx)
+{
+	GUIWIDGET *wid = Frm_Widget(frm, 1);
+	GUIWIN    *win = wid ? NULL : Frm_Window(frm, 1);
+	REBINT     w = 0, h = 0;
+	REBYTE    *bits;
+	REBSER    *img;
+
+	if (!wid && !win) RETURN_ERROR(ERR_INVALID_HANDLE);
+	if ((wid && !wid->handle) || (win && !win->handle)) return RXR_NONE;
+	bits = Gui_Capture(win, wid, &w, &h);
+	if (!bits) return RXR_NONE;
+	if (w <= 0 || h <= 0) { FREE_MEM(bits); return RXR_NONE; }
+
+	img = (REBSER*)RL_MAKE_IMAGE((u32)w, (u32)h);
+	if (!img) { FREE_MEM(bits); return RXR_NONE; }
+	COPY_MEM(IMG_DATA(img), bits, (size_t)w * (size_t)h * 4);
+	FREE_MEM(bits);
+
+	RXA_ARG(frm, 1).image  = img;
+	RXA_ARG(frm, 1).width  = w;
+	RXA_ARG(frm, 1).height = h;
+	RXA_ARG(frm, 1).image_index = 0;
+	RXA_TYPE(frm, 1) = RXT_IMAGE;
+	return RXR_VALUE;
+}
+
+
+/***********************************************************************
 **  add-drop-down window items [block!] offset [pair!] size [pair!]
 **                /index n [integer!]
 **

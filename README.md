@@ -986,6 +986,25 @@ cap/transparent?: true
 cap/color: 255.255.255
 ```
 
+### Capturing
+
+`capture` returns what a window's client area, or a widget, looks like on
+screen, as an `image!`:
+
+```rebol
+shot: capture win                ;; the client area - no title bar
+save %window.png shot
+save %button.png capture button  ;; one widget
+```
+
+The image is in device pixels, so at 175% scaling it is 1.75 times the
+logical size. It is opaque: anything the widget does not paint shows the
+window's background. A covered window is captured as it would look; a hidden
+or minimised one may come out blank on some platforms. On Windows a widget is
+cut out of the whole window as it is composed, so a widget overlapping it
+shows too; on Linux and macOS only the widget and what is inside it are
+drawn. `capture` of a closed window or a removed widget gives `none`.
+
 ## Menu bars
 
 A menu is one block assigned to the window:
@@ -1247,6 +1266,10 @@ Creates an image widget and returns its handle
 #### `redraw` `:target`
 Repaints a window or a widget - use after drawing into a displayed image
 * `target` `[handle!]`
+
+#### `capture` `:target`
+Returns what a window's client area, or a widget, looks like on screen, as an image! - in device pixels, so at 200% scaling twice its size in logical units
+* `target` `[handle!]` Window or widget
 
 #### `add-text` `:parent` `:text` `:offset` `:size`
 Creates a static label and returns its handle

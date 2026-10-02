@@ -3289,6 +3289,75 @@ void Gui_Widget_Invalidate(GUIWIDGET *wid)
 }
 
 
+/***********************************************************************
+**  capture - see gui.h.
+**
+**  cacheDisplayInRect:toBitmapImageRep: draws a view and the views in it
+**  into a bitmap of our own making - covered or not - at the window's
+**  backing scale: the rep is given the view's size in points and that
+**  many times more pixels. Its pixels are RGBA, alpha last and
+**  premultiplied; they are laid over the window's background colour and
+**  turned into BGRA here.
+***********************************************************************/
+REBYTE* Gui_Capture(GUIWIN *win, GUIWIDGET *wid, REBINT *w, REBINT *h)
+{
+	@autoreleasepool {
+		NSView           *view;
+		NSWindow         *window;
+		NSBitmapImageRep *rep;
+		NSRect            bounds;
+		NSColor          *bg;
+		CGFloat           scale, br = 1, bgc = 1, bb = 1;
+		NSInteger         pw, ph, x, y, stride;
+		REBYTE           *out, *src;
+
+		if (wid) view = wid->handle ? NSVIEW_OF(wid) : nil;
+		else     view = (win && win->handle) ? [NSWINDOW_OF(win) contentView] : nil;
+		if (!view) return NULL;
+		window = [view window];
+		bounds = [view bounds];
+		if (bounds.size.width <= 0 || bounds.size.height <= 0) return NULL;
+		scale = window ? [window backingScaleFactor] : 1.0;
+		pw = (NSInteger)ceil(bounds.size.width  * scale);
+		ph = (NSInteger)ceil(bounds.size.height * scale);
+
+		rep = [[[NSBitmapImageRep alloc]
+			initWithBitmapDataPlanes:NULL pixelsWide:pw pixelsHigh:ph
+			bitsPerSample:8 samplesPerPixel:4 hasAlpha:YES isPlanar:NO
+			colorSpaceName:NSDeviceRGBColorSpace bitmapFormat:0
+			bytesPerRow:pw * 4 bitsPerPixel:32] autorelease];
+		if (!rep) return NULL;
+		[rep setSize:bounds.size];
+		[view cacheDisplayInRect:bounds toBitmapImageRep:rep];
+
+		bg = window ? [[window backgroundColor] colorUsingColorSpace:[NSColorSpace deviceRGBColorSpace]]
+		            : nil;
+		if (bg) { br = [bg redComponent]; bgc = [bg greenComponent]; bb = [bg blueComponent]; }
+
+		out = (REBYTE*)MAKE_MEM((size_t)pw * ph * 4);
+		if (!out) return NULL;
+		src    = [rep bitmapData];
+		stride = [rep bytesPerRow];
+		for (y = 0; y < ph; y++) {
+			REBYTE *in = src + y * stride, *o = out + (size_t)y * pw * 4;
+			for (x = 0; x < pw; x++, in += 4, o += 4) {
+				double rest = 1.0 - in[3] / 255.0;   // what shows through
+				double b = in[2] + bb  * 255.0 * rest + 0.5;
+				double g = in[1] + bgc * 255.0 * rest + 0.5;
+				double r = in[0] + br  * 255.0 * rest + 0.5;
+				o[0] = (REBYTE)(b > 255.0 ? 255.0 : b);
+				o[1] = (REBYTE)(g > 255.0 ? 255.0 : g);
+				o[2] = (REBYTE)(r > 255.0 ? 255.0 : r);
+				o[3] = 255;
+			}
+		}
+		*w = (REBINT)pw;
+		*h = (REBINT)ph;
+		return out;
+	}
+}
+
+
 void Gui_Window_Redraw(GUIWIN *win)
 {
 	@autoreleasepool {

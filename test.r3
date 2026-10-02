@@ -1073,6 +1073,13 @@ icon-view: add-list-view/with/index trees ["" 28  "Name" 100  "Size" none right]
 ] 2
 print ["list-view text skips the icon:" mold icon-view/text {(expected "a.txt")}]
 
+;; `capture` - a window's client area or a widget, as an image! of device
+;; pixels.
+shot: capture trees
+print ["capture of a window:" type? shot shot/size "(expected image!" to pair! trees/size * trees/scale ")"]
+shot: capture icon-view
+print ["capture of a widget:" shot/size "(expected" to pair! icon-view/size * trees/scale ")"]
+
 print ["tree-view:" tree/kind "nothing picked:" mold tree/selected "(expected none)"]
 tree/selected: 'docs/old/"b.txt"
 print ["picked by path:" mold tree/selected mold tree/text

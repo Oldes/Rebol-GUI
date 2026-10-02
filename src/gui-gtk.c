@@ -2701,6 +2701,69 @@ void Gui_Window_Redraw(GUIWIN *win)
 	if (win && win->handle) gtk_widget_queue_draw(GW(win)->window);
 }
 
+/***********************************************************************
+**  capture - see gui.h.
+**
+**  gtk_widget_draw renders a widget, and everything in it, into any
+**  cairo context - here an image surface - whether or not it is covered.
+**  The window's own background goes underneath first, so a widget which
+**  paints only part of its box comes out as it looks on the window.
+**  Cairo's ARGB32 is BGRA in memory on a little-endian machine.
+***********************************************************************/
+static void Layout_Window(GUIWIN *win, REBOOL measure);
+
+REBYTE* Gui_Capture(GUIWIN *win, GUIWIDGET *wid, REBINT *w, REBINT *h)
+{
+	GtkWidget *target, *top;
+	cairo_surface_t *surface;
+	cairo_t *cr;
+	gint scale, lw, lh, px_w, px_h, stride, y;
+	REBYTE *out, *data;
+
+	if (wid) target = GTKW(wid);
+	else     target = (win && win->handle) ? GW(win)->content : NULL;
+	if (!target) return NULL;
+	// Widgets added since the last frame have no place yet: given one now.
+	Layout_Window(wid ? wid->owner : win, FALSE);
+
+	lw = gtk_widget_get_allocated_width(target);
+	lh = gtk_widget_get_allocated_height(target);
+	if (lw <= 0 || lh <= 0) return NULL;
+	scale = gtk_widget_get_scale_factor(target);
+	px_w = lw * scale;
+	px_h = lh * scale;
+
+	surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, px_w, px_h);
+	if (cairo_surface_status(surface) != CAIRO_STATUS_SUCCESS) {
+		cairo_surface_destroy(surface);
+		return NULL;
+	}
+	cairo_surface_set_device_scale(surface, scale, scale);
+	cr = cairo_create(surface);
+	top = gtk_widget_get_toplevel(target);
+	if (top && gtk_widget_is_toplevel(top))
+		gtk_render_background(gtk_widget_get_style_context(top), cr, 0, 0, lw, lh);
+	gtk_widget_draw(target, cr);
+	cairo_destroy(cr);
+	cairo_surface_flush(surface);
+
+	out = (REBYTE*)MAKE_MEM((size_t)px_w * px_h * 4);
+	if (out) {
+		data   = cairo_image_surface_get_data(surface);
+		stride = cairo_image_surface_get_stride(surface);
+		for (y = 0; y < px_h; y++) {
+			REBYTE *row = out + (size_t)y * px_w * 4;
+			gint x;
+			memcpy(row, data + (size_t)y * stride, (size_t)px_w * 4);
+			for (x = 0; x < px_w; x++) row[x * 4 + 3] = 255;
+		}
+		*w = px_w;
+		*h = px_h;
+	}
+	cairo_surface_destroy(surface);
+	return out;
+}
+
 void Gui_Destroy_Widget(GUIWIDGET *wid)
 {
 	GtkWidget *w;

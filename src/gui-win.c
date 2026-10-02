@@ -4989,6 +4989,102 @@ void Gui_Widget_Invalidate(GUIWIDGET *wid)
 }
 
 
+/***********************************************************************
+**  capture - see gui.h.
+**
+**  The whole top-level window is printed - PrintWindow with
+**  PW_RENDERFULLCONTENT asks DWM for what it composes, which is what is
+**  on screen, covered or not, labels painted by their parents and all -
+**  and the client area, or the widget's box in it, is cut out of that.
+**  Printing a control on its own would leave out whatever its parent
+**  paints for it, and the controls inside a panel.
+**
+**  The bitmap is as big as GetWindowRect, invisible resize borders
+**  included, so the client area is found from the same rectangle. A
+**  32-bit DIB is BGRA already; GDI leaves its alpha byte undefined.
+***********************************************************************/
+#ifndef PW_RENDERFULLCONTENT
+#define PW_RENDERFULLCONTENT 0x00000002
+#endif
+
+REBYTE* Gui_Capture(GUIWIN *win, GUIWIDGET *wid, REBINT *w, REBINT *h)
+{
+	HWND       top, target;
+	RECT       outer, client, box;
+	POINT      origin = {0, 0};
+	BITMAPINFO bmi;
+	HDC        dc;
+	HBITMAP    bmp, old;
+	void      *bits = NULL;
+	REBYTE    *out = NULL;
+	int        ow, oh, bw, bh, y, x;
+
+	target = wid ? HWND_OF_WID(wid) : HWND_OF(win);
+	if (!target) return NULL;
+	top = GetAncestor(target, GA_ROOT);
+	if (!top || !GetWindowRect(top, &outer) || !GetClientRect(top, &client)) return NULL;
+	ow = outer.right - outer.left;
+	oh = outer.bottom - outer.top;
+	if (ow <= 0 || oh <= 0 || client.right <= 0 || client.bottom <= 0) return NULL;
+
+	// What is wanted, in the top window's client coordinates, kept inside it.
+	box = client;
+	if (wid) {
+		RECT r;
+		if (!GetWindowRect(target, &r)) return NULL;
+		MapWindowPoints(NULL, top, (POINT*)&r, 2);
+		if (!IntersectRect(&box, &r, &client)) return NULL;
+	}
+	bw = box.right - box.left;
+	bh = box.bottom - box.top;
+	ClientToScreen(top, &origin);           // the client's corner ...
+	origin.x -= outer.left;                 // ... in the printed bitmap
+	origin.y -= outer.top;
+
+	ZeroMemory(&bmi, sizeof(bmi));
+	bmi.bmiHeader.biSize        = sizeof(BITMAPINFOHEADER);
+	bmi.bmiHeader.biWidth       = ow;
+	bmi.bmiHeader.biHeight      = -oh;      // top-down, as an image! is
+	bmi.bmiHeader.biPlanes      = 1;
+	bmi.bmiHeader.biBitCount    = 32;
+	bmi.bmiHeader.biCompression = BI_RGB;
+
+	dc = CreateCompatibleDC(NULL);
+	if (!dc) return NULL;
+	bmp = CreateDIBSection(dc, &bmi, DIB_RGB_COLORS, &bits, NULL, 0);
+	if (!bmp || !bits) { if (bmp) DeleteObject(bmp); DeleteDC(dc); return NULL; }
+	old = (HBITMAP)SelectObject(dc, bmp);
+
+	// PW_RENDERFULLCONTENT is Windows 8.1 and later; before it, the plain
+	// call, which is the window painting itself into the bitmap.
+	if (!PrintWindow(top, dc, PW_RENDERFULLCONTENT)) PrintWindow(top, dc, 0);
+	GdiFlush();
+
+	out = (REBYTE*)MAKE_MEM((size_t)bw * bh * 4);
+	if (out) {
+		for (y = 0; y < bh; y++) {
+			int sy = origin.y + box.top + y, sx = origin.x + box.left;
+			REBYTE *row = out + (size_t)y * bw * 4;
+			if (sy < 0 || sy >= oh) { memset(row, 0, (size_t)bw * 4); }
+			else for (x = 0; x < bw; x++) {
+				int px = sx + x;
+				if (px >= 0 && px < ow)
+					memcpy(row + x * 4, (REBYTE*)bits + ((size_t)sy * ow + px) * 4, 4);
+				else
+					memset(row + x * 4, 0, 4);
+			}
+			for (x = 0; x < bw; x++) row[x * 4 + 3] = 255;
+		}
+		*w = bw;
+		*h = bh;
+	}
+	SelectObject(dc, old);
+	DeleteObject(bmp);
+	DeleteDC(dc);
+	return out;
+}
+
+
 void Gui_Window_Redraw(GUIWIN *win)
 {
 	if (!win || !win->handle) return;

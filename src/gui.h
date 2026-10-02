@@ -764,6 +764,14 @@ REBOOL  Gui_Widget_Pixels(GUIWIDGET *wid, REBYTE **data, REBINT *w, REBINT *h);
 void    Gui_Widget_Redraw(GUIWIDGET *wid);
 void    Gui_Window_Redraw(GUIWIN *win);
 
+// Draws a window's client area (`win`) or a widget (`wid`) - one of the two
+// is NULL - into new memory, and returns it: `*w` x `*h` device pixels,
+// BGRA, rows top-down, opaque (anything the target leaves transparent is
+// the window's background). Allocated with MAKE_MEM, freed by the caller.
+// NULL when there is nothing to draw. Works for a covered window; one which
+// is hidden or minimised may come out blank on some platforms.
+REBYTE* Gui_Capture(GUIWIN *win, GUIWIDGET *wid, REBINT *w, REBINT *h);
+
 // Marks a widget as needing paint and returns WITHOUT painting it: the
 // next pump does the drawing, together with everything else which fell
 // due in the meantime.

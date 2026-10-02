@@ -348,6 +348,19 @@ Cocoa flips offsets against the menu-bar screen; the content view answers
   view overlaps `index` with the dimension bitfields, so the index must be
   ignored on both sides.
 
+## Capture
+
+`Gui_Capture` hands back BGRA in memory of its own, which the command copies
+into an image! made with `RL_MAKE_IMAGE`. Windows prints the whole top-level
+window with `PrintWindow(PW_RENDERFULLCONTENT)` (what DWM composes; the plain
+call before Windows 8.1) and cuts out the client area or the widget's box,
+since printing a control alone would miss what its parent paints for it.
+GTK draws the target with `gtk_widget_draw` into a cairo surface at the scale
+factor, over the toplevel's rendered background. macOS uses
+`cacheDisplayInRect:toBitmapImageRep:` into an RGBA rep at the backing
+scale, and lays it over the window's background colour. All three set the
+alpha to 255.
+
 ## Keyboard (Windows)
 
 The host dispatches the OS queue itself (`Query_Events` in `dev-event.c`), so
