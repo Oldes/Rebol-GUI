@@ -1056,6 +1056,87 @@ print ["columns changed, items:" mold spare-lv/items "(expected none)"]
 remove-widget spare-lv
 
 ;;=============================================================================
+print as-yellow "^/== Scroller"
+;;=============================================================================
+
+;; A panel which scrolls. Its children are placed in its content, from the
+;; content's top-left corner, and what there is to scroll is the box they
+;; cover. `scroll` is what of the content is at the scroller's top-left.
+;;
+;; WATCH: a "Scroller" window with the bird at twice its size, in a box with
+;; both scroll bars. The bars, the wheel (Shift for across) and a touchpad
+;; scroll it, and the button and the check go along - and still work:
+;; clicking them logs `click`, the check ticks. No `!! move` notes in
+;; the log while moving over it, whatever it is scrolled to - a child's `at`
+;; follows the scrolling.
+;; WATCH: resizing the window resizes the scroller with it. Made bigger than
+;; the bird, the bars go and the bird stays in the middle (`centered?`), on
+;; the scroller's colour - with no frame lines around or near it; smaller
+;; again, it scrolls from its corner.
+viewer: open-window/title/at/hidden 300x240 "Scroller" 1000x580
+sc:     add-scroller viewer 10x10 280x220
+big:    add-image/size sc bird 0x0 512x512
+;; ON the picture means IN the image widget: as siblings overlapping it, the
+;; image would take their clicks on Windows.
+add-button big "On the picture" 20x20 0x0
+add-check  big "And this" 20x60 0x0
+print ["scroller:" sc/kind "holds:" length? sc/children "(expected scroller 1)"]
+print ["the picture holds:" length? big/children "(expected 2)"]
+print ["starts at the top-left:" sc/scroll "(expected 0x0)"]
+print ["no size of its own:" error? try [add-scroller viewer 0x0 0x0]]
+
+sc/scroll: 100x50
+print ["scrolled from Rebol:" sc/scroll "(expected 100x50)"]
+print ["the offset stays:" big/offset "the at moves:" big/at "(expected 0x0 -90x-40)"]
+;; As far as it goes: the picture less the part which shows - a little less
+;; where the scroll bars take room of their own.
+sc/scroll: 9999x9999
+print ["clamped to the end:" sc/scroll "about 232x292:" within? sc/scroll 232x292 25x25]
+sc/scroll: 'top
+print ["top keeps it across:" sc/scroll/y = 0 sc/scroll/x > 0]
+sc/scroll: 'bottom
+print ["bottom keeps it across:" sc/scroll/y > 0 sc/scroll/x > 0]
+sc/scroll: -5x-5
+print ["and to the start:" sc/scroll "(expected 0x0)"]
+print ["a percent is refused:" error? try [sc/scroll: 50%]]
+
+;; A child further out widens what there is to scroll; removing it, or making
+;; one smaller, narrows it again - and the position with it.
+far: add-button sc "Far" 900x10 0x0
+sc/scroll: 9999x0
+print ["a child further out widens it:" sc/scroll/x > 600]
+remove-widget far
+print ["removed, back within the picture:" sc/scroll/x <= 260]
+big/size: 200x150
+print ["all of it fits, nothing to scroll:" sc/scroll "(expected 0x0)"]
+big/size: 512x512
+print ["a child of a scroller is a child:" big/parent == sc]
+
+;; `centered?` puts content smaller than the visible part in the middle of
+;; it, on that axis. The children keep their offsets; their `at` says where
+;; they ended up. Off by default, and only a scroller has it.
+print ["centered? by default:" sc/centered? "(expected false)"]
+print ["not on other kinds:" none? counter/centered? error? try [counter/centered?: true]]
+sc/centered?: true
+sc/background: 40.44.52
+print ["a scroller has a background:" sc/background "(expected 40.44.52)"]
+
+;; The scroller fills its window - kept so on every `resize`, in `report`.
+fit-viewer: does [sc/size: viewer/size - 20x20]
+fit-viewer
+print ["bigger than the scroller, from its corner:" big/at "(expected 10x10)"]
+viewer/size: 700x600
+fit-viewer   ;; what its `resize` will do too, once it is polled
+print ["smaller, centred:" big/at "offset:" big/offset "scrolled:" sc/scroll]
+print ["  (expected 94x44 0x0 0x0)"]
+sc/centered?: false
+print ["not centred:" big/at "(expected 10x10)"]
+sc/centered?: true
+viewer/size: 300x240
+fit-viewer
+show-window viewer
+
+;;=============================================================================
 print as-yellow "^/== Menu bar"
 ;;=============================================================================
 
@@ -1199,6 +1280,9 @@ report: func [event /local type source position kind col dir][
 			]
 		]]
 	]
+
+	;; The scroller fills its window - see the Scroller section.
+	if all [type = 'resize  source == viewer] [fit-viewer]
 
 	;; WATCH (Windows, two monitors with different scale settings): drag the
 	;; main window from one to the other. It must arrive the same size in

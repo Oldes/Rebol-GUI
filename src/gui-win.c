@@ -425,6 +425,16 @@ static void Keep_Client_Size(HWND hwnd, int was_w, int was_h);
 #ifndef WM_DPICHANGED
 #define WM_DPICHANGED 0x02E0
 #endif
+// The tilt wheel and its setting, for the scroller - Vista and later.
+#ifndef WM_MOUSEHWHEEL
+#define WM_MOUSEHWHEEL 0x020E
+#endif
+#ifndef SPI_GETWHEELSCROLLCHARS
+#define SPI_GETWHEELSCROLLCHARS 0x006C
+#endif
+#ifndef GET_KEYSTATE_WPARAM
+#define GET_KEYSTATE_WPARAM(wp) (LOWORD(wp))
+#endif
 
 static void Free_Font_Cache(void)
 {
@@ -843,6 +853,21 @@ static void Clamp_Into(REBINT *x, REBINT *y, REBINT ax, REBINT ay, REBINT w, REB
 	if (h > 0) { if (*y < ay) *y = ay; else if (*y > ay + h - 1) *y = ay + h - 1; }
 }
 
+// Where a scroller's content is in the scroller: minus the scroll
+// position, or the margin it is centred with - asked of the window itself.
+static REBOOL Content_Origin(GUIWIDGET *scroller, REBINT *x, REBINT *y)
+{
+	RECT r;
+	int  dpi;
+	if (!scroller->handle || !scroller->inner
+	    || !GetWindowRect((HWND)scroller->inner, &r)) return FALSE;
+	MapWindowPoints(NULL, HWND_OF_WID(scroller), (POINT*)&r, 1);
+	dpi = Dpi_Of(HWND_OF_WID(scroller));
+	*x = To_Logical(dpi, r.left);
+	*y = To_Logical(dpi, r.top);
+	return TRUE;
+}
+
 /***********************************************************************
 **  `widget/at`: the offsets up the chain of containers, added.
 **
@@ -858,9 +883,17 @@ REBOOL Gui_Widget_Get_At(GUIWIDGET *wid, REBINT *x, REBINT *y)
 	REBINT ax = 0, ay = 0, bx, by, bw, bh;
 
 	for (at = wid; at; at = (GUIWIDGET*)at->parent) {
+		GUIWIDGET *holder = (GUIWIDGET*)at->parent;
 		if (!Gui_Widget_Get_Box(at, &bx, &by, &bw, &bh)) return FALSE;
 		ax += bx;
 		ay += by;
+		// A scroller's child is placed in its content, which is moved
+		// under the scroller by as much as it is scrolled - or centred.
+		if (holder && holder->kind == W_GUI_WIDGET_SCROLLER
+		    && Content_Origin(holder, &bx, &by)) {
+			ax += bx;
+			ay += by;
+		}
 	}
 	*x = ax;
 	*y = ay;
@@ -1619,6 +1652,12 @@ static void Theme_Control(GUIWIDGET *wid, REBOOL dark)
 	case W_GUI_WIDGET_TEXT_LIST:
 		set(hwnd, dark ? L"DarkMode_Explorer" : NULL, NULL);
 		break;
+	case W_GUI_WIDGET_SCROLLER:
+		// Only the scroll bars to restyle; they are in the frame.
+		set(hwnd, dark ? L"DarkMode_Explorer" : NULL, NULL);
+		SetWindowPos(hwnd, NULL, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE
+		             | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+		break;
 	case W_GUI_WIDGET_LIST_VIEW:
 		// Explorer's own look in the light too, not the classic one: a
 		// whole-row selection with rounded corners, and a highlight under
@@ -1701,6 +1740,13 @@ REBOOL Gui_Window_Dark(GUIWIN *win)
 }
 
 
+// The scroller - see the widgets section.
+static void   Scroller_Layout(GUIWIDGET *wid);
+static void   Scroller_Rescale(GUIWIDGET *wid, int was, int now);
+static void   Scroller_Scroll(GUIWIDGET *wid, int bar, int code);
+static REBOOL Scroller_Wheel(GUIWIDGET *wid, UINT msg, WPARAM wp);
+static REBOOL In_Scroller_Layout = FALSE;
+
 /***********************************************************************
 **  A window moved to a monitor with another scale.
 **
@@ -1760,6 +1806,12 @@ static void Rescale_Window(GUIWIN *win, HWND hwnd, int was, int now, const RECT 
 				SendMessageW(child, WM_SETFONT, (WPARAM)Default_Font_At(now), FALSE);
 			}
 		}
+
+		// A scroller's content is not a widget, so the loop above did not
+		// reach it: its range and place follow the children, rescaled.
+		for (wid = (GUIWIDGET*)win->widgets; wid; wid = (GUIWIDGET*)wid->next)
+			if (wid->handle && wid->kind == W_GUI_WIDGET_SCROLLER)
+				Scroller_Rescale(wid, was, now);
 
 		if (GetClientRect(hwnd, &client)) {
 			cw = MulDiv(client.right - client.left, now, was);
@@ -2464,6 +2516,47 @@ static LRESULT CALLBACK Gui_Panel_Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp
 	if (tab && tab->kind == W_GUI_WIDGET_TAB_PANEL) {
 		if (msg == WM_NOTIFY && Tab_Notify(tab, (NMHDR*)lp)) return 0;
 		if (msg == WM_SIZE) { Tab_Layout(tab); return 0; }
+	}
+
+	// A scroller is two panels - see Gui_Create_Scroller().
+	if (tab && tab->kind == W_GUI_WIDGET_SCROLLER) {
+		if (hwnd != HWND_OF_WID(tab)) {
+			// The inner one covers the scroller's client area, so a move
+			// over it is a move over the scroller: reported as one, from
+			// the scroller's corner. It must not answer HTTRANSPARENT
+			// instead - the hit test would then never reach its children,
+			// the classic trouble with controls put in a group box.
+			if (msg == WM_MOUSEMOVE) {
+				POINT p;
+				p.x = GET_X_LPARAM(lp);
+				p.y = GET_Y_LPARAM(lp);
+				MapWindowPoints(hwnd, HWND_OF_WID(tab), &p, 1);
+				Track_Leave(hwnd);
+				Tip_Relay(hwnd, msg, wp, lp);  // a label's tip is on its container
+				Queue_Widget_Mouse(tab, EVT_MOVE, MAKELPARAM(p.x, p.y), 0);
+				return 0;
+			}
+			if (msg == WM_MOUSELEAVE) {
+				Mouse_Left(hwnd);
+				return 0;
+			}
+		} else switch (msg) {
+		case WM_SIZE:
+			if (!In_Scroller_Layout) Scroller_Layout(tab);
+			return 0;
+		// Its own scroll bars send these with no control in lParam; a
+		// slider inside sends them too, and is passed up below.
+		case WM_HSCROLL:
+		case WM_VSCROLL:
+			if (lp) break;
+			Scroller_Scroll(tab, msg == WM_HSCROLL ? SB_HORZ : SB_VERT, LOWORD(wp));
+			return 0;
+		// Nothing to scroll that way: DefWindowProc hands it to the parent.
+		case WM_MOUSEWHEEL:
+		case WM_MOUSEHWHEEL:
+			if (Scroller_Wheel(tab, msg, wp)) return 0;
+			return DefWindowProcW(hwnd, msg, wp, lp);
+		}
 	}
 
 	switch (msg) {
@@ -4703,8 +4796,10 @@ void Gui_Widget_Set_Background(GUIWIDGET *wid)
 // call, and the kinds allowed there are decided in the shared layer.
 static HWND Parent_Hwnd(GUIWIDGET *wid, GUIWIN *owner)
 {
-	if (wid->parent && ((GUIWIDGET*)wid->parent)->handle)
-		return (HWND)((GUIWIDGET*)wid->parent)->handle;
+	GUIWIDGET *holder = (GUIWIDGET*)wid->parent;
+	if (holder && holder->handle)
+		// A scroller's children go in its content - see below.
+		return (HWND)(holder->inner ? holder->inner : holder->handle);
 	return HWND_OF(owner);
 }
 
@@ -4798,6 +4893,255 @@ void Gui_Panel_Border_Changed(GUIWIDGET *wid)
 	// TRUE erases first: an edge which has just been turned off has to have
 	// its own pixels painted over, not merely stop being drawn.
 	InvalidateRect(HWND_OF_WID(wid), NULL, TRUE);
+}
+
+
+//-- scroller -----------------------------------------------------------------
+//
+// Two panels, one inside the other. The OUTER one is the widget: it has
+// WS_HSCROLL and WS_VSCROLL, and its scroll info holds the range in device
+// pixels. The INNER one (`wid->inner`) holds the children, and is moved to
+// minus the scroll position - so a child keeps its box in the content, and
+// scrolling is one SetWindowPos which carries every child along.
+//
+// Both have the scroller as their GWLP_USERDATA, so the inner one paints
+// the scroller's background through the panel's own Paint_Panel(), and
+// reports the moves over it as the scroller's - see Gui_Panel_Proc().
+
+#define SCROLL_LINE 20   // logical units per line of an arrow or the wheel
+
+/***********************************************************************
+**  The inner panel goes to minus the scroll position - or, `centered?`
+**  and smaller than the visible part, to the middle of it. It reaches
+**  at least to the visible part's right and bottom edges, so its
+**  background fills them; a centred one leaves a margin at the left and
+**  the top, which the outer panel paints with the same background.
+***********************************************************************/
+static void Scroller_Place(GUIWIDGET *wid)
+{
+	HWND       outer, inner;
+	RECT       rc;
+	SCROLLINFO h, v;
+	int        w, ht, x, y, ew, eh;
+	REBOOL     center;
+
+	if (!wid || !wid->handle || !wid->inner) return;
+	outer = HWND_OF_WID(wid);
+	inner = (HWND)wid->inner;
+
+	GetClientRect(outer, &rc);
+	ZeroMemory(&h, sizeof(h));
+	h.cbSize = sizeof(h);
+	h.fMask  = SIF_RANGE | SIF_POS;
+	v = h;
+	GetScrollInfo(outer, SB_HORZ, &h);
+	GetScrollInfo(outer, SB_VERT, &v);
+
+	center = (wid->state & GUI_SCROLL_CENTER) ? TRUE : FALSE;
+	ew = h.nMax + 1;
+	eh = v.nMax + 1;
+	x  = (center && ew < rc.right)  ? (rc.right  - ew) / 2 : -h.nPos;
+	y  = (center && eh < rc.bottom) ? (rc.bottom - eh) / 2 : -v.nPos;
+	w  = ew > rc.right  - x ? ew : rc.right  - x;
+	ht = eh > rc.bottom - y ? eh : rc.bottom - y;
+	SetWindowPos(inner, NULL, x, y, w, ht, SWP_NOZORDER | SWP_NOACTIVATE);
+}
+
+/***********************************************************************
+**  The range from the children, the page from the visible part.
+**
+**  Done twice: a bar which appears takes room from the other direction,
+**  which can make that one need a bar too. Showing or hiding a bar
+**  resizes the client area and so sends WM_SIZE back here, which the
+**  flag turns away - this loop is already dealing with it.
+**
+**  SetScrollInfo clamps the position into the new range by itself, and
+**  hides a bar whose page covers the whole range.
+***********************************************************************/
+static void Scroller_Layout(GUIWIDGET *wid)
+{
+	HWND       outer;
+	RECT       rc;
+	SCROLLINFO si;
+	REBINT     ew = 0, eh = 0;
+	int        dpi, pass;
+
+	if (!wid || !wid->handle || !wid->inner || In_Scroller_Layout) return;
+	outer = HWND_OF_WID(wid);
+	dpi   = Dpi_Of(outer);
+	Gui_Scroller_Extent(wid, &ew, &eh);
+	ew = To_Device(dpi, ew);
+	eh = To_Device(dpi, eh);
+
+	In_Scroller_Layout = TRUE;
+	for (pass = 0; pass < 2; pass++) {
+		GetClientRect(outer, &rc);
+		ZeroMemory(&si, sizeof(si));
+		si.cbSize = sizeof(si);
+		si.fMask  = SIF_RANGE | SIF_PAGE;
+		si.nMin   = 0;
+		si.nMax   = ew > 0 ? ew - 1 : 0;
+		si.nPage  = (UINT)rc.right;
+		SetScrollInfo(outer, SB_HORZ, &si, TRUE);
+		si.nMax   = eh > 0 ? eh - 1 : 0;
+		si.nPage  = (UINT)rc.bottom;
+		SetScrollInfo(outer, SB_VERT, &si, TRUE);
+	}
+	In_Scroller_Layout = FALSE;
+
+	Scroller_Place(wid);
+}
+
+// One bar to a position in device pixels; clamped by Windows.
+static void Scroller_Move_To(GUIWIDGET *wid, int bar, int pos)
+{
+	SCROLLINFO si;
+	ZeroMemory(&si, sizeof(si));
+	si.cbSize = sizeof(si);
+	si.fMask  = SIF_POS;
+	si.nPos   = pos < 0 ? 0 : pos;
+	SetScrollInfo(HWND_OF_WID(wid), bar, &si, TRUE);
+	Scroller_Place(wid);
+}
+
+// What the user did to one of the bars.
+static void Scroller_Scroll(GUIWIDGET *wid, int bar, int code)
+{
+	SCROLLINFO si;
+	HWND       outer = HWND_OF_WID(wid);
+	int        line  = To_Device(Dpi_Of(outer), SCROLL_LINE);
+	int        pos;
+
+	ZeroMemory(&si, sizeof(si));
+	si.cbSize = sizeof(si);
+	si.fMask  = SIF_ALL;
+	if (!GetScrollInfo(outer, bar, &si)) return;
+	pos = si.nPos;
+
+	// The _UP and _LEFT codes are the same numbers, as are _DOWN and _RIGHT.
+	switch (code) {
+	case SB_LINEUP:        pos -= line; break;
+	case SB_LINEDOWN:      pos += line; break;
+	case SB_PAGEUP:        pos -= (int)si.nPage; break;
+	case SB_PAGEDOWN:      pos += (int)si.nPage; break;
+	case SB_THUMBTRACK:
+	case SB_THUMBPOSITION: pos = si.nTrackPos; break;
+	case SB_TOP:           pos = 0; break;
+	case SB_BOTTOM:        pos = si.nMax; break;
+	default: return;       // SB_ENDSCROLL
+	}
+	Scroller_Move_To(wid, bar, pos);
+}
+
+/***********************************************************************
+**  The wheel: vertical, or across with Shift held or from a tilt wheel.
+**  FALSE when there is nothing to scroll that way, so it goes on to the
+**  parent - and to the window's `scroll-line` - as for any control which
+**  does not scroll.
+***********************************************************************/
+static REBOOL Scroller_Wheel(GUIWIDGET *wid, UINT msg, WPARAM wp)
+{
+	SCROLLINFO si;
+	HWND       outer = HWND_OF_WID(wid);
+	REBOOL     across = (msg == WM_MOUSEHWHEEL
+	                     || (GET_KEYSTATE_WPARAM(wp) & MK_SHIFT)) ? TRUE : FALSE;
+	int        bar = across ? SB_HORZ : SB_VERT;
+	UINT       lines = 3;
+	int        step;
+
+	ZeroMemory(&si, sizeof(si));
+	si.cbSize = sizeof(si);
+	si.fMask  = SIF_ALL;
+	if (!GetScrollInfo(outer, bar, &si)) return FALSE;
+	if ((int)si.nPage >= si.nMax - si.nMin + 1) return FALSE; // it all fits
+
+	SystemParametersInfoW(msg == WM_MOUSEHWHEEL ? SPI_GETWHEELSCROLLCHARS
+	                                            : SPI_GETWHEELSCROLLLINES, 0, &lines, 0);
+	if (lines == 0 || lines > 100) lines = 3;   // also covers WHEEL_PAGESCROLL
+	step = MulDiv(GET_WHEEL_DELTA_WPARAM(wp),
+	              (int)lines * To_Device(Dpi_Of(outer), SCROLL_LINE), WHEEL_DELTA);
+
+	// A tilt to the right is positive, a turn away from the user is too.
+	Scroller_Move_To(wid, bar, msg == WM_MOUSEHWHEEL ? si.nPos + step : si.nPos - step);
+	return TRUE;
+}
+
+// The window went to another DPI: the children are rescaled already, and
+// the position follows them.
+static void Scroller_Rescale(GUIWIDGET *wid, int was, int now)
+{
+	int x, y;
+	if (!wid || !wid->handle || !wid->inner || was <= 0) return;
+	x = GetScrollPos(HWND_OF_WID(wid), SB_HORZ);
+	y = GetScrollPos(HWND_OF_WID(wid), SB_VERT);
+	Scroller_Layout(wid);
+	Scroller_Move_To(wid, SB_HORZ, MulDiv(x, now, was));
+	Scroller_Move_To(wid, SB_VERT, MulDiv(y, now, was));
+}
+
+REBOOL Gui_Create_Scroller(GUIWIDGET *wid, GUIWIN *owner,
+                           REBINT x, REBINT y, REBINT w, REBINT h)
+{
+	HWND outer, inner;
+
+	if (!wid || !owner || !owner->handle) return FALSE;
+	Box_To_Device(Dpi_Of(HWND_OF(owner)), &x, &y, &w, &h);
+	if (!Register_Panel_Class()) return FALSE;
+
+	// WS_EX_CONTROLPARENT on both, so Tab descends through them into the
+	// children, as it does into a panel.
+	outer = CreateWindowExW(
+		WS_EX_CONTROLPARENT, Class_Name_Panel, L"",
+		WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | WS_GROUP | WS_HSCROLL | WS_VSCROLL,
+		x, y, w, h,
+		Parent_Hwnd(wid, owner), NULL, App_Instance, NULL);
+	if (!outer) return FALSE;
+	SetWindowLongPtrW(outer, GWLP_USERDATA, (LONG_PTR)wid);
+
+	inner = CreateWindowExW(
+		WS_EX_CONTROLPARENT, Class_Name_Panel, L"",
+		WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN,
+		0, 0, w, h,
+		outer, NULL, App_Instance, NULL);
+	if (!inner) {
+		DestroyWindow(outer);
+		return FALSE;
+	}
+	SetWindowLongPtrW(inner, GWLP_USERDATA, (LONG_PTR)wid);
+
+	wid->handle = (void*)outer;
+	wid->inner  = (void*)inner;
+	Subclass_For_Nav(wid);
+
+	// No range yet: Attach_Widget() asks for the first layout, which hides
+	// the bars until there is something to scroll.
+	return TRUE;
+}
+
+void Gui_Scroller_Update(GUIWIDGET *wid)
+{
+	Scroller_Layout(wid);
+}
+
+REBOOL Gui_Scroller_Get_Pos(GUIWIDGET *wid, REBINT *x, REBINT *y)
+{
+	HWND outer;
+	int  dpi;
+	if (!wid || !wid->handle || !wid->inner) return FALSE;
+	outer = HWND_OF_WID(wid);
+	dpi = Dpi_Of(outer);
+	*x = To_Logical(dpi, GetScrollPos(outer, SB_HORZ));
+	*y = To_Logical(dpi, GetScrollPos(outer, SB_VERT));
+	return TRUE;
+}
+
+void Gui_Scroller_Set_Pos(GUIWIDGET *wid, REBINT x, REBINT y)
+{
+	int dpi;
+	if (!wid || !wid->handle || !wid->inner) return;
+	dpi = Dpi_Of(HWND_OF_WID(wid));
+	Scroller_Move_To(wid, SB_HORZ, To_Device(dpi, x));
+	Scroller_Move_To(wid, SB_VERT, To_Device(dpi, y));
 }
 
 

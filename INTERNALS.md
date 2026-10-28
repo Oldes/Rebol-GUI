@@ -323,6 +323,68 @@ is a fallback for programs that never `wait`.
 - Accelerator lookup runs only for keyboard messages; the window is found by
   class name, not `GWLP_USERDATA`.
 
+## Scroller
+
+Two native views: the widget (`wid->handle`), with the scroll bars, and the
+content (`wid->inner`, a new `GUIWIDGET` field), which holds the children and
+moves under it. Every backend's parent lookup (`Parent_Hwnd`, `Parent_View`,
+`Parent_Box`) puts a scroller's children in `inner`, so a child's box is in
+content coordinates and its `offset` does not change as it scrolls.
+
+The range is not kept: `Gui_Scroller_Extent` in the shared layer walks the
+direct children's boxes each time. The shared layer calls
+`Gui_Scroller_Update` whenever it may have changed - `Attach_Widget`, `size`
+and `offset` on a child or on the scroller, `remove-widget` (with the parent
+saved before `Gui_Widget_Closed` clears it). `scroll` is a pair in logical
+units, clamped by the backend; the words set only y (`bottom` is 1000000,
+far but safe to convert to device pixels). `at` subtracts the position for a
+child of a scroller (Windows: in `Gui_Widget_Get_At`; GTK: `Widget_Origin`
+reads the adjustments; macOS converts through the views anyway).
+
+`centered?` is `GUI_SCROLL_CENTER` in `wid->state`, read by each backend's
+layout; setting it calls `Gui_Scroller_Update`.
+
+- Windows: two `RebolGuiPanel`-class windows with the scroller as
+  `GWLP_USERDATA`. The outer has `WS_HSCROLL | WS_VSCROLL`; its scroll info
+  holds the range in device pixels (`SetScrollInfo` hides a bar whose page
+  covers it, and clamps the position). `Scroller_Layout` sets range and page
+  twice, since one bar showing can make the other necessary; the `WM_SIZE`
+  this sends back is turned away by `In_Scroller_Layout`. The inner panel is
+  moved to minus the position (`Scroller_Place`), at least the client size,
+  and paints the scroller's background through `Paint_Panel`. Its moves are
+  queued as the scroller's, mapped to the outer's corner. It must not answer
+  `HTTRANSPARENT`: the hit test would then skip its children too, as with
+  controls put in a group box.
+  `WM_HSCROLL`/`WM_VSCROLL` with lParam 0 are the outer's own bars; with a
+  control in lParam they are a slider's and go up as before. The wheel
+  (`WM_MOUSEWHEEL`, Shift or `WM_MOUSEHWHEEL` for across) scrolls it, or goes
+  to `DefWindowProc` - on to the parent - when that bar has nothing to
+  scroll. `Rescale_Window` lays scrollers out again after the children, and
+  scales the position. Dark mode: `DarkMode_Explorer` on the outer, with
+  `SWP_FRAMECHANGED` to repaint the bars. Centred, the inner panel goes to
+  the middle instead of minus the position, and the outer panel paints the
+  margin with the same background. `at` reads the inner panel's actual
+  place (`Content_Origin`), not the position.
+- macOS: an `NSScrollView` with automatic scroll bars and no background; the
+  document view is a `RebolGuiPanel` with the scroller as context, so it fills
+  the scroller's colour like a panel. Its size is the extent, at least
+  `contentSize`, set twice around `tile` for legacy scroll bars. The position
+  is the clip view's bounds origin (the document is flipped). Centring is a
+  clip view of our own (`RebolGuiClipView`) whose `constrainBoundsRect:`
+  gives a smaller document a negative origin; the document is then sized to
+  the extent alone, and the scroll view draws the scroller's colour around
+  it. A negative origin reads as 0.
+- GTK: a `GtkScrolledWindow` around a `RebolGuiBox` of role `ROLE_SCROLL`, in
+  the viewport GTK adds. The box asks for the extent as its minimum and
+  natural size (`nat_w`/`nat_h`), which the viewport scrolls. Position reads
+  and writes lay a hidden window out first (`Layout_Window(win, FALSE)`), as
+  the adjustments are only set by an allocation. Centring keeps the box
+  filling the viewport, so its colour fills it, and moves the children by
+  `shift_x`/`shift_y`, set in its allocation; `Widget_Origin` adds them, and
+  `at` lays a hidden window out for them. The event hook leaves the
+  wheel to a scroller around the pointer while it has something to scroll
+  (`Scroller_Takes_Wheel`).
+
 ## Window icon
 
 `icon` keeps the image! in the window's slots (`[2]`, `SLOT_ICON`) so it

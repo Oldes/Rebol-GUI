@@ -14,6 +14,7 @@ REBOL [
 		add-text-list add-date-field add-line add-tab-panel within? popup-menu
 		add-list-view
 		caps-lock?
+		add-scroller
 		gui-device gui-device-polls gui-device-events
 		gui-device-pumps gui-device-messages
 		poll-events do-events
@@ -21,8 +22,8 @@ REBOL [
 	Purpose: {
 		A minimal, GOB-free windowing extension.
 
-		It opens native windows and puts native controls in them - eighteen
-		kinds, from a button to a list-view - with menus, drag and drop,
+		It opens native windows and puts native controls in them - nineteen
+		kinds, from a button to a scroller - with menus, drag and drop,
 		tooltips and screen information, on Windows, macOS and Linux. There
 		is no compositor, no DRAW dialect and no dependency on the host's
 		View sources: custom drawing is rendered into an image! by whatever
@@ -207,6 +208,10 @@ typedef struct Gui_Widget_Context {
 	                 // with `background` given two colours; `background`
 	                 // itself then keeps what the empty part below the rows
 	                 // is painted with
+	void   *inner;   // scroller: the native view its children are put in,
+	                 // which moves under the scroller's own box as it
+	                 // scrolls (HWND / NSView* / GtkWidget*); NULL for
+	                 // every other kind
 } GUIWIDGET;
 
 #define GUIW_VISIBLE       1
@@ -238,6 +243,12 @@ typedef struct Gui_Widget_Context {
 // wid->state of a list-view: its last column was given a width of none, so
 // it fills the room the others leave, and keeps filling it on a resize
 #define GUI_LIST_FILL 2
+
+// wid->state of a scroller: `centered?` - content smaller than the visible
+// part is put in the middle of it, on that axis. NOT 1: a scroller's views
+// are painted by the panel's own code, which reads 1 as GUI_PANEL_BORDER
+// and would draw a frame
+#define GUI_SCROLL_CENTER 4
 
 // Whether a list-view's rows are striped - see GUIWIDGET.rows.
 #define GUI_LIST_STRIPED(wid) (GUI_COLOR_HAS((wid)->rows[0]) || GUI_COLOR_HAS((wid)->rows[1]))
@@ -374,6 +385,7 @@ words: [
 		line            ;; a static separator, horizontal or vertical; reports nothing
 		tab-panel       ;; tabs, each with a page (a panel) of its own; reports `change`
 		list-view       ;; a table of rows under column headers; reports `change`, `click` and `sort`
+		scroller        ;; holds other widgets, and scrolls them when they do not fit
 	]
 	;; What a `theme-change` event carries in `code`.
 	theme: [
@@ -439,7 +451,7 @@ handles: [
 		offset   pair!     pair!     "Position inside whatever holds it - a window or a panel"
 		at       pair!     none      "Top-left corner in its window's client area, however deeply nested - what a mouse event's offset is measured from"
 		id       integer!  none      "Native control handle as an integer"
-		kind     word!     none      "What the control is: button, image, text, field, area, check, radio, toggle, slider, progress, drop-list, drop-down, text-list, date-field, panel, line, tab-panel or list-view"
+		kind     word!     none      "What the control is: button, image, text, field, area, check, radio, toggle, slider, progress, drop-list, drop-down, text-list, date-field, panel, line, tab-panel, list-view or scroller"
 		value    [percent! date!] [percent! decimal! date!] "Position of a slider or a progress bar; the date of a date-field, with its time of day when made with `/time`; none for other kinds"
 		state    logic!    logic!    "Whether a check, a radio or a toggle is on; none for other kinds"
 		border?  logic!    logic!    "Whether a panel draws a frame around itself, or a field, an area, a text-list or a list-view its border; none for other kinds"
@@ -449,12 +461,12 @@ handles: [
 		bold?     logic!   logic!    "Whether the text is bold"
 		italic?   logic!   logic!    "Whether the text is italic"
 		color     tuple!   [tuple! none!] "Text colour; none lets the platform decide"
-		background [tuple! block!] [tuple! block! none!] "Colour painted behind the text; none lets the platform decide. A list-view also takes two colours in a block, which its rows alternate between - either may be none, for the platform's own"
+		background [tuple! block!] [tuple! block! none!] "Colour painted behind the text, or under a scroller's content; none lets the platform decide. A list-view also takes two colours in a block, which its rows alternate between - either may be none, for the platform's own"
 		transparent? logic! logic!        "Whether nothing is painted behind it at all, so whatever the widget sits on shows through"
 		children  block!   none      "Widgets a container holds, in the order they were added; none for a kind which cannot hold any"
 		read-only? logic!  logic!    "Whether a field or an area refuses to be edited while staying selectable; none for other kinds"
 		focused?  logic!   none      "Whether it currently has the keyboard focus"
-		scroll    percent!  [percent! decimal! word! integer!] "How far an area, a text-list or a list-view is scrolled; set a percent, or one of top, bottom and end; an integer brings that item or row into view; none for kinds which do not scroll"
+		scroll    [percent! pair!] [percent! decimal! word! integer! pair!] "How far an area, a text-list or a list-view is scrolled; set a percent, or one of top, bottom and end; an integer brings that item or row into view. A scroller's is a pair: what of its content is at its top-left corner. None for kinds which do not scroll"
 		group    integer!  none      "Which radio group it belongs to; for a tab-panel's page, which tab it is; 0 for everything else"
 		enabled? logic!    logic!    "Whether the control responds to the user"
 		tip      string!   [string! none!] "Text the platform shows when the pointer rests on it; none for no tip"
@@ -464,6 +476,7 @@ handles: [
 		secure?  logic!    none      "Whether a field masks what is typed - made with `/secure`; none for other kinds"
 		columns  block!    block!    "A list-view's columns: each a title, its width and, unless left, its alignment (center or right); a width of none fits the title, or fills the rest on the last shown column; 0 hides it, while its values stay in the rows; setting a different number of columns clears `items`; none for other kinds"
 		sort-column integer! [integer! none!] "Which list-view column shows the sort arrow, 1-based, negative for descending; none for no arrow. Only the arrow - sorting `items` is the script's"
+		centered? logic!   logic!    "Whether a scroller puts its content in the middle while it is smaller than the visible part, rather than at the top-left; off by default; none for other kinds"
 	]
 	screen: [
 		"GUI screen handle - one display; every read asks the platform again"
@@ -499,7 +512,7 @@ commands: [
 	poll-events:  ["Dispatches pending OS messages and returns the collected events"]
 	add-button: [
 		"Creates a native push button and returns its handle"
-		parent [handle!] "Window, panel or image widget to put it in"
+		parent [handle!] "Window, panel, scroller or image widget to put it in"
 		text   [string!] "Label"
 		offset [pair!]   "Position inside the parent"
 		size   [pair!]   "Size of the button"
@@ -507,7 +520,7 @@ commands: [
 	remove-widget: ["Destroys a widget" widget [handle!]]
 	add-image: [
 		"Creates an image widget and returns its handle"
-		parent [handle!] "Window, panel or image widget to put it in"
+		parent [handle!] "Window, panel, scroller or image widget to put it in"
 		image  [image!]  "Shown as is; the widget keeps a reference, not a copy"
 		offset [pair!]   "Position inside the parent"
 		/size sz [pair!] "Scales the image to this size (default: the image's own)"
@@ -518,14 +531,14 @@ commands: [
 	]
 	add-text: [
 		"Creates a static label and returns its handle"
-		parent [handle!] "Window, panel or image widget to put it in"
+		parent [handle!] "Window, panel, scroller or image widget to put it in"
 		text   [string!]
 		offset [pair!]   "Position inside the parent"
 		size   [pair!]
 	]
 	add-field: [
 		"Creates a one-line text entry and returns its handle"
-		parent [handle!] "Window, panel or image widget to put it in"
+		parent [handle!] "Window, panel, scroller or image widget to put it in"
 		text   [string!] "Initial contents"
 		offset [pair!]   "Position inside the parent"
 		size   [pair!]
@@ -534,7 +547,7 @@ commands: [
 	]
 	add-area: [
 		"Creates a multi-line text entry and returns its handle"
-		parent [handle!] "Window, panel or image widget to put it in"
+		parent [handle!] "Window, panel, scroller or image widget to put it in"
 		text   [string!] "Initial contents"
 		offset [pair!]   "Position inside the parent"
 		size   [pair!]
@@ -542,14 +555,14 @@ commands: [
 	]
 	add-check: [
 		"Creates a checkbox and returns its handle"
-		parent [handle!] "Window, panel or image widget to put it in"
+		parent [handle!] "Window, panel, scroller or image widget to put it in"
 		text   [string!] "Label"
 		offset [pair!]   "Position inside the parent"
 		size   [pair!]
 	]
 	add-radio: [
 		"Creates a radio button and returns its handle"
-		parent [handle!] "Window, panel or image widget to put it in"
+		parent [handle!] "Window, panel, scroller or image widget to put it in"
 		text   [string!] "Label"
 		offset [pair!]   "Position inside the parent"
 		size   [pair!]
@@ -557,21 +570,21 @@ commands: [
 	]
 	add-slider: [
 		"Creates a slider and returns its handle"
-		parent [handle!] "Window, panel or image widget to put it in"
+		parent [handle!] "Window, panel, scroller or image widget to put it in"
 		offset [pair!] "Position inside the parent"
 		size   [pair!] "Taller than wide makes it vertical"
 		/value val [percent! decimal!] "Initial position (default: 0%)"
 	]
 	add-progress: [
 		"Creates a progress bar and returns its handle"
-		parent [handle!] "Window, panel or image widget to put it in"
+		parent [handle!] "Window, panel, scroller or image widget to put it in"
 		offset [pair!] "Position inside the parent"
 		size   [pair!]
 		/value val [percent! decimal!] "Initial position (default: 0%)"
 	]
 	add-drop-list: [
 		"Creates a drop-list - pick one of a list behind a button - and returns its handle"
-		parent [handle!] "Window, panel or image widget to put it in"
+		parent [handle!] "Window, panel, scroller or image widget to put it in"
 		items  [block!] "Strings to offer"
 		offset [pair!]  "Position inside the parent"
 		size   [pair!]  "Of the closed control; room for the list is added"
@@ -579,7 +592,7 @@ commands: [
 	]
 	add-panel: [
 		"Creates a panel - a widget which holds other widgets - and returns its handle"
-		parent [handle!] "Window, panel or image widget to put it in"
+		parent [handle!] "Window, panel, scroller or image widget to put it in"
 		offset [pair!]   "Position inside the parent"
 		size   [pair!]
 		/border "Draws a frame around it"
@@ -618,7 +631,7 @@ commands: [
 
 	add-toggle: [
 		"Creates a toggle - a push button which stays pushed - and returns its handle"
-		parent [handle!] "Window, panel or image widget to put it in"
+		parent [handle!] "Window, panel, scroller or image widget to put it in"
 		text   [string!] "Label"
 		offset [pair!]   "Position inside the parent"
 		size   [pair!]
@@ -626,7 +639,7 @@ commands: [
 
 	add-text-list: [
 		"Creates a list of strings in a fixed box, which scrolls when they do not fit, and returns its handle"
-		parent [handle!] "Window, panel or image widget to put it in"
+		parent [handle!] "Window, panel, scroller or image widget to put it in"
 		items  [block!]  "Strings to show"
 		offset [pair!]   "Position inside the parent"
 		size   [pair!]
@@ -636,7 +649,7 @@ commands: [
 
 	add-date-field: [
 		"Creates an entry for a date, and optionally a time of day, and returns its handle"
-		parent [handle!] "Window, panel or image widget to put it in"
+		parent [handle!] "Window, panel, scroller or image widget to put it in"
 		offset [pair!]   "Position inside the parent"
 		size   [pair!]
 		/date  when [date!] "Date (and time) to start with (default: now)"
@@ -645,7 +658,7 @@ commands: [
 
 	add-drop-down: [
 		"Creates an editable combo box - a drop-down list which also takes typed text - and returns its handle"
-		parent [handle!] "Window, panel or image widget to put it in"
+		parent [handle!] "Window, panel, scroller or image widget to put it in"
 		items  [block!] "Strings to offer"
 		offset [pair!]  "Position inside the parent"
 		size   [pair!]  "Of the closed control; room for the list is added"
@@ -654,14 +667,14 @@ commands: [
 
 	add-line: [
 		"Creates a separator line - a static etched rule - and returns its handle"
-		parent [handle!] "Window, panel or image widget to put it in"
+		parent [handle!] "Window, panel, scroller or image widget to put it in"
 		offset [pair!]   "Position inside the parent"
 		size   [pair!]   "Wider than tall makes it horizontal; a zero axis is the line's own thickness"
 	]
 
 	add-tab-panel: [
 		"Creates a tab-panel - a page per tab, only the picked one shown - and returns its handle"
-		parent [handle!] "Window, panel or image widget to put it in"
+		parent [handle!] "Window, panel, scroller or image widget to put it in"
 		labels [block!]  "Tab labels; a page (a panel) is made for each, in `children`"
 		offset [pair!]   "Position inside the parent"
 		size   [pair!]   "Of the whole control, tabs included"
@@ -684,7 +697,7 @@ commands: [
 
 	add-list-view: [
 		"Creates a table - rows of cells under column headers - and returns its handle"
-		parent  [handle!] "Window, panel or image widget to put it in"
+		parent  [handle!] "Window, panel, scroller or image widget to put it in"
 		columns [block!]  "Column titles, each optionally followed by its width (integer!, 0 to hide it, or none: fit the title, or fill the rest on the last shown column) and alignment (left, center or right)"
 		offset  [pair!]   "Position inside the parent"
 		size    [pair!]
@@ -694,6 +707,13 @@ commands: [
 	]
 
 	caps-lock?: ["Returns TRUE if Caps Lock is on"]
+
+	add-scroller: [
+		"Creates a scroller - a box which holds other widgets and scrolls them when they do not fit - and returns its handle"
+		parent [handle!] "Window, panel, scroller or image widget to put it in"
+		offset [pair!]   "Position inside the parent"
+		size   [pair!]   "Of the visible part, scroll bars included"
+	]
 ]
 
 ;; ---------------------------------------------------------------------------

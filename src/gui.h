@@ -157,7 +157,7 @@ REBCNT Gui_Event_Count(void);
 ***********************************************************************/
 #define Kind_Is_Container(k) \
     ((k) == W_GUI_WIDGET_PANEL || (k) == W_GUI_WIDGET_IMAGE \
-     || (k) == W_GUI_WIDGET_TAB_PANEL)
+     || (k) == W_GUI_WIDGET_TAB_PANEL || (k) == W_GUI_WIDGET_SCROLLER)
 
 /***********************************************************************
 **  Modal dialogs.
@@ -615,6 +615,51 @@ REBOOL  Gui_Create_Panel(GUIWIDGET *wid, GUIWIN *owner,
 // Repaints a panel after its edge or caption changed. A backend which draws
 // the frame in its own paint handler only has to invalidate.
 void    Gui_Panel_Border_Changed(GUIWIDGET *wid);
+
+
+/***********************************************************************
+**  scroller - a box which holds other widgets and scrolls them.
+**
+**  Two native views: the one which is the widget (`wid->handle`), with
+**  the scroll bars, and one inside it (`wid->inner`) which holds the
+**  children and is moved under it as it scrolls. A backend creates both,
+**  and puts a child whose `parent` is a scroller into the inner one -
+**  so a child's box is in the scroller's CONTENT coordinates, and its
+**  `offset` does not change as it scrolls. `at` does, since it is where
+**  the child is in the window.
+**
+**  What there is to scroll is the box the children cover, from the
+**  content's top-left corner: Gui_Scroller_Extent() works it out from
+**  their boxes, every time it is asked, in logical units. The shared
+**  layer calls Gui_Scroller_Update() whenever that may have changed - a
+**  child added, moved, resized or removed, the scroller resized - and
+**  the backend sets its range from it then. The inner view is never
+**  smaller than the visible part, so a background fills it.
+**
+**  With GUI_SCROLL_CENTER in `wid->state` (`centered?`, changed by the
+**  shared layer, which calls Gui_Scroller_Update then), content smaller
+**  than the visible part on an axis is put in the middle on that axis -
+**  the box from the content's corner to the extent, not the children's
+**  own bounding box. The children keep their boxes; their `at` says
+**  where they ended up. Whatever shows around the content is painted
+**  with the scroller's background, as the content is.
+**
+**  The position is in logical units too: what of the content is at the
+**  scroller's top-left corner, 0 on an axis where it all fits. Set_Pos
+**  clamps it to the range. Neither
+**  the user scrolling nor a script reports an event. The wheel over a
+**  scroller scrolls it, and is not reported either while it has
+**  something to scroll in that direction.
+***********************************************************************/
+REBOOL  Gui_Create_Scroller(GUIWIDGET *wid, GUIWIN *owner,
+                            REBINT x, REBINT y, REBINT w, REBINT h);
+void    Gui_Scroller_Update(GUIWIDGET *wid);
+REBOOL  Gui_Scroller_Get_Pos(GUIWIDGET *wid, REBINT *x, REBINT *y);
+void    Gui_Scroller_Set_Pos(GUIWIDGET *wid, REBINT x, REBINT y);
+
+// Provided by the SHARED layer: the box a scroller's children cover, from
+// its content's top-left corner. 0x0 when it holds nothing.
+void    Gui_Scroller_Extent(GUIWIDGET *wid, REBINT *w, REBINT *h);
 
 REBCNT  Gui_Widget_Count_Items(GUIWIDGET *wid);
 REBSER* Gui_Widget_Get_Item(GUIWIDGET *wid, REBCNT n);   // 0-based

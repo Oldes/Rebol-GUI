@@ -1162,6 +1162,7 @@ void Gui_Widget_Closed(GUIWIDGET *widget)
 		widget->owner = NULL;
 	}
 	widget->handle = NULL;
+	widget->inner  = NULL;
 	widget->parent = NULL;
 	widget->next   = NULL;
 	Release_Handle(widget->hob);
@@ -1233,6 +1234,7 @@ void Gui_Window_Closed(REBHOB *window)
 		while (widget) {
 			GUIWIDGET *next = (GUIWIDGET*)widget->next;
 			widget->handle = NULL;
+			widget->inner  = NULL;
 			widget->owner  = NULL;
 			widget->next   = NULL;
 			Release_Handle(widget->hob);
@@ -1374,6 +1376,7 @@ static REBOOL Kind_Takes_Focus(REBCNT kind)
 	     || kind == W_GUI_WIDGET_PANEL     // a container
 	     || kind == W_GUI_WIDGET_LINE      // decoration
 	     || kind == W_GUI_WIDGET_TAB_PANEL // a container; its tabs are reached with Tab
+	     || kind == W_GUI_WIDGET_SCROLLER  // a container; the mouse and the wheel scroll it
 	     || kind == W_GUI_WIDGET_PROGRESS) // shows a value, takes no input
 		? FALSE : TRUE;
 }
@@ -1703,6 +1706,7 @@ static REBOOL Kind_Has_Enabled(REBCNT kind)
 	     && kind != W_GUI_WIDGET_PROGRESS
 	     && kind != W_GUI_WIDGET_LINE      // decoration, nothing to operate
 	     && kind != W_GUI_WIDGET_TAB_PANEL // a container, as a panel
+	     && kind != W_GUI_WIDGET_SCROLLER  // likewise
 	     && kind != W_GUI_WIDGET_PANEL) ? TRUE : FALSE;
 }
 
@@ -1738,6 +1742,7 @@ static const char* Kind_Name(REBCNT kind)
 	case W_GUI_WIDGET_LINE:      return "line";
 	case W_GUI_WIDGET_TAB_PANEL: return "tab-panel";
 	case W_GUI_WIDGET_LIST_VIEW: return "list-view";
+	case W_GUI_WIDGET_SCROLLER:  return "scroller";
 	default:                 return "button";
 	}
 }
@@ -1782,7 +1787,9 @@ static GUIWIN* Frm_Parent(RXIFRM *frm, REBCNT n, GUIWIDGET **container)
 	//
 	// Nothing else: a button with children inside it is not a thing, and
 	// the native control would not clip or move them.
-	if (wid->kind != W_GUI_WIDGET_PANEL && wid->kind != W_GUI_WIDGET_IMAGE)
+	// A SCROLLER is a panel which scrolls what it holds.
+	if (wid->kind != W_GUI_WIDGET_PANEL && wid->kind != W_GUI_WIDGET_IMAGE
+	    && wid->kind != W_GUI_WIDGET_SCROLLER)
 		return NULL;
 
 	*container = wid;
@@ -1816,6 +1823,11 @@ static GUIWIN* Frm_Parent(RXIFRM *frm, REBCNT n, GUIWIDGET **container)
 #define Kind_Has_Font(kind) \
 	(Kind_Has_Text(kind) && (kind) != W_GUI_WIDGET_TAB_PANEL)
 
+// Which kinds take a `background` colour: those, and a scroller, which
+// has no text but a content to fill.
+#define Kind_Has_Background(kind) \
+	(Kind_Has_Font(kind) || (kind) == W_GUI_WIDGET_SCROLLER)
+
 /***********************************************************************
 **  Gives a widget the size its own content asks for, on the axes named.
 **
@@ -1847,6 +1859,44 @@ static REBOOL Fit_To_Content(GUIWIDGET *wid, REBOOL fit_w, REBOOL fit_h)
 	Gui_Widget_Set_Box(wid, x, y, w, h);
 	return TRUE;
 }
+
+/***********************************************************************
+**  The box a scroller's children cover, from its content's top-left
+**  corner - what there is to scroll. Worked out from their boxes each
+**  time, so nothing is kept which could drift from what is on screen.
+**  Immediate children only: what a panel inside holds is inside the
+**  panel's own box. See gui.h.
+***********************************************************************/
+void Gui_Scroller_Extent(GUIWIDGET *scroller, REBINT *w, REBINT *h)
+{
+	GUIWIDGET *wid;
+	REBINT x, y, cw, ch;
+
+	*w = 0;
+	*h = 0;
+	if (!scroller || !scroller->owner) return;
+	for (wid = (GUIWIDGET*)scroller->owner->widgets; wid; wid = (GUIWIDGET*)wid->next) {
+		if ((GUIWIDGET*)wid->parent != scroller || !wid->handle) continue;
+		if (!Gui_Widget_Get_Box(wid, &x, &y, &cw, &ch)) continue;
+		if (x + cw > *w) *w = x + cw;
+		if (y + ch > *h) *h = y + ch;
+	}
+}
+
+/***********************************************************************
+**  A widget's box changed, or it came or went: a scroller holding it
+**  has a new range, and a scroller ITSELF a new visible part. `parent`
+**  is passed rather than read, because a removed widget no longer has
+**  one by the time this is called.
+***********************************************************************/
+static void Scroller_Changed(GUIWIDGET *wid, GUIWIDGET *parent)
+{
+	if (parent && parent->kind == W_GUI_WIDGET_SCROLLER && parent->handle)
+		Gui_Scroller_Update(parent);
+	if (wid && wid->kind == W_GUI_WIDGET_SCROLLER && wid->handle)
+		Gui_Scroller_Update(wid);
+}
+
 
 /***********************************************************************
 **  Links a new widget to its window, and finishes it off.
@@ -1887,6 +1937,9 @@ static void Attach_Widget(GUIWIDGET *wid, GUIWIN *win, REBINT w, REBINT h)
 	// asking a container how big its contents are, and there is no answer
 	// to that at this level.
 	Fit_To_Content(wid, w <= 0 ? TRUE : FALSE, h <= 0 ? TRUE : FALSE);
+
+	// Its final box is known now, so a scroller holding it can take it in.
+	Scroller_Changed(wid, (GUIWIDGET*)wid->parent);
 
 	// Invalidate, do not paint. A script builds its whole layout with
 	// nothing pumping in between, so painting here would make the window
@@ -2753,17 +2806,70 @@ COMMAND cmd_gui_add_panel(RXIFRM *frm, void *ctx)
 COMMAND cmd_gui_remove_widget(RXIFRM *frm, void *ctx)
 {
 	GUIWIDGET *wid = Frm_Widget(frm, 1);
+	GUIWIDGET *parent;
 
 	if (!wid) RETURN_ERROR(ERR_INVALID_HANDLE);
 
 	if (wid->handle) {
+		parent = (GUIWIDGET*)wid->parent; // cleared by Gui_Widget_Closed
 		// A panel takes its contents with it, so their handles are told
 		// before the native control - and everything under it - is gone.
 		if (Kind_Is_Container(wid->kind)) Close_Contents_Of(wid);
 		Gui_Destroy_Widget(wid); // the native control
 		Gui_Widget_Closed(wid);  // the Rebol side of it
+		Scroller_Changed(NULL, parent);
 	}
 	return RXR_TRUE;
+}
+
+
+/***********************************************************************
+**  add-scroller parent [handle!] offset [pair!] size [pair!]
+**
+**  A panel which scrolls: what it holds can be bigger than it is, and
+**  scroll bars appear while it is. Children are positioned in its
+**  CONTENT, from the content's top-left corner, so their `offset`s do
+**  not change as it scrolls. See gui.h.
+**
+**  Like a panel, it has no size of its own to give, so both axes must
+**  be given.
+***********************************************************************/
+COMMAND cmd_gui_add_scroller(RXIFRM *frm, void *ctx)
+{
+	REBHOB    *hob;
+	GUIWIDGET *wid;
+	GUIWIDGET *panel = NULL;
+	GUIWIN    *win = Frm_Parent(frm, 1, &panel);
+	REBINT     x, y, w, h;
+
+	if (!win || !win->handle) RETURN_ERROR(ERR_INVALID_HANDLE);
+
+	x = (REBINT)RXA_PAIR(frm, 2).x;
+	y = (REBINT)RXA_PAIR(frm, 2).y;
+	w = (REBINT)RXA_PAIR(frm, 3).x;
+	h = (REBINT)RXA_PAIR(frm, 3).y;
+	if (w <= 0 || h <= 0) RETURN_ERROR(ERR_BAD_SIZE);
+
+	hob = RL_MAKE_HANDLE_CONTEXT(Handle_GuiWidget);
+	if (hob == NULL) RETURN_ERROR(ERR_NO_HANDLE);
+
+	wid = (GUIWIDGET*)hob->data;
+	CLEARS(wid); // every field defined, whatever the pool handed back
+	wid->hob    = hob;
+	wid->kind   = W_GUI_WIDGET_SCROLLER;
+	wid->owner  = win;
+	wid->parent = panel;
+
+	if (!Gui_Create_Scroller(wid, win, x, y, w, h)) {
+		wid->owner  = NULL;
+		wid->parent = NULL;
+		RL_FREE_HANDLE_CONTEXT(hob);
+		RETURN_ERROR(ERR_NO_WIDGET);
+	}
+
+	Attach_Widget(wid, win, w, h);
+
+	RETURN_HANDLE(hob);
 }
 
 
@@ -4134,7 +4240,7 @@ int GuiWidget_get_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 			*type = RXT_BLOCK;
 			break;
 		}
-		if (!Kind_Has_Font(wid->kind) || !GUI_COLOR_HAS(wid->background)) {
+		if (!Kind_Has_Background(wid->kind) || !GUI_COLOR_HAS(wid->background)) {
 			*type = RXT_NONE;
 			break;
 		}
@@ -4208,6 +4314,15 @@ int GuiWidget_get_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 	// reports its position, because it is the same kind of answer.
 	case W_GUI_ARG_SCROLL: {
 		REBDEC at;
+		// A scroller's is a place in its content, not a fraction: it
+		// scrolls both ways, by any amount.
+		if (wid->kind == W_GUI_WIDGET_SCROLLER) {
+			if (!Gui_Scroller_Get_Pos(wid, &x, &y)) { *type = RXT_NONE; break; }
+			arg->pair.x = (float)x;
+			arg->pair.y = (float)y;
+			*type = RXT_PAIR;
+			break;
+		}
 		if (!Kind_Scrolls(wid->kind)) { *type = RXT_NONE; break; }
 		at = Gui_Widget_Get_Scroll(wid);
 		if (at < 0.0) { *type = RXT_NONE; break; }
@@ -4241,6 +4356,12 @@ int GuiWidget_get_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 		if (wid->kind != W_GUI_WIDGET_LIST_VIEW || wid->sort == 0) { *type = RXT_NONE; break; }
 		*type = RXT_INTEGER;
 		arg->int64 = (i64)wid->sort;
+		break;
+
+	case W_GUI_ARG_CENTEREDQ:
+		if (wid->kind != W_GUI_WIDGET_SCROLLER) { *type = RXT_NONE; break; }
+		*type = RXT_LOGIC;
+		arg->int32a = (wid->state & GUI_SCROLL_CENTER) ? 1 : 0;
 		break;
 
 	case W_GUI_ARG_SIZE:
@@ -4444,13 +4565,18 @@ int GuiWidget_set_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 
 		// An image or a panel has no size of its own to report, so asking
 		// one is refused rather than quietly ignored.
-		if (!Fit_To_Content(wid, fit_w, fit_h)) return PE_BAD_SET;
+		if (!Fit_To_Content(wid, fit_w, fit_h)) {
+			Scroller_Changed(wid, (GUIWIDGET*)wid->parent);
+			return PE_BAD_SET;
+		}
+		Scroller_Changed(wid, (GUIWIDGET*)wid->parent);
 		break; }
 
 	case W_GUI_ARG_OFFSET:
 		if (*type != RXT_PAIR) return PE_BAD_SET_TYPE;
 		if (!Gui_Widget_Get_Box(wid, &x, &y, &w, &h)) return PE_BAD_SET;
 		Gui_Widget_Set_Box(wid, (REBINT)arg->pair.x, (REBINT)arg->pair.y, w, h);
+		Scroller_Changed(NULL, (GUIWIDGET*)wid->parent);
 		break;
 
 	case W_GUI_ARG_STATE:
@@ -4534,7 +4660,7 @@ int GuiWidget_set_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 		break;
 
 	case W_GUI_ARG_BACKGROUND:
-		if (!Kind_Has_Font(wid->kind)) return PE_BAD_SET;
+		if (!Kind_Has_Background(wid->kind)) return PE_BAD_SET;
 		// One colour, or none, takes the stripes off a list-view.
 		wid->rows[0] = wid->rows[1] = 0;
 		if (*type == RXT_BLOCK && wid->kind == W_GUI_WIDGET_LIST_VIEW) {
@@ -4631,6 +4757,32 @@ int GuiWidget_set_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 	case W_GUI_ARG_SCROLL: {
 		REBDEC where;
 
+		/***************************************************************
+		**  A scroller takes a place in its content - a pair - or the
+		**  words, which move it to the top or the bottom and leave it
+		**  where it is across. The backend clamps, so the bottom is just
+		**  "far enough": far, but not so far that converting it to
+		**  device pixels could overflow.
+		***************************************************************/
+		if (wid->kind == W_GUI_WIDGET_SCROLLER) {
+			if (!Gui_Scroller_Get_Pos(wid, &x, &y)) return PE_BAD_SET;
+			if (*type == RXT_PAIR) {
+				x = (REBINT)arg->pair.x;
+				y = (REBINT)arg->pair.y;
+			} else if (*type == RXT_WORD) {
+				switch (RL_FIND_WORD(Gui_scroll_words, (REBCNT)arg->int32a)) {
+				case W_GUI_SCROLL_TOP:    y = 0; break;
+				case W_GUI_SCROLL_BOTTOM:
+				case W_GUI_SCROLL_END:    y = 1000000; break;
+				default: return PE_BAD_SET;
+				}
+			} else {
+				return PE_BAD_SET_TYPE;
+			}
+			Gui_Scroller_Set_Pos(wid, x < 0 ? 0 : x, y < 0 ? 0 : y);
+			break;
+		}
+
 		if (!Kind_Scrolls(wid->kind)) return PE_BAD_SET;
 
 		if (*type == RXT_WORD) {
@@ -4682,6 +4834,15 @@ int GuiWidget_set_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 		wid->sort = (REBINT)n;
 		Gui_List_Show_Sort(wid);
 		break; }
+
+	// Kept here and read by the backend's layout - see gui.h.
+	case W_GUI_ARG_CENTEREDQ:
+		if (wid->kind != W_GUI_WIDGET_SCROLLER) return PE_BAD_SET;
+		if (*type != RXT_LOGIC) return PE_BAD_SET_TYPE;
+		if (arg->int32a) wid->state |=  GUI_SCROLL_CENTER;
+		else             wid->state &= ~GUI_SCROLL_CENTER;
+		Gui_Scroller_Update(wid);
+		break;
 
 	case W_GUI_ARG_SCROLLABLEQ:
 		if (wid->kind != W_GUI_WIDGET_TEXT_LIST) return PE_BAD_SET;

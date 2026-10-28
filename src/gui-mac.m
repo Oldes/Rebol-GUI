@@ -88,6 +88,7 @@
 #define RebolGuiDatePicker GUI_CLASS(DatePicker)
 #define RebolGuiPanel     GUI_CLASS(Panel)
 #define RebolGuiTabView   GUI_CLASS(TabView)
+#define RebolGuiClipView  GUI_CLASS(ClipView)
 #define RebolGuiWindow    GUI_CLASS(Window)
 #define NSWINDOW_OF(win) ((NSWindow*)((win)->handle))
 #define NSPANEL_OF(wid)  ((RebolGuiPanel*)((wid)->handle))
@@ -2692,8 +2693,10 @@ REBOOL Gui_Window_Set_Icon(GUIWIN *win, const REBYTE *bgra, REBINT w, REBINT h)
 // content view. `wid->parent` is set before any creation call.
 static NSView* Parent_View(GUIWIDGET *wid, GUIWIN *owner)
 {
-	if (wid->parent && ((GUIWIDGET*)wid->parent)->handle)
-		return (NSView*)((GUIWIDGET*)wid->parent)->handle;
+	GUIWIDGET *holder = (GUIWIDGET*)wid->parent;
+	if (holder && holder->handle)
+		// A scroller's children go in its document view - see below.
+		return (NSView*)(holder->inner ? holder->inner : holder->handle);
 	return [NSWINDOW_OF(owner) contentView];
 }
 
@@ -2735,6 +2738,12 @@ static void Detach_Control(GUIWIDGET *wid)
 			[list setDataSource:nil];
 			[list setContext:NULL];
 		}
+	} else if (wid->kind == W_GUI_WIDGET_SCROLLER) {
+		// The scroll view holds no pointer; its clip and document views do.
+		NSClipView *clip = [(NSScrollView*)view contentView];
+		if ([clip respondsToSelector:@selector(setContext:)])
+			[(id)clip setContext:NULL];
+		if (wid->inner) [(RebolGuiPanel*)wid->inner setContext:NULL];
 	} else if ([view respondsToSelector:@selector(setContext:)]) {
 		[(id)view setContext:NULL];
 	}
@@ -2983,6 +2992,7 @@ void Gui_Destroy_Widget(GUIWIDGET *wid)
 		view = NSVIEW_OF(wid);
 		Detach_Control(wid);
 		wid->handle = NULL;
+		wid->inner  = NULL;   // a scroller's document view goes with it
 		[view removeFromSuperview];
 		[view release];
 		Display_Pending = TRUE; // the hole it left has to be repainted
@@ -3637,6 +3647,8 @@ REBOOL Gui_Widget_Set_Color(GUIWIDGET *wid)
 **  explicit colour needs doing there - through the layer, since an
 **  NSButton has no background colour of its own.
 ***********************************************************************/
+static void Scroller_Back(GUIWIDGET *wid);
+
 void Gui_Widget_Set_Background(GUIWIDGET *wid)
 {
 	@autoreleasepool {
@@ -3663,6 +3675,14 @@ void Gui_Widget_Set_Background(GUIWIDGET *wid)
 			[List_View_Of(wid) setBackgroundColor:
 				(color ? color : [NSColor controlBackgroundColor])];
 			[List_View_Of(wid) setNeedsDisplay:YES];
+			break;
+
+		case W_GUI_WIDGET_SCROLLER:
+			// Its document view is a panel, which fills itself with the
+			// scroller's colour - see RebolGuiPanel - and the scroll view
+			// fills what a centred document leaves around it.
+			Scroller_Back(wid);
+			if (wid->inner) [(NSView*)wid->inner setNeedsDisplay:YES];
 			break;
 
 		case W_GUI_WIDGET_AREA:
@@ -4103,6 +4123,194 @@ void Gui_Panel_Border_Changed(GUIWIDGET *wid)
 		// Marked, not displayed - Gui_Pump() does the drawing, for the
 		// reason given where Display_Pending is declared.
 		[NSPANEL_OF(wid) setNeedsDisplay:YES];
+		Display_Pending = TRUE;
+	}
+}
+
+
+//-- scroller -----------------------------------------------------------------
+//
+// An NSScrollView is the widget, and its document view - a RebolGuiPanel,
+// flipped, with the scroller as its context - is `wid->inner`, where the
+// children go. The panel paints the scroller's colour, and so does the
+// scroll view, around a centred document; with no colour, nothing paints,
+// and what holds the scroller shows through, as through a panel.
+// Scrolling, the wheel and the bars are all AppKit's.
+
+/***********************************************************************
+**  The clip view puts a document smaller than itself in the middle,
+**  for `centered?`. AppKit asks it for every bounds it is about to
+**  take - scrolling, resizing - so this is the one place to do it: a
+**  negative origin moves the (flipped) document right and down.
+***********************************************************************/
+@interface RebolGuiClipView : NSClipView
+{
+	GUIWIDGET *context;
+}
+- (void)setContext:(GUIWIDGET*)ctx;
+@end
+
+@implementation RebolGuiClipView
+
+- (void)setContext:(GUIWIDGET*)ctx { context = ctx; }
+
+- (NSRect)constrainBoundsRect:(NSRect)proposed
+{
+	NSRect r   = [super constrainBoundsRect:proposed];
+	NSView *doc = [self documentView];
+
+	if (doc && context && (context->state & GUI_SCROLL_CENTER)) {
+		NSSize size = [doc frame].size;
+		if (size.width  < r.size.width)
+			r.origin.x = -floor((r.size.width  - size.width)  / 2.0);
+		if (size.height < r.size.height)
+			r.origin.y = -floor((r.size.height - size.height) / 2.0);
+	}
+	return r;
+}
+
+@end
+
+// The scroller's colour, around a centred document.
+static void Scroller_Back(GUIWIDGET *wid)
+{
+	NSScrollView *sv = (NSScrollView*)wid->handle;
+	NSColor *color = GUI_COLOR_HAS(wid->background) ? Panel_Color(wid->background) : nil;
+	[sv setDrawsBackground:(color ? YES : NO)];
+	if (color) [sv setBackgroundColor:color];
+}
+
+// The document view's size: what the children cover. Never less than the
+// visible part, so a background fills it - unless it is centred, when it
+// is exactly what they cover, and the clip view places it.
+static void Scroller_Size_Document(GUIWIDGET *wid, REBINT ew, REBINT eh)
+{
+	NSScrollView *sv = (NSScrollView*)wid->handle;
+	NSSize view = [sv contentSize];
+	CGFloat w = (CGFloat)(ew > 0 ? ew : 1);
+	CGFloat h = (CGFloat)(eh > 0 ? eh : 1);
+
+	if (!(wid->state & GUI_SCROLL_CENTER)) {
+		if (w < view.width)  w = view.width;
+		if (h < view.height) h = view.height;
+	}
+	[(NSView*)wid->inner setFrameSize:NSMakeSize(w, h)];
+}
+
+REBOOL Gui_Create_Scroller(GUIWIDGET *wid, GUIWIN *owner,
+                           REBINT x, REBINT y, REBINT w, REBINT h)
+{
+	@autoreleasepool {
+		NSScrollView     *scroll;
+		RebolGuiClipView *clip;
+		RebolGuiPanel    *doc;
+		NSView           *content;
+
+		if (!wid || !owner || !owner->handle) return FALSE;
+		if (![NSThread isMainThread]) return FALSE;
+
+		content = Parent_View(wid, owner);
+		if (!content) return FALSE;
+
+		scroll = [[NSScrollView alloc] initWithFrame:
+			NSMakeRect((CGFloat)x, (CGFloat)y, (CGFloat)w, (CGFloat)h)];
+		if (!scroll) return FALSE;
+		[scroll setBorderType:NSNoBorder];
+		[scroll setHasVerticalScroller:YES];
+		[scroll setHasHorizontalScroller:YES];
+		[scroll setAutohidesScrollers:YES];
+		[scroll setDrawsBackground:NO];
+
+		// A clip view of our own, which can centre - see above.
+		clip = [[RebolGuiClipView alloc] initWithFrame:[[scroll contentView] frame]];
+		if (!clip) { [scroll release]; return FALSE; }
+		[clip setContext:wid];
+		[clip setDrawsBackground:NO];
+		[scroll setContentView:clip];
+		[clip release]; // the scroll view owns it now
+
+		// Flipped, so the content starts at its top-left corner and the
+		// scroll view starts showing that corner.
+		doc = [[RebolGuiPanel alloc] initWithFrame:
+			NSMakeRect(0, 0, (CGFloat)w, (CGFloat)h)];
+		if (!doc) { [scroll release]; return FALSE; }
+		[doc setContext:wid];
+		[scroll setDocumentView:doc];
+		[doc release]; // the scroll view owns it now
+
+		[content addSubview:scroll];
+		wid->handle = (void*)scroll;
+		wid->inner  = (void*)doc;
+		return TRUE;
+	}
+}
+
+/***********************************************************************
+**  Sized twice: whether the legacy scroll bars show depends on the
+**  document's size, and showing one takes room from the visible part.
+**  Overlay scroll bars take none, and the second pass changes nothing.
+**  A smaller document leaves the clip view past its end, so the
+**  position is put back where it may be.
+***********************************************************************/
+void Gui_Scroller_Update(GUIWIDGET *wid)
+{
+	@autoreleasepool {
+		NSScrollView *sv;
+		REBINT ew = 0, eh = 0, x = 0, y = 0;
+
+		if (!wid || !wid->handle || !wid->inner) return;
+		sv = (NSScrollView*)wid->handle;
+		Gui_Scroller_Extent(wid, &ew, &eh);
+		Gui_Scroller_Get_Pos(wid, &x, &y);
+
+		Scroller_Size_Document(wid, ew, eh);
+		[sv tile];
+		Scroller_Size_Document(wid, ew, eh);
+		[sv tile];
+		Gui_Scroller_Set_Pos(wid, x, y);
+
+		[(NSView*)wid->inner setNeedsDisplay:YES];
+		Display_Pending = TRUE;
+	}
+}
+
+// The clip view's bounds origin is where in the document it shows; the
+// document is flipped, so that is from its top-left corner.
+REBOOL Gui_Scroller_Get_Pos(GUIWIDGET *wid, REBINT *x, REBINT *y)
+{
+	@autoreleasepool {
+		NSPoint at;
+		if (!wid || !wid->handle || !wid->inner) return FALSE;
+		at = [[(NSScrollView*)wid->handle contentView] bounds].origin;
+		// Negative while centred: nothing is scrolled then.
+		*x = at.x > 0 ? (REBINT)floor(at.x + 0.5) : 0;
+		*y = at.y > 0 ? (REBINT)floor(at.y + 0.5) : 0;
+		return TRUE;
+	}
+}
+
+void Gui_Scroller_Set_Pos(GUIWIDGET *wid, REBINT x, REBINT y)
+{
+	@autoreleasepool {
+		NSScrollView *sv;
+		NSClipView   *clip;
+		NSSize        doc, view;
+		CGFloat       px = (CGFloat)x, py = (CGFloat)y;
+
+		if (!wid || !wid->handle || !wid->inner) return;
+		sv   = (NSScrollView*)wid->handle;
+		clip = [sv contentView];
+		doc  = [(NSView*)wid->inner frame].size;
+		view = [clip bounds].size;
+
+		if (px > doc.width  - view.width)  px = doc.width  - view.width;
+		if (py > doc.height - view.height) py = doc.height - view.height;
+		if (px < 0) px = 0;
+		if (py < 0) py = 0;
+
+		// Constrained by the clip view, which centres what fits.
+		[clip scrollToPoint:NSMakePoint(px, py)];
+		[sv reflectScrolledClipView:clip];
 		Display_Pending = TRUE;
 	}
 }

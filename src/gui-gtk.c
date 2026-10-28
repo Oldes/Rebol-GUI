@@ -299,6 +299,9 @@ static GtkWidget *Combo_Entry(GUIWIDGET *wid)
 **              thin outline of a borderless window with `border?`
 **    panel     a background colour, and the frame and caption
 **    image     the pixels of its image!, stretched to the box
+**    scroll    a scroller's content: its background colour; it asks for
+**              the box its children cover, which the scrolled window
+**              around it then scrolls
 **
 **  Each has a GdkWindow of its own: that clips the children to the box,
 **  and it is what mouse events are delivered to.
@@ -308,7 +311,8 @@ static GtkWidget *Combo_Entry(GUIWIDGET *wid)
 enum {
 	ROLE_CONTENT = 1,
 	ROLE_PANEL,
-	ROLE_IMAGE
+	ROLE_IMAGE,
+	ROLE_SCROLL
 };
 
 typedef struct {
@@ -321,8 +325,12 @@ typedef struct {
 	GList     *children;  // BOXCHILD*, in creation order - later is on top
 	REBCNT     role;
 	GUIWIN    *win;       // content: the window
-	GUIWIDGET *wid;       // panel / image: the widget
-	REBINT     nat_w, nat_h;  // content: what the window is sized to
+	GUIWIDGET *wid;       // panel / image / scroll: the widget
+	REBINT     nat_w, nat_h;  // content: what the window is sized to;
+	                          // scroll: what the children cover
+	REBINT     shift_x, shift_y; // scroll: how far the children are moved
+	                          // to centre them (`centered?`), set by the
+	                          // allocation - 0 otherwise
 } RebolGuiBox;
 
 typedef struct {
@@ -427,13 +435,18 @@ static void Box_Realize(GtkWidget *widget)
 	gtk_widget_register_window(widget, win);
 }
 
-// The content box asks for what the window should be; the rest ask for
-// nothing, since whatever holds them gives them their box.
+// The content box asks for what the window should be, and a scroller's
+// content for what its children cover - as its MINIMUM too, since that is
+// what the viewport around it scrolls (it gives the box at least the
+// visible part). The rest ask for nothing, since whatever holds them gives
+// them their box.
 static void Box_Preferred_Width(GtkWidget *widget, gint *min, gint *nat)
 {
 	RebolGuiBox *b = REBOL_GUI_BOX(widget);
+	REBOOL sized = (b->role == ROLE_CONTENT || b->role == ROLE_SCROLL);
 	*min = 1;
-	*nat = (b->role == ROLE_CONTENT && b->nat_w > 0) ? b->nat_w : 1;
+	*nat = (sized && b->nat_w > 0) ? b->nat_w : 1;
+	if (b->role == ROLE_SCROLL) *min = *nat;
 	if (b->role == ROLE_CONTENT && b->win && b->win->handle && !GW(b->win)->resizable)
 		*min = *nat;
 }
@@ -441,8 +454,10 @@ static void Box_Preferred_Width(GtkWidget *widget, gint *min, gint *nat)
 static void Box_Preferred_Height(GtkWidget *widget, gint *min, gint *nat)
 {
 	RebolGuiBox *b = REBOL_GUI_BOX(widget);
+	REBOOL sized = (b->role == ROLE_CONTENT || b->role == ROLE_SCROLL);
 	*min = 1;
-	*nat = (b->role == ROLE_CONTENT && b->nat_h > 0) ? b->nat_h : 1;
+	*nat = (sized && b->nat_h > 0) ? b->nat_h : 1;
+	if (b->role == ROLE_SCROLL) *min = *nat;
 	if (b->role == ROLE_CONTENT && b->win && b->win->handle && !GW(b->win)->resizable)
 		*min = *nat;
 }
@@ -464,6 +479,15 @@ static void Box_Size_Allocate(GtkWidget *widget, GtkAllocation *allocation)
 		                       allocation->x, allocation->y,
 		                       allocation->width, allocation->height);
 
+	// A centring scroller's content: the box still fills the viewport, so
+	// its colour fills it all, and the children are moved into the middle
+	// of it while what they cover is smaller.
+	b->shift_x = b->shift_y = 0;
+	if (b->role == ROLE_SCROLL && b->wid && (b->wid->state & GUI_SCROLL_CENTER)) {
+		if (allocation->width  > b->nat_w) b->shift_x = (allocation->width  - b->nat_w) / 2;
+		if (allocation->height > b->nat_h) b->shift_y = (allocation->height - b->nat_h) / 2;
+	}
+
 	for (l = b->children; l; l = l->next) {
 		BOXCHILD *c = (BOXCHILD*)l->data;
 		GtkRequisition req;
@@ -477,8 +501,8 @@ static void Box_Size_Allocate(GtkWidget *widget, GtkAllocation *allocation)
 			gtk_widget_set_child_visible(c->widget, !tiny);
 		if (tiny || !gtk_widget_get_visible(c->widget)) continue;
 		gtk_widget_get_preferred_size(c->widget, &req, NULL);
-		ca.x = c->x;
-		ca.y = c->y;
+		ca.x = c->x + b->shift_x;
+		ca.y = c->y + b->shift_y;
 		ca.width  = c->w > 0 ? c->w : 1;
 		ca.height = c->h > 0 ? c->h : 1;
 		gtk_widget_size_allocate(c->widget, &ca);
@@ -521,6 +545,10 @@ static gboolean Box_Draw(GtkWidget *widget, cairo_t *cr)
 				Fill_Box(cr, b->wid->background, w, h);
 			Draw_Image(widget, cr, b->wid);
 		}
+		break;
+	case ROLE_SCROLL:
+		if (b->wid && GUI_COLOR_HAS(b->wid->background))
+			Fill_Box(cr, b->wid->background, w, h);
 		break;
 	}
 
@@ -744,9 +772,20 @@ static REBOOL Widget_Origin(GUIWIDGET *wid, REBINT *x, REBINT *y)
 		parent = gtk_widget_get_parent(w);
 		if (parent && IS_BOX(parent)) {
 			BOXCHILD *c = Box_Find(REBOL_GUI_BOX(parent), w);
+			GUIWIDGET *holder = (GUIWIDGET*)wid->parent;
 			if (!c) return FALSE;
 			ax += c->x;
 			ay += c->y;
+			// In a scroller's content, which is moved under it by as
+			// much as it is scrolled - and its children within it, when
+			// they are centred.
+			if (REBOL_GUI_BOX(parent)->role == ROLE_SCROLL && holder && holder->handle) {
+				GtkScrolledWindow *sw = GTK_SCROLLED_WINDOW(holder->handle);
+				ax += REBOL_GUI_BOX(parent)->shift_x;
+				ay += REBOL_GUI_BOX(parent)->shift_y;
+				ax -= (REBINT)floor(gtk_adjustment_get_value(gtk_scrolled_window_get_hadjustment(sw)) + 0.5);
+				ay -= (REBINT)floor(gtk_adjustment_get_value(gtk_scrolled_window_get_vadjustment(sw)) + 0.5);
+			}
 		}
 		else if (parent && GTK_IS_NOTEBOOK(parent)) {
 			GtkAllocation pa, na;
@@ -844,6 +883,26 @@ static REBOOL Reports_Press(REBCNT kind)
 	case W_GUI_WIDGET_RADIO:
 	case W_GUI_WIDGET_SLIDER:
 		return TRUE;
+	}
+	return FALSE;
+}
+
+
+// Whether a wheel turned over `wid` scrolls a scroller holding it - one
+// with something to scroll - which GTK's scrolled window does by itself.
+// Either direction: a horizontal turn is a vertical one with Shift.
+static REBOOL Scroller_Takes_Wheel(GUIWIDGET *wid)
+{
+	for (; wid; wid = (GUIWIDGET*)wid->parent) {
+		GtkScrolledWindow *sw;
+		GtkAdjustment *h, *v;
+		if (wid->kind != W_GUI_WIDGET_SCROLLER || !wid->handle) continue;
+		sw = GTK_SCROLLED_WINDOW(wid->handle);
+		h = gtk_scrolled_window_get_hadjustment(sw);
+		v = gtk_scrolled_window_get_vadjustment(sw);
+		if (gtk_adjustment_get_upper(v) - gtk_adjustment_get_lower(v) > gtk_adjustment_get_page_size(v)
+		 || gtk_adjustment_get_upper(h) - gtk_adjustment_get_lower(h) > gtk_adjustment_get_page_size(h))
+			return TRUE;
 	}
 	return FALSE;
 }
@@ -1108,6 +1167,9 @@ static void Event_Hook(GdkEvent *ev, gpointer data)
 			         || wid->kind == W_GUI_WIDGET_LIST_VIEW
 			         || (wid->kind == W_GUI_WIDGET_TEXT_LIST && !(wid->state & GUI_LIST_FIXED))))
 				break;
+			// ... and so does a scroller around it, while it has something
+			// to scroll.
+			if (Scroller_Takes_Wheel(wid)) break;
 			Gui_Queue_Event(win->hob, EVT_SCROLL_LINE, (REBINT)floor(cx), (REBINT)floor(cy), lines);
 			break; }
 
@@ -2133,6 +2195,7 @@ static void Detach_Control(GUIWIDGET *wid)
 		gtk_tree_view_set_model(GTK_TREE_VIEW(inner), NULL);
 
 	if (IS_BOX(outer)) REBOL_GUI_BOX(outer)->wid = NULL;
+	if (wid->inner && IS_BOX(wid->inner)) REBOL_GUI_BOX(wid->inner)->wid = NULL;
 	g_object_set_data(G_OBJECT(outer), KEY_WIDGET, NULL);
 	if (inner) g_object_set_data(G_OBJECT(inner), KEY_WIDGET, NULL);
 
@@ -2156,9 +2219,12 @@ static void Queue_Widget(GUIWIDGET *wid, REBCNT type)
 // any creation call.
 static GtkWidget *Parent_Box(GUIWIDGET *wid, GUIWIN *owner)
 {
-	if (wid->parent && ((GUIWIDGET*)wid->parent)->handle
-	    && IS_BOX(((GUIWIDGET*)wid->parent)->handle))
-		return GTKW((GUIWIDGET*)wid->parent);
+	GUIWIDGET *holder = (GUIWIDGET*)wid->parent;
+	if (holder && holder->handle) {
+		// A scroller's children go in its content - see Gui_Create_Scroller.
+		if (holder->inner && IS_BOX(holder->inner)) return GTK_WIDGET(holder->inner);
+		if (IS_BOX(holder->handle)) return GTKW(holder);
+	}
 	return GW(owner)->content;
 }
 
@@ -2353,6 +2419,10 @@ static void Apply_Background(GUIWIDGET *wid)
 	case W_GUI_WIDGET_IMAGE:
 		// Painted by the box itself.
 		gtk_widget_queue_draw(target);
+		return;
+	case W_GUI_WIDGET_SCROLLER:
+		// ... by its content's box.
+		if (wid->inner) gtk_widget_queue_draw(GTK_WIDGET(wid->inner));
 		return;
 	case W_GUI_WIDGET_AREA:
 		target = Inner_Of(wid);
@@ -2747,6 +2817,40 @@ void Gui_Panel_Border_Changed(GUIWIDGET *wid)
 	if (wid && wid->handle) gtk_widget_queue_draw(GTKW(wid));
 }
 
+/***********************************************************************
+**  A scroller: a GtkScrolledWindow is the widget, and the box its
+**  children go in - `wid->inner`, ROLE_SCROLL - sits in the viewport GTK
+**  puts around a child which cannot scroll by itself. The box asks for
+**  what its children cover (see Gui_Scroller_Update), the viewport gives
+**  it at least the visible part, and the scrolled window does the rest:
+**  bars, wheel and touchpad.
+***********************************************************************/
+REBOOL Gui_Create_Scroller(GUIWIDGET *wid, GUIWIN *owner,
+                           REBINT x, REBINT y, REBINT w, REBINT h)
+{
+	GtkWidget *sw, *box, *viewport;
+	if (!wid || !owner || !owner->handle) return FALSE;
+
+	sw = gtk_scrolled_window_new(NULL, NULL);
+	gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(sw),
+	                               GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
+	gtk_scrolled_window_set_shadow_type(GTK_SCROLLED_WINDOW(sw), GTK_SHADOW_NONE);
+
+	box = New_Box(ROLE_SCROLL);
+	REBOL_GUI_BOX(box)->wid = wid;
+	gtk_container_add(GTK_CONTAINER(sw), box);   // wrapped in a viewport
+	viewport = gtk_bin_get_child(GTK_BIN(sw));
+	if (viewport && GTK_IS_VIEWPORT(viewport))
+		gtk_viewport_set_shadow_type(GTK_VIEWPORT(viewport), GTK_SHADOW_NONE);
+
+	wid->inner = (void*)box;
+	if (!Place(wid, owner, sw, x, y, w, h)) {
+		wid->inner = NULL;
+		return FALSE;
+	}
+	return TRUE;
+}
+
 void Gui_Widget_Redraw(GUIWIDGET *wid)
 {
 	if (wid && wid->handle) gtk_widget_queue_draw(GTKW(wid));
@@ -2770,6 +2874,7 @@ void Gui_Destroy_Widget(GUIWIDGET *wid)
 	w = GTKW(wid);
 	Detach_Control(wid);
 	wid->handle = NULL;
+	wid->inner  = NULL;   // a scroller's content goes with it
 	gtk_widget_destroy(w);
 }
 
@@ -3848,9 +3953,66 @@ REBOOL Gui_Widget_Set_Box(GUIWIDGET *wid, REBINT x, REBINT y, REBINT w, REBINT h
 
 REBOOL Gui_Widget_Get_At(GUIWIDGET *wid, REBINT *x, REBINT *y)
 {
+	GUIWIDGET *w;
 	if (!wid || !wid->handle || !wid->owner || !wid->owner->handle) return FALSE;
 	Place_Pages(wid);
+	// Where a scroller centres its children is decided by an allocation,
+	// which a hidden window has not had.
+	for (w = (GUIWIDGET*)wid->parent; w; w = (GUIWIDGET*)w->parent)
+		if (w->kind == W_GUI_WIDGET_SCROLLER) { Layout_Window(wid->owner, FALSE); break; }
+	if (!wid->handle) return FALSE;   // laying out ran the main loop
 	return Widget_Origin(wid, x, y);
+}
+
+
+// A scroller. Its adjustments are only set once it is laid out, which a
+// hidden window has not been - so it is, first, as for a list's scroll.
+static GtkScrolledWindow *Scroller_Of(GUIWIDGET *wid)
+{
+	if (!wid || !wid->handle || !wid->inner) return NULL;
+	Layout_Window(wid->owner, FALSE);
+	// Laying out ran the main loop; asked again, in case that closed it.
+	if (!wid->handle) return NULL;
+	return GTK_SCROLLED_WINDOW(wid->handle);
+}
+
+void Gui_Scroller_Update(GUIWIDGET *wid)
+{
+	RebolGuiBox *b;
+	REBINT ew = 0, eh = 0;
+
+	if (!wid || !wid->handle || !wid->inner) return;
+	Gui_Scroller_Extent(wid, &ew, &eh);
+	b = REBOL_GUI_BOX(wid->inner);
+	// The same extent still needs placing again: `centered?` may have
+	// changed, or the scroller's size.
+	if (b->nat_w == ew && b->nat_h == eh) {
+		gtk_widget_queue_allocate(GTK_WIDGET(b));
+		return;
+	}
+	b->nat_w = ew;
+	b->nat_h = eh;
+	// The adjustments follow at the next layout, which also clamps the
+	// position into a smaller range.
+	gtk_widget_queue_resize(GTK_WIDGET(b));
+}
+
+REBOOL Gui_Scroller_Get_Pos(GUIWIDGET *wid, REBINT *x, REBINT *y)
+{
+	GtkScrolledWindow *sw = Scroller_Of(wid);
+	if (!sw) return FALSE;
+	*x = (REBINT)floor(gtk_adjustment_get_value(gtk_scrolled_window_get_hadjustment(sw)) + 0.5);
+	*y = (REBINT)floor(gtk_adjustment_get_value(gtk_scrolled_window_get_vadjustment(sw)) + 0.5);
+	return TRUE;
+}
+
+// An adjustment clamps the value to its range by itself.
+void Gui_Scroller_Set_Pos(GUIWIDGET *wid, REBINT x, REBINT y)
+{
+	GtkScrolledWindow *sw = Scroller_Of(wid);
+	if (!sw) return;
+	gtk_adjustment_set_value(gtk_scrolled_window_get_hadjustment(sw), (gdouble)x);
+	gtk_adjustment_set_value(gtk_scrolled_window_get_vadjustment(sw), (gdouble)y);
 }
 
 
@@ -4068,6 +4230,7 @@ static GtkWidget *Focus_Target(GUIWIDGET *wid)
 	case W_GUI_WIDGET_TEXT:
 	case W_GUI_WIDGET_IMAGE:
 	case W_GUI_WIDGET_PANEL:
+	case W_GUI_WIDGET_SCROLLER:
 	case W_GUI_WIDGET_PROGRESS:
 	case W_GUI_WIDGET_LINE:
 		return NULL;
