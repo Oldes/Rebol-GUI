@@ -13,6 +13,7 @@ REBOL [
 		remove-widget redraw set-focus screens track-mouse add-toggle
 		add-text-list add-date-field add-line add-tab-panel within? popup-menu
 		add-list-view
+		caps-lock?
 		gui-device gui-device-polls gui-device-events
 		gui-device-pumps gui-device-messages
 		poll-events do-events
@@ -691,6 +692,8 @@ commands: [
 		/index n [integer!] "Row picked to start with, 1-based (default: none)"
 		/flat "Without the border"
 	]
+
+	caps-lock?: ["Returns TRUE if Caps Lock is on"]
 ]
 
 ;; ---------------------------------------------------------------------------

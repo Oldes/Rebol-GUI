@@ -5061,3 +5061,16 @@ COMMAND cmd_gui_track_mouse(RXIFRM *frm, void *ctx)
 	RXA_TYPE(frm, 1)  = RXT_LOGIC;
 	return RXR_VALUE;
 }
+
+
+/***********************************************************************
+**  caps-lock?
+**
+**  Asked of the system at every call - no window, no `keys?` and no
+**  event is needed for the answer to be current. Changes are not
+**  reported; a script asks again when it cares (`focus`, `key`).
+***********************************************************************/
+COMMAND cmd_gui_caps_lockq(RXIFRM *frm, void *ctx)
+{
+	return Gui_Caps_Lock() ? RXR_TRUE : RXR_FALSE;
+}

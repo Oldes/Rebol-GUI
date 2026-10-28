@@ -3156,6 +3156,13 @@ REBOOL Gui_Pointer_At(REBYTE *key, REBINT *x, REBINT *y, REBINT *mods, REBOOL *o
 	}
 }
 
+// Whether Caps Lock is on, for `caps-lock?`. The class method answers the
+// keyboard's state now, not an event's, whichever application is active.
+REBOOL Gui_Caps_Lock(void)
+{
+	return ([NSEvent modifierFlags] & NSEventModifierFlagCapsLock) ? TRUE : FALSE;
+}
+
 // Whether the window is drawn in the dark appearance. The API is 10.14 and
 // later and the SDK floor is 10.13, so it is asked for by selector and by
 // the appearance's NAME rather than the NSAppearanceNameDarkAqua symbol.

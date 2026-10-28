@@ -5482,6 +5482,15 @@ REBOOL Gui_Pointer_At(REBYTE *key, REBINT *x, REBINT *y, REBINT *mods, REBOOL *o
 	return TRUE;
 }
 
+// Whether Caps Lock is on, for `caps-lock?`. The toggle bit of GetKeyState,
+// which is the keyboard as this thread last saw it: current while one of our
+// windows has the focus - which is when a "Caps Lock is on" hint matters.
+// GetAsyncKeyState, used for the pointer above, has no toggle bit.
+REBOOL Gui_Caps_Lock(void)
+{
+	return (GetKeyState(VK_CAPITAL) & 1) ? TRUE : FALSE;
+}
+
 REBOOL Gui_Window_Screen(GUIWIN *win, REBYTE *key)
 {
 	HMONITOR       mon;

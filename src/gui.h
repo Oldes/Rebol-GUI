@@ -312,6 +312,10 @@ REBOOL  Gui_Pointer_At(REBYTE *key, REBINT *x, REBINT *y, REBINT *mods, REBOOL *
 // the pointer until the button is up.
 void    Gui_Pointer_Left(void);
 
+// Whether Caps Lock is on - for `caps-lock?`. Asked of the system at every
+// call, nothing kept. FALSE when it cannot tell (no display).
+REBOOL  Gui_Caps_Lock(void);
+
 /***********************************************************************
 **  Tooltips - the platform's own, with its delay, placement and look.
 **

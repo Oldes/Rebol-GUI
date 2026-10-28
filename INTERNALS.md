@@ -296,6 +296,15 @@ Cocoa flips offsets against the menu-bar screen; the content view answers
   view overlaps `index` with the dimension bitfields, so the index must be
   ignored on both sides.
 
+## Caps Lock
+
+`caps-lock?` asks the backend at every call (`Gui_Caps_Lock`); nothing is
+kept and no event reports a change. Windows: the toggle bit of
+`GetKeyState(VK_CAPITAL)`, the thread's view of the keyboard, current while it
+has the focus (`GetAsyncKeyState` has no toggle bit). macOS: the class method
+`[NSEvent modifierFlags]`, the keyboard's state now. GTK:
+`gdk_keymap_get_caps_lock_state`, as of the last pump.
+
 ## Keyboard (Windows)
 
 The host dispatches the OS queue itself (`Query_Events` in `dev-event.c`), so

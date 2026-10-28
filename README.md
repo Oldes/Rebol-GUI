@@ -1044,6 +1044,21 @@ Keys are only observed: the widget still gets them, and a handler cannot
 stop that, because events reach Rebol after the platform has already handled
 the key.
 
+### Caps Lock
+
+`caps-lock?` says whether Caps Lock is on, asked of the system each time. It
+needs no window and no `keys?`. A typical use is a hint by a password field:
+
+```rebol
+if all [evt/type = 'focus  evt/source == pass] [
+    hint/text: either caps-lock? ["Caps Lock is on"][""]
+]
+```
+
+A change is not reported as an event; ask again on `focus` or `key`. On
+Windows, and on Linux under Wayland, the answer is current while one of the
+program's windows has the keyboard focus.
+
 ## Dropped files
 
 Off until enabled per window:
@@ -1343,6 +1358,9 @@ Creates a table - rows of cells under column headers - and returns its handle
 * `/index`
 * `n` `[integer!]` Row picked to start with, 1-based (default: none)
 * `/flat` Without the border
+
+#### `caps-lock?`
+Returns TRUE if Caps Lock is on
 
 
 ## Used handles and its getters / setters

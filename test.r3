@@ -106,6 +106,11 @@ win/dark-controls?: false ;; turn it off again
 print ["keys? by default:" win/keys?]
 win/keys?: true
 
+;; `caps-lock?` asks the system each time; it needs no window and no `keys?`.
+;;
+;; WATCH: with Caps Lock on, logged keys end with "(caps lock)".
+print ["caps-lock?" caps-lock? "- a logic! either way:" logic? caps-lock?]
+
 ;; every accessor which can be read can also be written, except id and open?
 win/title: "Rebol GUI extension - move the mouse"
 print ["title:   " mold win/title]
@@ -1311,7 +1316,8 @@ if all [type = 'alt-down  source == canvas] [
 	if find [key named-key] type [
 		note ajoin [type ": " mold event/key
 			either event/flags [join " " mold event/flags][""]
-			" in " any [kind 'window]]
+			" in " any [kind 'window]
+			either caps-lock? [" (caps lock)"][""]]
 	]
 
 	if type == 'change [
@@ -1530,6 +1536,10 @@ if all [type = 'alt-down  source == canvas] [
 			;; where a position would otherwise be, which is why it has none.
 			type = 'scroll-line [ajoin ["lines: " event/code]]
 			type = 'click [source]
+
+			find [open close] type [
+				ajoin ["item:" event/code " " source]
+			]
 			;; The image widget reports its own mouse events, in window
 			;; coordinates like everything else - `at` turns them into
 			;; a position on the picture.

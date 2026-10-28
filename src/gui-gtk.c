@@ -2035,6 +2035,20 @@ REBOOL Gui_Pointer_At(REBYTE *key, REBINT *x, REBINT *y, REBINT *mods, REBOOL *o
 	return TRUE;
 }
 
+// Whether Caps Lock is on, for `caps-lock?`. The keymap follows the
+// keyboard as GDK's events report it, so it is current as of the last pump;
+// under X11 that is the XKB state, under Wayland only while one of our
+// windows has the keyboard focus.
+REBOOL Gui_Caps_Lock(void)
+{
+	GdkDisplay *display = gdk_display_get_default();
+	GdkKeymap  *keymap;
+
+	if (!Gtk_Ready || !display) return FALSE;
+	keymap = gdk_keymap_get_for_display(display);
+	return (keymap && gdk_keymap_get_caps_lock_state(keymap)) ? TRUE : FALSE;
+}
+
 
 //== light and dark ===========================================================
 //
