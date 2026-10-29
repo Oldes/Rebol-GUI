@@ -522,6 +522,11 @@ lbl/background: none          ;; the platform's own
 lbl/transparent?: true        ;; nothing - what it sits on shows through
 ```
 
+On macOS a control blends its bezel with whatever is behind it, assuming
+the background its appearance would have: in the light appearance, a button
+on a dark colour looks dark itself. Pick colours to suit `dark?`, and change
+them on `theme-change`.
+
 Setting a colour turns transparency off. A widget fills with the *window's*
 colour by default, so a control inside a coloured panel or on an image needs
 `transparent?: true` to blend in. Transparency applies to `text`, `check`,
@@ -883,7 +888,8 @@ sc/scroll: 'bottom
 ```
 
 The user scrolls it with the bars, the wheel (Shift, or a tilt wheel, for
-across) and a touchpad. None of that is reported as an event. On Windows and Linux, a wheel over
+across) and a touchpad. On macOS the bars are the classic ones, shown while
+there is something to scroll, whatever the "Show scroll bars" setting is. None of that is reported as an event. On Windows and Linux, a wheel over
 a scroller with nothing to scroll that way is reported to the window as usual.
 
 `centered?` puts content smaller than the visible part in the middle of it,

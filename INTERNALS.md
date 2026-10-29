@@ -86,7 +86,9 @@ Creating a widget marks it dirty; it is painted by the next pump. On Windows
 in `Gui_Pump`, because the extension never runs `-[NSApplication run]`, which
 is what normally displays dirty views. Forcing a display at other times is
 unreliable - AppKit can clear needs-display without painting and the view stays
-blank.
+blank. A pump with `Display_Pending` displays every window in full; any other
+pump does `displayIfNeeded`, for what AppKit marked itself (an overlay scroll
+bar fading in while scrolling).
 
 No macOS view fills its background when it has nothing to show. An opaque
 panel or empty image widget once hid every widget created before it.
@@ -365,7 +367,9 @@ layout; setting it calls `Gui_Scroller_Update`.
   the middle instead of minus the position, and the outer panel paints the
   margin with the same background. `at` reads the inner panel's actual
   place (`Content_Origin`), not the position.
-- macOS: an `NSScrollView` with automatic scroll bars and no background; the
+- macOS: an `NSScrollView` (`RebolGuiScrollView`, which holds
+  `NSScrollerStyleLegacy` against the user's preference - overlay bars never
+  appeared) with automatic scroll bars and no background; the
   document view is a `RebolGuiPanel` with the scroller as context, so it fills
   the scroller's colour like a panel. Its size is the extent, at least
   `contentSize`, set twice around `tile` for legacy scroll bars. The position

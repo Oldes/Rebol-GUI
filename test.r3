@@ -1069,9 +1069,12 @@ print as-yellow "^/== Scroller"
 ;; clicking them logs `click`, the check ticks. No `!! move` notes in
 ;; the log while moving over it, whatever it is scrolled to - a child's `at`
 ;; follows the scrolling.
+;; WATCH (macOS): the bars - the narrow, small ones - are there while there
+;; is something to scroll, and can be dragged, whatever "Show scroll bars" is
+;; set to.
 ;; WATCH: resizing the window resizes the scroller with it. Made bigger than
 ;; the bird, the bars go and the bird stays in the middle (`centered?`), on
-;; the scroller's colour - with no frame lines around or near it; smaller
+;; the scroller's light colour - with no frame lines around or near it; smaller
 ;; again, it scrolls from its corner.
 viewer: open-window/title/at/hidden 300x240 "Scroller" 1000x580
 sc:     add-scroller viewer 10x10 280x220
@@ -1118,8 +1121,10 @@ print ["a child of a scroller is a child:" big/parent == sc]
 print ["centered? by default:" sc/centered? "(expected false)"]
 print ["not on other kinds:" none? counter/centered? error? try [counter/centered?: true]]
 sc/centered?: true
-sc/background: 40.44.52
-print ["a scroller has a background:" sc/background "(expected 40.44.52)"]
+;; A light colour: on macOS a control blends its bezel with what is behind
+;; it, and in the light appearance looks dark on a dark colour.
+sc/background: 225.230.238
+print ["a scroller has a background:" sc/background "(expected 225.230.238)"]
 
 ;; The scroller fills its window - kept so on every `resize`, in `report`.
 fit-viewer: does [sc/size: viewer/size - 20x20]

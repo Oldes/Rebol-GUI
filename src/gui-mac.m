@@ -89,6 +89,7 @@
 #define RebolGuiPanel     GUI_CLASS(Panel)
 #define RebolGuiTabView   GUI_CLASS(TabView)
 #define RebolGuiClipView  GUI_CLASS(ClipView)
+#define RebolGuiScrollView GUI_CLASS(ScrollView)
 #define RebolGuiWindow    GUI_CLASS(Window)
 #define NSWINDOW_OF(win) ((NSWindow*)((win)->handle))
 #define NSPANEL_OF(wid)  ((RebolGuiPanel*)((wid)->handle))
@@ -111,7 +112,8 @@
 // So nothing here displays anything any more. Views are marked, this flag
 // is raised, and Gui_Pump() - which runs between events, where AppKit
 // expects drawing to happen - does one full window display. The cost is
-// one redraw per poll in which something actually changed.
+// one redraw per poll in which something actually changed. Without the
+// flag the pump still displays what AppKit marked by itself, as -run does.
 static REBOOL Display_Pending = FALSE;
 
 // While a context menu is up, a pick is its answer rather than a
@@ -2418,14 +2420,21 @@ REBCNT Gui_Pump(void)
 		// window is painted after something changed. In a quiet poll -
 		// the common case, several times a second - nothing is drawn at
 		// all.
-		if (Display_Pending) {
+		//
+		// Otherwise only what AppKit marked by itself, as -run would draw
+		// it: an overlay scroll bar fading in while a scroller scrolls, a
+		// control's own hover look. Nothing is drawn when nothing is marked.
+		{
 			NSArray *windows = [NSApp windows];
 			NSUInteger n, count = [windows count];
+			REBOOL all = Display_Pending;
 
 			Display_Pending = FALSE;
 			for (n = 0; n < count; n++) {
 				NSWindow *w = (NSWindow*)[windows objectAtIndex:n];
-				if ([w isVisible]) [w display];
+				if (![w isVisible]) continue;
+				if (all) [w display];
+				else     [w displayIfNeeded];
 			}
 		}
 	}
@@ -4171,6 +4180,26 @@ void Gui_Panel_Border_Changed(GUIWIDGET *wid)
 
 @end
 
+/***********************************************************************
+**  Always the legacy scroll bars: shown while there is something to
+**  scroll, and there to be dragged, as on the other platforms. Overlay
+**  bars, which show only during a scroll, did not appear at all here.
+**  NSScrollView applies the user's preferred style through this setter
+**  whenever that preference changes, so it is held here.
+***********************************************************************/
+@interface RebolGuiScrollView : NSScrollView
+@end
+
+@implementation RebolGuiScrollView
+
+- (void)setScrollerStyle:(NSScrollerStyle)style
+{
+	(void)style;
+	[super setScrollerStyle:NSScrollerStyleLegacy];
+}
+
+@end
+
 // The scroller's colour, around a centred document.
 static void Scroller_Back(GUIWIDGET *wid)
 {
@@ -4212,12 +4241,17 @@ REBOOL Gui_Create_Scroller(GUIWIDGET *wid, GUIWIN *owner,
 		content = Parent_View(wid, owner);
 		if (!content) return FALSE;
 
-		scroll = [[NSScrollView alloc] initWithFrame:
+		scroll = [[RebolGuiScrollView alloc] initWithFrame:
 			NSMakeRect((CGFloat)x, (CGFloat)y, (CGFloat)w, (CGFloat)h)];
 		if (!scroll) return FALSE;
 		[scroll setBorderType:NSNoBorder];
+		[scroll setScrollerStyle:NSScrollerStyleLegacy]; // see RebolGuiScrollView
 		[scroll setHasVerticalScroller:YES];
 		[scroll setHasHorizontalScroller:YES];
+		// The small bars: the regular ones are wider than a Windows bar,
+		// and a scroller is usually a part of a window, not all of it.
+		[[scroll verticalScroller]   setControlSize:NSControlSizeSmall];
+		[[scroll horizontalScroller] setControlSize:NSControlSizeSmall];
 		[scroll setAutohidesScrollers:YES];
 		[scroll setDrawsBackground:NO];
 
