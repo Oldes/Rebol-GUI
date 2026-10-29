@@ -1217,6 +1217,10 @@ print ["tree-view:" tree/kind "nothing picked:" mold tree/selected "(expected no
 tree/selected: 'docs/old/"b.txt"
 print ["picked by path:" mold tree/selected mold tree/text
 	{(expected docs/old/"b.txt" "b.txt")}]
+;; The text is the picked node's label, so it is read-only - `selected`
+;; picks the node. (Setting it used to reach the native control: an
+;; exception on macOS, a renamed window on Windows.)
+print ["text is read-only:" error? try [tree/text: "x"] mold tree/text {(expected true "b.txt")}]
 print ["a path! it is:" path? tree/selected]
 print ["its branches opened:" mold tree/expanded "(expected [docs docs/old])"]
 tree/selected: 'report

@@ -5303,9 +5303,11 @@ int GuiWidget_set_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 		// A drop-list or a text-list shows whichever item is picked;
 		// `index` chooses it. A drop-down is the one list-like kind
 		// whose text CAN be set - it is the typed value, not a pick.
+		// A tree-view's is its selected node's label; `selected` picks it.
 		if (wid->kind == W_GUI_WIDGET_DROP_LIST
 		 || wid->kind == W_GUI_WIDGET_TEXT_LIST
 		 || wid->kind == W_GUI_WIDGET_LIST_VIEW
+		 || wid->kind == W_GUI_WIDGET_TREE_VIEW
 		 || wid->kind == W_GUI_WIDGET_TAB_PANEL) return PE_BAD_SET;
 		if (*type != RXT_STRING) return PE_BAD_SET_TYPE;
 		len = RL_GET_UTF8_STRING((REBSER*)arg->series, arg->index, (void**)&utf8);
