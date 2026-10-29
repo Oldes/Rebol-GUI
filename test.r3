@@ -274,6 +274,16 @@ label/color:     30.90.170
 print ["... and is now:  " mold label/font label/font-size "bold?" label/bold?]
 print ["colour reads back as:" mold label/color]
 
+;; Changing only the family or the style keeps the size the font has, to the
+;; fraction of a point. (On macOS the system's 13 units are 9.75 points, read
+;; back as 10 - and set again as 10 they became 13.33 units: a label grew.)
+sized: add-text win "Size kept" 400x5 0x0
+was-size: sized/size
+sized/font: sized/font
+sized/size: 0x0
+print ["the same family again, same size:" sized/size = was-size "(expected true)"]
+remove-widget sized
+
 ;; `bold?` and `italic?` are one setting underneath and share one code path -
 ;; each must change only itself. (`bold?: true` once set italic instead.)
 print ["bold, and only bold:    " all [label/bold?  not label/italic?]]

@@ -3979,6 +3979,17 @@ REBOOL Gui_Widget_Set_Font(GUIWIDGET *wid, const REBYTE *utf8, REBCNT len,
 
 		if (![target respondsToSelector:@selector(setFont:)]) return FALSE;
 
+		// A size is read back rounded to whole points, and changing only
+		// the style or the family sets the font again with that size. The
+		// system's 13 units are 9.75 points: read as 10, they came back as
+		// 13.33 units. So the size the font has now is kept whenever the
+		// one asked for is what it reads as.
+		if (size > 0 && [target respondsToSelector:@selector(font)]) {
+			NSFont *now = [target font];
+			if (now && (REBINT)(UNITS_TO_PT([now pointSize]) + 0.5) == size)
+				points = [now pointSize];
+		}
+
 		if (style & GUI_FONT_BOLD)   mask |= NSBoldFontMask;
 		if (style & GUI_FONT_ITALIC) mask |= NSItalicFontMask;
 
