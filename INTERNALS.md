@@ -128,7 +128,10 @@ Cocoa flips offsets against the menu-bar screen; the content view answers
 - **Fonts** are read back from the control, not stored. Windows caches one
   `HFONT` per distinct face and frees them at shutdown. macOS converts
   families through `NSFontManager` and colours buttons through an attributed
-  title, rebuilt when text or font changes.
+  title, rebuilt when text or font changes. Sizes cross `gui.h` in real
+  points (1/72 inch): Windows converts with the DPI, GTK's CSS `pt` is the
+  same unit, and macOS multiplies by 96/72, since an `NSFont` size is in
+  logical units. The system size is left as each platform has it.
 - **Text colour** is stored per widget, because Win32 asks the parent at paint
   time and keeps none on the control.
 - **Read-only** is stored too: macOS merges enabled and editable, so a
@@ -292,6 +295,55 @@ Cocoa flips offsets against the menu-bar screen; the content view answers
   with `LB_GETTOPINDEX` and the rows that fit, then sets the top index only
   when the item is outside the view. macOS uses `scrollRowToVisible:`, which
   already works that way.
+- **Tree-view:** the shared layer parses `items` into a flat table of nodes
+  (`GUITREE` in `wid->tree`, freed with the handle), parents first, and
+  pushes them at the backend one at a time with `Gui_Tree_Add_Node`, like the
+  menu bar. Nodes cross `gui.h` by index; a backend keeps what it needs in
+  the node's `native` (Windows: the `HTREEITEM`, lParam the index; macOS: one
+  `NSNumber` per node, since an outline knows items by identity; GTK: the
+  index, the store's iterators kept by index). Paths are built and resolved
+  in the shared layer. A branch's open state is remembered per node: a
+  Windows TreeView keeps it inside a closed branch, and the macOS and GTK
+  backends record it themselves and reapply it when the parent opens.
+  Changes made from code are silenced (`Setting_Tree`, `quiet`, `Quiet`),
+  and `picked` is re-read after `expanded` is set, since closing a branch
+  can move or drop the selection. `open` and `close` (`Gui_Tree_Toggled`)
+  carry the node's 1-based number, since an event has no room for a path;
+  the drain tells a tree's `close` from a window's by the source's handle
+  type. A GTK tree view selects its first row when it takes the focus with
+  no cursor; that selection is taken silently (`On_Selection` checks for a
+  focus-change event, and `set-focus` runs quiet).
+- **Icons** (text-list, list-view, tree-view): an image! in `items` (or a
+  get-word, looked up with `RL_GET_VALUE_RESOLVED`) is copied into the
+  widget's table (`GUIICONS` in `wid->icons`) once per series, as a series
+  can move; a tree node holds its index, a text-list keeps one per item,
+  and a list-view's row is looked at again as it is shown (its first cell),
+  so the table can grow. The square is `Gui_Icon_Size` - the row height
+  less 4 - and `Gui_Scale_Icon` fits an image into it with an
+  alpha-weighted area average, so every platform scales the same way. A
+  backend keeps the scaled icons by index plus a blank one, for a row
+  without, and remakes them when the size or the items change
+  (`Gui_Icons_Changed`): GTK, cairo surfaces at the widget's scale factor
+  drawn by a pixbuf renderer at the start of the column (its height is left
+  out of the row height the size comes from, or the two would chase each
+  other); Windows, image lists of icons (32-bit straight alpha), blank at 0,
+  made by `Refresh_Icons` - a TreeView's (destroyed at `WM_NCDESTROY`, as
+  it does not), a ListView's small one (which also sets its row height),
+  and a text-list's in a window property, which an owner-drawn list box
+  (`Text_List_Draw`, colours from `WM_CTLCOLORLISTBOX`) draws from; macOS,
+  `NSImage`s at the backing scale drawn by `RebolGuiIconCell`, an
+  `NSTextFieldCell` given room on its left.
+- **`row-height`:** kept in `wid->row_height` (0 = the platform's own) and
+  counted with the gap between rows, so the same number gives the same pitch
+  everywhere. Windows: `LB_SETITEMHEIGHT` (at most 255 px; an owner-drawn
+  list box keeps it across fonts, so the font's is set too) and
+  `TVM_SETITEMHEIGHT` (-1 resets); a report ListView has no such message, so
+  a small image list of 1-pixel-wide images sets it - and it can make rows
+  taller than the font, never shorter. `WM_SETFONT` puts the font's height
+  back, so a set height is reapplied after `font-*` and after a DPI change.
+  macOS: `setFont:` of the three tables sets `rowHeight` from the context,
+  minus `intercellSpacing`. GTK: a fixed height on every cell renderer, minus
+  the `vertical-separator` style property.
 - **Image widget:** the pixel pointer and size are read at every paint. BGRA
   is a 32-bit `BI_RGB` DIB and
   `kCGImageAlphaNoneSkipFirst | kCGBitmapByteOrder32Little`. `RXIARG`'s image
@@ -306,6 +358,19 @@ kept and no event reports a change. Windows: the toggle bit of
 has the focus (`GetAsyncKeyState` has no toggle bit). macOS: the class method
 `[NSEvent modifierFlags]`, the keyboard's state now. GTK:
 `gdk_keymap_get_caps_lock_state`, as of the last pump.
+
+## Capture
+
+`Gui_Capture` hands back BGRA in memory of its own, which the command copies
+into an image! made with `RL_MAKE_IMAGE`. Windows prints the whole top-level
+window with `PrintWindow(PW_RENDERFULLCONTENT)` (what DWM composes; the plain
+call before Windows 8.1) and cuts out the client area or the widget's box,
+since printing a control alone would miss what its parent paints for it.
+GTK draws the target with `gtk_widget_draw` into a cairo surface at the scale
+factor, over the toplevel's rendered background. macOS uses
+`cacheDisplayInRect:toBitmapImageRep:` into an RGBA rep at the backing
+scale, and lays it over the window's background colour. All three set the
+alpha to 255.
 
 ## Keyboard (Windows)
 

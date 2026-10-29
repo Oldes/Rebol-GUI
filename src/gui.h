@@ -588,6 +588,126 @@ REBOOL  Gui_List_Cell(GUIWIDGET *wid, REBCNT row, REBCNT col, REBYTE **utf8, REB
 void    Gui_List_Picked(GUIWIDGET *wid, REBINT n);
 
 
+/***********************************************************************
+**  Icons - an image at the start of a row of a text-list, a list-view
+**  or a tree-view.
+**
+**  Given in `items` as an image! or a get-word holding one: after an
+**  item's string in a text-list, after a node's label (and word) in a
+**  tree-view, and as the cell of the first field in a list-view. The
+**  shared layer copies each image! once - a series can move - into the
+**  widget's table, and names it by its index there.
+**
+**  A backend draws an icon in a square of Gui_Icon_Size() logical units,
+**  scaled with Gui_Scale_Icon() so every platform scales the same way.
+**  When the widget has any icons at all (Gui_Icon_Count() > 0), a row
+**  without one keeps an empty square, so the labels stay in line.
+***********************************************************************/
+typedef struct Gui_Icon {
+	REBYTE *pixels;   // BGRA, alpha straight, 255 opaque; owned by the table
+	REBINT  w, h;
+	void   *source;   // the image!'s series: how a reused one is recognised
+} GUIICON;
+
+typedef struct Gui_Icons {
+	GUIICON *images;
+	REBCNT   count;
+	REBCNT   capacity;
+	REBINT  *rows;      // text-list: each item's icon, -1 for none
+	REBCNT   row_count;
+} GUIICONS;
+
+// How many distinct icons the widget has; 0 when it shows none. A
+// list-view's can grow as its rows are shown, if its cells were changed
+// in place.
+REBCNT  Gui_Icon_Count(GUIWIDGET *wid);
+// Icon `n`, or NULL.
+const GUIICON *Gui_Icon(GUIWIDGET *wid, REBINT n);
+// The icon of row `row` (0-based) of a text-list or a list-view, or -1.
+REBINT  Gui_Row_Icon(GUIWIDGET *wid, REBCNT row);
+// The side of the square an icon is drawn in, in logical units: the row's
+// height less a margin above and below. A backend asks again whenever the
+// row height may have changed - `row-height`, the font, the DPI.
+REBINT  Gui_Icon_Size(GUIWIDGET *wid);
+// Scales `img` to fit a `size` x `size` square of BGRA pixels at `dst`
+// (rows `stride` bytes apart), centred, keeping its proportions; the
+// rest is transparent. Premultiplied or straight alpha, as asked.
+void    Gui_Scale_Icon(const GUIICON *img, REBINT size, REBYTE *dst,
+                       REBINT stride, REBOOL premultiply);
+// The icons of a text-list or a list-view were replaced, with its items:
+// whatever a backend made from the old ones goes. (A tree-view's go with
+// Gui_Tree_Clear.)
+void    Gui_Icons_Changed(GUIWIDGET *wid);
+
+
+/***********************************************************************
+**  tree-view - nodes in branches which open and close.
+**
+**  The `items` block is parsed by the shared layer, once, into a table
+**  of nodes (GUITREE, in `wid->tree`), and pushed at the backend a node
+**  at a time, parents first: Gui_Tree_Clear, then Gui_Tree_Add_Node for
+**  every node, then Gui_Tree_End. A backend never sees a Rebol value.
+**
+**  A node is named across this interface by its INDEX in the table. A
+**  backend keeps whatever it needs to find the native item again in the
+**  node's `native` - Gui_Tree_Add_Node's return value, stored by the
+**  shared layer - and the index on the native item, to answer which node
+**  was picked.
+**
+**  Events: `change` when the user picks another node - reported through
+**  Gui_Tree_Picked(), which filters, as a list-view's are - `click` on a
+**  double click or Enter, queued by the backend itself, and `open` and
+**  `close` through Gui_Tree_Toggled().
+***********************************************************************/
+typedef struct Gui_Tree_Node {
+	REBINT  parent;   // the parent's index; -1 at the top
+	REBINT  first;    // the first child's index; -1 for none
+	REBINT  next;     // the next sibling's index; -1 for none
+	REBCNT  word;     // the symbol of the word naming it; 0 for none
+	REBYTE *label;    // UTF-8, NUL-terminated; owned by the table
+	REBCNT  len;      // bytes in `label`
+	void   *native;   // what Gui_Tree_Add_Node returned for it
+	REBINT  image;    // its icon - see Gui_Icon() - or -1 for none
+} GUITREENODE;
+
+typedef struct Gui_Tree {
+	GUITREENODE  *nodes;
+	REBCNT        count;
+	REBCNT        capacity;
+} GUITREE;
+
+#define GUI_TREE_OF(wid) ((GUITREE*)(wid)->tree)
+
+REBOOL  Gui_Create_Tree_View(GUIWIDGET *wid, GUIWIN *owner,
+                             REBINT x, REBINT y, REBINT w, REBINT h);
+// Removes every node.
+void    Gui_Tree_Clear(GUIWIDGET *wid);
+// Adds node `n` - its label, under its parent, whose `native` is already
+// set - after its siblings. Returns what the backend wants kept in the
+// node's `native`; NULL is a failure, and the rest of that branch is left
+// out.
+void*   Gui_Tree_Add_Node(GUIWIDGET *wid, REBCNT n);
+// Every node has been added.
+void    Gui_Tree_End(GUIWIDGET *wid);
+// Picks node `n` (-1: none) and brings it into view, raising no event.
+// Its branches are already open - the shared layer sees to that.
+void    Gui_Tree_Select(GUIWIDGET *wid, REBINT n);
+// The node picked, or -1.
+REBINT  Gui_Tree_Selected(GUIWIDGET *wid);
+// Opens or closes node `n`'s branch. Opening a node whose parent is
+// closed is allowed: it shows open once the parent is.
+void    Gui_Tree_Expand(GUIWIDGET *wid, REBCNT n, REBOOL open);
+REBOOL  Gui_Tree_Is_Expanded(GUIWIDGET *wid, REBCNT n);
+
+// Provided by the SHARED layer: the user picked node `n` (-1 for none);
+// reports `change` when it differs from the node last reported.
+void    Gui_Tree_Picked(GUIWIDGET *wid, REBINT n);
+// ... and the user opened or closed node `n`'s branch: reports `open` or
+// `close`. Not for changes made from code, nor for a branch reopening
+// only because the one holding it did.
+void    Gui_Tree_Toggled(GUIWIDGET *wid, REBINT n, REBOOL open);
+
+
 //-- panel --------------------------------------------------------------------
 // A container. Everything a panel holds is positioned inside IT rather than
 // inside the window, which is what both platforms do natively for a child.
@@ -700,6 +820,14 @@ REBOOL  Gui_Widget_Pixels(GUIWIDGET *wid, REBYTE **data, REBINT *w, REBINT *h);
 void    Gui_Widget_Redraw(GUIWIDGET *wid);
 void    Gui_Window_Redraw(GUIWIN *win);
 
+// Draws a window's client area (`win`) or a widget (`wid`) - one of the two
+// is NULL - into new memory, and returns it: `*w` x `*h` device pixels,
+// BGRA, rows top-down, opaque (anything the target leaves transparent is
+// the window's background). Allocated with MAKE_MEM, freed by the caller.
+// NULL when there is nothing to draw. Works for a covered window; one which
+// is hidden or minimised may come out blank on some platforms.
+REBYTE* Gui_Capture(GUIWIN *win, GUIWIDGET *wid, REBINT *w, REBINT *h);
+
 // Marks a widget as needing paint and returns WITHOUT painting it: the
 // next pump does the drawing, together with everything else which fell
 // due in the meantime.
@@ -770,7 +898,9 @@ REBOOL  Gui_Widget_Set_Text(GUIWIDGET *wid, const REBYTE *utf8, REBCNT len);
 **  control every time, so what Rebol reports is what the control has.
 **
 **  `name` is a fresh Rebol string, the caller's to keep, and NULL when
-**  the control has no font of its own. `size` is in points, 0 when
+**  the control has no font of its own. `size` is in real points, 1/72
+**  of an inch - 12 points is 16 logical units on every platform, macOS
+**  included, whose own "point" is the logical unit - and 0 when
 **  unknown. `style` is GUI_FONT_* bits. Any of the three may be NULL.
 ***********************************************************************/
 REBOOL  Gui_Widget_Get_Font(GUIWIDGET *wid, REBSER **name, REBINT *size,
@@ -838,6 +968,18 @@ REBOOL  Gui_Widget_Set_Scroll(GUIWIDGET *wid, REBDEC where);
 // this only has to bring the native control in line - hide or show the
 // scroll bar. Whatever scrolls it from code must keep working either way.
 void    Gui_Widget_Set_Scrollable(GUIWIDGET *wid, REBOOL on);
+
+/***********************************************************************
+**  The height of a row of a text-list, a list-view or a tree-view.
+**
+**  Set_Row_Height applies `wid->row_height`, which the caller has already
+**  set: logical units, or 0 for the platform's own, which follows the
+**  font. A backend keeps an explicit height through later font changes.
+**  Get_Row_Height answers what the control really uses, in logical units
+**  - asked, not kept, as a font is.
+***********************************************************************/
+void    Gui_Widget_Set_Row_Height(GUIWIDGET *wid);
+REBINT  Gui_Widget_Get_Row_Height(GUIWIDGET *wid);
 
 // Brings a text-list's item `n` (0-based, already clamped to the list by
 // the caller) into view, scrolling as little as it takes: not at all when

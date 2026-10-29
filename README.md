@@ -23,7 +23,7 @@ in [INTERNALS.md](INTERNALS.md).
 - no checkable menu items
 - nineteen native controls: button, image, text, field, area, check, radio,
   toggle, slider, progress, drop-list, drop-down, text-list, date-field, panel,
-  line, tab-panel, list-view, scroller
+  line, tab-panel, list-view, scroller, tree-view
 - Windows, macOS and Linux (GTK 3) only
 
 ## Build
@@ -506,6 +506,10 @@ label/italic?:   false
 label/color:     30.90.170   ;; none: the platform's colour
 ```
 
+`font-size` is in points of 1/72 inch, so the same size is the same size on
+every platform: 12 points is 16 logical units, on macOS too (where AppKit's own
+"point" is the logical unit).
+
 A window's `font` and `font-size` are defaults for widgets created **after**
 they are set; widgets already on the window are not changed.
 
@@ -642,6 +646,18 @@ trees/index: 4            ;; picks and scrolls it into view, without a `change`
 `items` and `index` work as for a drop-list. `change` is reported only when
 the user picks. A zero size gives about twenty characters by six rows.
 
+An item can have an icon: an image! after its string, or a get-word holding
+one. It is drawn before the text, sized from the row height as a tree-view's
+icons are (see [Tree-views](#tree-views)); `row-height` makes it bigger.
+
+```rebol
+files: add-text-list win ["Docs" :folder  "a.txt" :file  "plain"] 20x20 200x120
+```
+
+Reading `items` gives the strings back, without the icons. On Windows a
+text-list draws its own rows (an owner-drawn list box), in the colours the
+list box itself would use.
+
 A field made with `/secure` masks what is typed, for a password, and refuses
 to copy it out. `text` still reads and writes the real contents. `secure?`
 reads it back. It is fixed at creation, because on macOS a masked field is a
@@ -710,6 +726,19 @@ files: add-list-view/with win ["id" 0  "Name" 140  "path" 0] 20x20 200x160 [
     102 "logo"    %img/logo.png
 ]
 files/text                ;; the id of the picked row - the first value, hidden or not
+```
+
+A row's icon is its first cell, when that is an image! or a get-word holding
+one. It is drawn at the start of the first column, sized from the row height
+(see [Tree-views](#tree-views)); give that column a width of its own, or a
+title, to show the icon alone or next to one:
+
+```rebol
+files: add-list-view/with win ["" 28  "Name" 140  "Size" none right] 20x20 300x160 [
+    :folder "docs"   0
+    :file   "a.txt" 12
+]
+files/text                ;; "a.txt" - the cell after an icon
 ```
 
 `sort` reports a column by its position in the row, hidden columns counted, so
@@ -781,6 +810,89 @@ under the pointer, as in the system's own file lists. With `dark-controls?`
 on in a dark window it goes dark with the rest - rows, header and scroll
 bars - and back again. Colours set with `color` and `background` are kept
 either way.
+
+### Tree-views
+
+```rebol
+tree: add-tree-view win [
+    "Documents" docs [
+        "Report.txt" report
+        "Old" old ["a.txt" a  "b.txt"]
+    ]
+    "Music" music ["Song.mp3"]
+    "Notes.txt"
+] 20x20 220x300
+
+tree/selected                  ;; docs/old/"b.txt" - the path to the picked node
+tree/text                      ;; "b.txt" - its label
+tree/selected: 'docs/report    ;; picks it, opening the branches above it
+tree/selected: 'music          ;; a node at the top: its word alone
+tree/selected: 'report         ;; a word not at the top: the first node with it
+tree/selected: "Song.mp3"      ;; ... or with that label
+tree/selected: [music "Song.mp3"]  ;; a block with a path's values
+tree/selected: none            ;; nothing picked
+tree/expanded                  ;; [docs docs/old] - the open branches
+tree/expanded: [docs/old]      ;; opens exactly those, and the ones above
+tree/nodes                     ;; every node, named the same way, parents first
+tree/items: [...]              ;; replaces the whole tree
+```
+
+`items` is the menu bar's grammar without shortcuts: a label, then optionally
+a word naming the node, then optionally a block of its children. A node is
+found by its PATH - each node's word on the way down, or its label where it
+has none - so words only have to be unique among siblings. A node at the top
+is named by its word or label alone (`docs`, `"Notes.txt"`) rather than by a
+path of one. A label is written in a path as a string (`'docs/old/"b.txt"`),
+and a block with a path's values is taken too.
+Setting `selected` or `expanded` to a path that names nothing picks, or
+opens, nothing; a word or a label alone is a node at the top when there is
+one, and otherwise the first node with it, parents before children.
+
+An image! after the label (and the word) is the node's icon, drawn before the
+label in a square as tall as the row less a small margin, scaled to fit and
+keeping its proportions; transparent pixels show the row behind. A get-word
+(`:folder`) is looked up and stands for the image! it holds, so no `compose`
+is needed. `row-height` gives bigger icons. One image!
+used by many nodes is stored once; a node without one keeps its label in
+line with the rest.
+
+```rebol
+tree: add-tree-view win [
+    "Pictures" pics :folder ["Cat.png" :file  "Dog.png" :file]
+] 20x20 220x300
+tree/row-height: 32            ;; icons of about 28 units
+```
+
+`row-height` works the same on a text-list and a list-view: the pitch of
+their rows in logical units, the gap between rows included; `none` gives
+back the platform's own, which follows the font. A height set this way is
+kept when the font changes. A Windows list-view's rows can be made taller
+than its font, but not shorter.
+
+Events:
+
+| `type` | when | `code` |
+|---|---|---|
+| `change` | the user picks another node | |
+| `click` | a double click or Enter on a node | |
+| `open`, `close` | the user opens or closes a branch | the node's position in `nodes` |
+
+```rebol
+if find [open close] evt/type [print [evt/type pick tree/nodes evt/code]]
+```
+
+Setting `selected`, `expanded` or `items` reports nothing, and neither does a
+branch reopening because the one holding it did. A branch inside a closed one
+keeps its state and shows it again when its parent opens, and `expanded`
+lists it all the same. Fonts, `color`, `background`, `border?`, `/flat` and
+`scroll` (a percent or `top`, `bottom`, `end`) work as for a text-list; a
+zero size gives about eight rows.
+
+Windows uses the TreeView control with the Explorer look, macOS an
+`NSOutlineView`, Linux a `GtkTreeView`. On Windows a double click also opens
+or closes a branch, as it does in Explorer. Right opens a branch, or moves
+into an open one; Left closes it, or moves to the parent. macOS draws no
+lines between the nodes; Windows and Linux do.
 
 ### Date-fields
 
@@ -952,6 +1064,25 @@ cap: add-text canvas "frame 120" 8x8 200x0
 cap/transparent?: true
 cap/color: 255.255.255
 ```
+
+### Capturing
+
+`capture` returns what a window's client area, or a widget, looks like on
+screen, as an `image!`:
+
+```rebol
+shot: capture win                ;; the client area - no title bar
+save %window.png shot
+save %button.png capture button  ;; one widget
+```
+
+The image is in device pixels, so at 175% scaling it is 1.75 times the
+logical size. It is opaque: anything the widget does not paint shows the
+window's background. A covered window is captured as it would look; a hidden
+or minimised one may come out blank on some platforms. On Windows a widget is
+cut out of the whole window as it is composed, so a widget overlapping it
+shows too; on Linux and macOS only the widget and what is inside it are
+drawn. `capture` of a closed window or a removed widget gives `none`.
 
 ## Menu bars
 
@@ -1230,6 +1361,10 @@ Creates an image widget and returns its handle
 Repaints a window or a widget - use after drawing into a displayed image
 * `target` `[handle!]`
 
+#### `capture` `:target`
+Returns what a window's client area, or a widget, looks like on screen, as an image! - in device pixels, so at 200% scaling twice its size in logical units
+* `target` `[handle!]` Window or widget
+
 #### `add-text` `:parent` `:text` `:offset` `:size`
 Creates a static label and returns its handle
 * `parent` `[handle!]` Window, panel, scroller or image widget to put it in
@@ -1352,7 +1487,7 @@ Creates a toggle - a push button which stays pushed - and returns its handle
 #### `add-text-list` `:parent` `:items` `:offset` `:size`
 Creates a list of strings in a fixed box, which scrolls when they do not fit, and returns its handle
 * `parent` `[handle!]` Window, panel, scroller or image widget to put it in
-* `items` `[block!]` Strings to show
+* `items` `[block!]` Strings to show, each optionally followed by its icon: an image!, or a get-word holding one
 * `offset` `[pair!]` Position inside the parent
 * `size` `[pair!]`
 * `/index`
@@ -1412,7 +1547,7 @@ Creates a table - rows of cells under column headers - and returns its handle
 * `offset` `[pair!]` Position inside the parent
 * `size` `[pair!]`
 * `/with`
-* `cells` `[block!]` Cells to show, row by row in one flat block; any values, shown as FORM shows them
+* `cells` `[block!]` Cells to show, row by row in one flat block; any values, shown as FORM shows them - but an image!, or a get-word holding one, in a row's first cell is that row's icon
 * `/index`
 * `n` `[integer!]` Row picked to start with, 1-based (default: none)
 * `/flat` Without the border
@@ -1425,6 +1560,14 @@ Creates a scroller - a box which holds other widgets and scrolls them when they 
 * `parent` `[handle!]` Window, panel, scroller or image widget to put it in
 * `offset` `[pair!]` Position inside the parent
 * `size` `[pair!]` Of the visible part, scroll bars included
+
+#### `add-tree-view` `:parent` `:items` `:offset` `:size`
+Creates a tree - nodes in branches which open and close - and returns its handle
+* `parent` `[handle!]` Window, panel or image widget to put it in
+* `items` `[block!]` Nodes: a label, then optionally a word naming it, then optionally its icon - an image!, or a get-word holding one - then optionally a block of its children in the same grammar
+* `offset` `[pair!]` Position inside the parent
+* `size` `[pair!]`
+* `/flat` Without the border
 
 
 ## Used handles and its getters / setters
@@ -1476,18 +1619,18 @@ Creates a scroller - a box which holds other widgets and scrolls them when they 
 
 ```rebol
 ;Refinement       Gets                Sets                          Description
-/text             string!             string!                       "Label or contents; the caption of a framed panel; the selected item of a drop-list or a text-list, or the first cell of a list-view's selected row, which are read-only; the typed value of a drop-down, which can be set; none for an image"
-/items            block!              block!                        "Strings a drop-list, a drop-down or a text-list offers; a tab-panel's tab labels (read-only there); a list-view's cells, row by row in one flat block, any values; none for other kinds"
+/text             string!             string!                       "Label or contents; the caption of a framed panel; the selected item of a drop-list or a text-list, the first cell of a list-view's selected row, or the label of a tree-view's selected node, which are read-only; the typed value of a drop-down, which can be set; none for an image"
+/items            block!              block!                        "Strings a drop-list, a drop-down or a text-list offers; a tab-panel's tab labels (read-only there); a list-view's cells, row by row in one flat block, any values; a tree-view's nodes, in the menu dialect's grammar; none for other kinds"
 /index            integer!            integer!                      "Which item or list-view row is picked, or which tab is shown, 1-based; 0 for none"
 /image            image!              image!                        "Image shown by an image widget, none for other kinds"
 /size             pair!               pair!                         "Size of the control; a zero axis asks it what that axis needs, the same as at creation"
 /offset           pair!               pair!                         "Position inside whatever holds it - a window or a panel"
 /at               pair!               none                          "Top-left corner in its window's client area, however deeply nested - what a mouse event's offset is measured from"
 /id               integer!            none                          "Native control handle as an integer"
-/kind             word!               none                          "What the control is: button, image, text, field, area, check, radio, toggle, slider, progress, drop-list, drop-down, text-list, date-field, panel, line, tab-panel, list-view or scroller"
+/kind             word!               none                          "What the control is: button, image, text, field, area, check, radio, toggle, slider, progress, drop-list, drop-down, text-list, date-field, panel, line, tab-panel, list-view, scroller or tree-view"
 /value            [percent! date!]    [percent! decimal! date!]     "Position of a slider or a progress bar; the date of a date-field, with its time of day when made with `/time`; none for other kinds"
 /state            logic!              logic!                        "Whether a check, a radio or a toggle is on; none for other kinds"
-/border?          logic!              logic!                        "Whether a panel draws a frame around itself, or a field, an area, a text-list or a list-view its border; none for other kinds"
+/border?          logic!              logic!                        "Whether a panel draws a frame around itself, or a field, an area, a text-list, a list-view or a tree-view its border; none for other kinds"
 /font             string!             [string! none!]               "Font family; none puts it back to the system font"
 /font-size        integer!            [integer! none!]              "Point size; none puts it back to the system size"
 /bold?            logic!              logic!                        "Whether the text is bold"
@@ -1509,6 +1652,10 @@ Creates a scroller - a box which holds other widgets and scrolls them when they 
 /columns          block!              block!                        "A list-view's columns: each a title, its width and, unless left, its alignment (center or right); a width of none fits the title, or fills the rest on the last shown column; 0 hides it, while its values stay in the rows; setting a different number of columns clears `items`; none for other kinds"
 /sort-column      integer!            [integer! none!]              "Which list-view column shows the sort arrow, 1-based, negative for descending; none for no arrow. Only the arrow - sorting `items` is the script's"
 /centered?        logic!              logic!                        "Whether a scroller puts its content in the middle while it is smaller than the visible part, rather than at the top-left; off by default; none for other kinds"
+/selected         [path! word! string!][path! block! word! string! none!]"A tree-view's selected node: the path to it - each node's word, or its label where it has none - or, for a node at the top, that word or label alone; a block of the same values is taken too; a word or a label alone is a node at the top when there is one, and otherwise the first node with it; none for no selection or for other kinds"
+/expanded         block!              block!                        "A tree-view's open branches, each as `selected` names a node; setting opens exactly those (with the branches above them) and closes the rest; none for other kinds"
+/nodes            block!              none                          "A tree-view's nodes, each as `selected` names it, parents before their children - the `code` of an `open` or `close` event is a position in it; none for other kinds"
+/row-height       integer!            [integer! none!]              "Height of a row of a text-list, a list-view or a tree-view, in logical units; none goes back to the platform's own, which follows the font; none for other kinds"
 ```
 
 #### __SCREEN__ - GUI screen handle - one display; every read asks the platform again

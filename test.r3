@@ -1,6 +1,6 @@
 Rebol [
 	Title:   "Rebol/GUI extension test"
-	Needs:   3.22.9
+	Needs:   3.22.10
 	Purpose: {
 		Opens a window and prints the mouse events it produces. Meant to be
 		run by a human - close the window to end it.
@@ -1151,6 +1151,108 @@ sc/centered?: true
 viewer/size: 300x240
 fit-viewer
 show-window viewer
+
+
+;;=============================================================================
+print as-yellow "^/== Tree-view"
+;;=============================================================================
+
+;; The menu dialect's grammar: a label, a word naming the node if it needs
+;; one, and a block of children if it has any. A node is found by its PATH -
+;; each node's word on the way down, or its label where it has no word - and
+;; a node at the top is just its word or label. A block with the same values
+;; is taken as well.
+;;
+;; WATCH: picking a node logs `change`; a double click or Enter logs `click`;
+;; opening and closing a branch - with the mouse or Left and Right - logs
+;; `open` and `close`, with the node's number in `tree/nodes` as the code.
+;; A branch opened inside a closed one stays open when its parent opens.
+;;
+;; An image! - or a get-word holding one - after the label (and the word)
+;; is the node's icon, scaled to
+;; fit the row's height - `row-height` makes it bigger. One image! shown by
+;; many nodes is stored once. A node without one keeps its label in line.
+icon: func [color [tuple!] /local img] [
+	img: make image! [32x32 0.0.0.0]          ;; transparent
+	repeat y 26 [repeat x 26 [poke img as-pair x + 2 y + 2 color]]
+	repeat y 24 [repeat x 24 [poke img as-pair x + 3 y + 3 color + 50.50.50]]
+	img
+]
+folder: icon 200.150.0
+file:   icon 80.120.200
+trees: open-window/title/at 470x420 "Tree" 1000x420
+tree: add-tree-view trees [
+	"Documents" docs :folder [
+		"Report.txt" report :file
+		"Old" old :folder ["a.txt" a :file  "b.txt"]
+	]
+	"Music" music :folder ["Song.mp3" :file]
+	"Notes.txt"
+] 10x10 220x240
+big-tree: add-tree-view trees [
+	"Pictures" :folder ["Cat.png" :file  "Dog.png" :file]
+] 240x10 220x240
+big-tree/row-height: 40
+big-tree/expanded: ["Pictures"]
+
+;; A text-list takes an icon after an item's string, a list-view as a row's
+;; first cell - the same image! or get-word.
+icon-list: add-text-list/index trees ["Docs" :folder  "a.txt" :file  "plain"] 10x260 220x150 2
+print ["text-list with icons:" icon-list/text length? icon-list/items "(expected a.txt 3 - items reads back the strings)"]
+icon-view: add-list-view/with/index trees ["" 28  "Name" 100  "Size" none right] 240x260 220x150 [
+	:folder "docs"   0
+	:file   "a.txt" 12
+	none    "plain"  3
+] 2
+print ["list-view text skips the icon:" mold icon-view/text {(expected "a.txt")}]
+
+;; `capture` - a window's client area or a widget, as an image! of device
+;; pixels.
+shot: capture trees
+print ["capture of a window:" type? shot shot/size "(expected image!" to pair! trees/size * trees/scale ")"]
+shot: capture icon-view
+print ["capture of a widget:" shot/size "(expected" to pair! icon-view/size * trees/scale ")"]
+
+print ["tree-view:" tree/kind "nothing picked:" mold tree/selected "(expected none)"]
+tree/selected: 'docs/old/"b.txt"
+print ["picked by path:" mold tree/selected mold tree/text
+	{(expected docs/old/"b.txt" "b.txt")}]
+print ["a path! it is:" path? tree/selected]
+print ["its branches opened:" mold tree/expanded "(expected [docs docs/old])"]
+tree/selected: 'report
+print ["picked by word:" mold tree/selected "(expected docs/report)"]
+tree/selected: "Song.mp3"
+print ["picked by label:" mold tree/selected {(expected music/"Song.mp3")}]
+tree/selected: 'music
+print ["a node at the top:" mold tree/selected type? tree/selected "(expected music word!)"]
+tree/selected: "Notes.txt"
+print ["... without a word:" mold tree/selected {(expected "Notes.txt")}]
+tree/selected: 'docs/nothing
+tree/selected: [music "Song.mp3"]
+print ["a block works too:" mold tree/selected {(expected music/"Song.mp3")}]
+tree/selected: 'docs/nothing
+print ["a path to nothing:" mold tree/selected "(expected none)"]
+tree/expanded: [music docs/old]
+print ["opened as asked:" mold tree/expanded "(expected [docs docs/old music])"]
+tree/expanded: [docs/old]
+print ["exactly those, and above:" mold tree/expanded "(expected [docs docs/old])"]
+print ["every node:" length? tree/nodes "(expected 8)" "the fifth:" mold pick tree/nodes 5
+	{(expected docs/old/"b.txt")}]
+print ["the same block back:" same? tree/items tree/items]
+spare-tree: add-tree-view trees ["x"] 0x0 0x0
+print ["a zero size measures it:" spare-tree/size]
+remove-widget spare-tree
+
+;; `row-height` is the height of a row of any of the three kinds with rows,
+;; in logical units; none hands it back to the platform, which follows the
+;; font.
+print ["platform's row height:" tree/row-height]
+tree/row-height: 32
+tree/font-size: 14
+print ["set, and kept past a new font:" tree/row-height "(expected 32)"]
+tree/row-height: none
+tree/font-size: none
+print ["none puts the platform's back:" tree/row-height]
 
 ;;=============================================================================
 print as-yellow "^/== Menu bar"

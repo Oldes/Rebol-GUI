@@ -116,9 +116,17 @@ static REBOOL Tab_Notify(GUIWIDGET *wid, NMHDR *nm);
 // Posted to a list-view by itself, to look at its selection once a change
 // is complete - see List_View_Notify.
 #define WM_GUI_LIST_CHECK (WM_APP + 0x51)
+// Posted to a list-view to make its icons again, when a row shows one its
+// image list does not have yet - see List_View_Notify.
+#define WM_GUI_ICONS      (WM_APP + 0x52)
+// Where a text-list keeps its icons' image list - see Refresh_Icons.
+#define ICONS_PROP L"RebolGuiIcons"
+// A text-list's rows are drawn here - see Gui_Create_Text_List.
+static void Text_List_Draw(GUIWIDGET *wid, DRAWITEMSTRUCT *d);
 #define LV_HEADER(wid) ((HWND)SendMessageW(HWND_OF_WID(wid), LVM_GETHEADER, 0, 0))
 static void Free_Icons(GUIWIN *win);
 static REBOOL List_View_Notify(GUIWIDGET *wid, NMHDR *nm, LRESULT *res);
+static REBOOL Tree_View_Notify(GUIWIDGET *wid, NMHDR *nm, LRESULT *res);
 static REBOOL Gui_Handle_Key(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);
 
 // Whether OLE came up on this thread, decided once in Gui_Init_Platform,
@@ -1681,6 +1689,13 @@ static void Theme_Control(GUIWIDGET *wid, REBOOL dark)
 		Gui_Widget_Set_Color(wid);
 		Gui_Widget_Set_Background(wid);
 		break;
+	case W_GUI_WIDGET_TREE_VIEW:
+		// Explorer's look, as the list-view has: triangles rather than
+		// plus boxes, and whole-row highlights. Its colours are told to it.
+		set(hwnd, dark ? L"DarkMode_Explorer" : L"Explorer", NULL);
+		Gui_Widget_Set_Color(wid);
+		Gui_Widget_Set_Background(wid);
+		break;
 	case W_GUI_WIDGET_DROP_LIST:
 	case W_GUI_WIDGET_DROP_DOWN:
 		set(hwnd, dark ? L"DarkMode_CFD" : NULL, NULL);
@@ -1765,6 +1780,9 @@ static REBOOL In_Scroller_Layout = FALSE;
 **  Children first, then the window: WM_SIZE from the window's own resize
 **  then reports a `resize` whose logical size has not changed.
 ***********************************************************************/
+static void Apply_Row_Height(GUIWIDGET *wid, int dpi);
+static void Refresh_Icons(GUIWIDGET *wid, int dpi);
+
 static void Rescale_Window(GUIWIN *win, HWND hwnd, int was, int now, const RECT *suggested)
 {
 	GUIWIDGET *wid;
@@ -1805,6 +1823,9 @@ static void Rescale_Window(GUIWIN *win, HWND hwnd, int was, int now, const RECT 
 			} else {
 				SendMessageW(child, WM_SETFONT, (WPARAM)Default_Font_At(now), FALSE);
 			}
+			// A new font puts the platform's own row height back - and a
+			// tree's icons follow the row height.
+			Apply_Row_Height(wid, now);
 		}
 
 		// A scroller's content is not a widget, so the loop above did not
@@ -1970,6 +1991,8 @@ static LRESULT CALLBACK Gui_Window_Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
 				if (nm->code == DTN_DATETIMECHANGE) return 0;
 			}
 			if (dw && dw->kind == W_GUI_WIDGET_LIST_VIEW && List_View_Notify(dw, nm, &r))
+				return r;
+			if (dw && dw->kind == W_GUI_WIDGET_TREE_VIEW && Tree_View_Notify(dw, nm, &r))
 				return r;
 		}
 		if (Dark_Custom_Draw(win, lp, &r)) return r;
@@ -2184,6 +2207,19 @@ static LRESULT CALLBACK Gui_Window_Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
 	case WM_CTLCOLORLISTBOX:
 		return Ctl_Color((HDC)wp, (HWND)lp, win, msg);
 
+	// A text-list's row - it is an owner-drawn list box. Found in the
+	// window's own list, as in Ctl_Color, rather than trusted to be ours.
+	case WM_DRAWITEM: {
+		DRAWITEMSTRUCT *d = (DRAWITEMSTRUCT*)lp;
+		GUIWIDGET *w = win ? (GUIWIDGET*)win->widgets : NULL;
+		if (!d || d->CtlType != ODT_LISTBOX) break;
+		for (; w; w = (GUIWIDGET*)w->next)
+			if ((HWND)w->handle == d->hwndItem && w->kind == W_GUI_WIDGET_TEXT_LIST) {
+				Text_List_Draw(w, d);
+				return TRUE;
+			}
+		break; }
+
 	case WM_ERASEBKGND:
 		return TRUE; // painted below, without the flicker
 
@@ -2305,7 +2341,9 @@ static LRESULT CALLBACK Gui_Image_Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp
 	case WM_CTLCOLORSTATIC:
 	case WM_CTLCOLORBTN:
 	case WM_CTLCOLOREDIT:
-	case WM_CTLCOLORLISTBOX: {
+	case WM_CTLCOLORLISTBOX:
+	case WM_DRAWITEM:   // a text-list's rows - see Text_List_Draw()
+	case WM_MEASUREITEM: {
 		HWND parent = GetParent(hwnd);
 		if (parent) return SendMessageW(parent, msg, wp, lp);
 		break; }
@@ -2568,7 +2606,9 @@ static LRESULT CALLBACK Gui_Panel_Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp
 	case WM_CTLCOLORSTATIC:
 	case WM_CTLCOLORBTN:
 	case WM_CTLCOLOREDIT:
-	case WM_CTLCOLORLISTBOX: {
+	case WM_CTLCOLORLISTBOX:
+	case WM_DRAWITEM:   // a text-list's rows - see Text_List_Draw()
+	case WM_MEASUREITEM: {
 		HWND parent = GetParent(hwnd);
 		if (parent) return SendMessageW(parent, msg, wp, lp);
 		break; }
@@ -2714,7 +2754,8 @@ void Gui_Init_Platform(void)
 	// have to be registered before either can be created.
 	controls.dwSize = sizeof(controls);
 	controls.dwICC  = ICC_BAR_CLASSES | ICC_PROGRESS_CLASS | ICC_STANDARD_CLASSES
-	                | ICC_DATE_CLASSES | ICC_TAB_CLASSES | ICC_LISTVIEW_CLASSES;
+	                | ICC_DATE_CLASSES | ICC_TAB_CLASSES | ICC_LISTVIEW_CLASSES
+	                | ICC_TREEVIEW_CLASSES;
 	InitCommonControlsEx(&controls);
 
 	/*******************************************************************
@@ -4444,10 +4485,78 @@ static void Release_Press(HWND hwnd, GUIWIDGET *wid)
 	                To_Logical(Dpi_Of(hwnd), p.y), Modifiers());
 }
 
+// Where a click at `lp` should land: on the expand button of its row when
+// it is in that button's column - from the icon back by an indent - but
+// missed it; anywhere else, where it is.
+static LPARAM Tree_Button_Point(HWND hwnd, LPARAM lp)
+{
+	TVHITTESTINFO ht;
+	RECT  text;
+	int   x = GET_X_LPARAM(lp), y = GET_Y_LPARAM(lp);
+	int   indent, icon_w = 0, icon_h = 0, left, right, px;
+	HIMAGELIST list = (HIMAGELIST)SendMessageW(hwnd, TVM_GETIMAGELIST, TVSIL_NORMAL, 0);
+	HTREEITEM  item;
+
+	ZeroMemory(&ht, sizeof(ht));
+	ht.pt.x = x; ht.pt.y = y;
+	item = (HTREEITEM)SendMessageW(hwnd, TVM_HITTEST, 0, (LPARAM)&ht);
+	if (!item || !(ht.flags & TVHT_ONITEMINDENT)) return lp;
+	if (!SendMessageW(hwnd, TVM_GETNEXTITEM, TVGN_CHILD, (LPARAM)item)) return lp;
+
+	*(HTREEITEM*)&text = item;
+	if (!SendMessageW(hwnd, TVM_GETITEMRECT, TRUE, (LPARAM)&text)) return lp;
+	if (list) ImageList_GetIconSize(list, &icon_w, &icon_h);
+	indent = (int)SendMessageW(hwnd, TVM_GETINDENT, 0, 0);
+	right  = text.left - icon_w;
+	left   = right - indent;
+	if (x < left || x >= right) return lp;
+
+	// The nearest point the control itself calls the button, either side.
+	for (px = 1; px <= indent; px++) {
+		int k;
+		for (k = 0; k < 2; k++) {
+			ht.pt.x = k ? x - px : x + px;
+			ht.pt.y = y;
+			if ((HTREEITEM)SendMessageW(hwnd, TVM_HITTEST, 0, (LPARAM)&ht) == item
+			    && (ht.flags & TVHT_ONITEMBUTTON))
+				return MAKELPARAM(ht.pt.x, y);
+		}
+	}
+	return lp;
+}
+
 static LRESULT CALLBACK Nav_Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
 	GUIWIDGET *wid  = (GUIWIDGET*)GetWindowLongPtrW(hwnd, GWLP_USERDATA);
 	WNDPROC    base = (wid && wid->wndproc) ? (WNDPROC)wid->wndproc : NULL;
+	LPARAM     at   = lp;  // where the pointer really is - see below
+
+	// A TreeView does not destroy the image list it was given, and a
+	// text-list's is only a property.
+	if (msg == WM_NCDESTROY && wid && wid->kind == W_GUI_WIDGET_TREE_VIEW) {
+		HIMAGELIST list = (HIMAGELIST)SendMessageW(hwnd, TVM_GETIMAGELIST, TVSIL_NORMAL, 0);
+		if (list) ImageList_Destroy(list);
+	}
+	if (msg == WM_NCDESTROY && wid && wid->kind == W_GUI_WIDGET_TEXT_LIST) {
+		HIMAGELIST list = (HIMAGELIST)RemovePropW(hwnd, ICONS_PROP);
+		if (list) ImageList_Destroy(list);
+	}
+
+	// A tree with icons: the themed expand arrow is not always drawn where
+	// the TreeView looks for it - at some sizes a click right on the arrow
+	// lands just left of the spot taken as the button. A click in the
+	// arrow's column is moved onto the button, so that the control itself
+	// takes it as one, and notifies as for any other.
+	if ((msg == WM_LBUTTONDOWN || msg == WM_LBUTTONDBLCLK)
+	    && wid && wid->kind == W_GUI_WIDGET_TREE_VIEW
+	    && SendMessageW(hwnd, TVM_GETIMAGELIST, TVSIL_NORMAL, 0)) {
+		lp = Tree_Button_Point(hwnd, lp);
+	}
+
+	if (msg == WM_GUI_ICONS) {
+		if (wid) Refresh_Icons(wid, Dpi_Of(hwnd));
+		return 0;
+	}
 
 	// A list-view's selection has settled - see List_View_Notify.
 	if (msg == WM_GUI_LIST_CHECK) {
@@ -4534,7 +4643,7 @@ static LRESULT CALLBACK Nav_Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 			Release_Press(old, (GUIWIDGET*)GetWindowLongPtrW(old, GWLP_USERDATA));
 		}
 		Pressed_Control = hwnd;
-		Queue_Widget_Mouse(wid, EVT_DOWN, lp,
+		Queue_Widget_Mouse(wid, EVT_DOWN, at,
 		                   msg == WM_LBUTTONDBLCLK ? GUI_FLAG_DOUBLE : 0);
 		break;  // on to the control, which captures and presses
 
@@ -4578,11 +4687,12 @@ static LRESULT CALLBACK Nav_Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 	// A list-view reports Enter the same way, as its double click - but
 	// only with a row picked, as there is nothing to activate otherwise.
 	if (wid && (wid->kind == W_GUI_WIDGET_FIELD || wid->kind == W_GUI_WIDGET_DATE_FIELD
-	            || wid->kind == W_GUI_WIDGET_LIST_VIEW)
+	            || wid->kind == W_GUI_WIDGET_LIST_VIEW || wid->kind == W_GUI_WIDGET_TREE_VIEW)
 	    && wp == VK_RETURN
 	    && (msg == WM_KEYDOWN || msg == WM_CHAR)) {
 		if (msg == WM_KEYDOWN && wid->hob
-		    && (wid->kind != W_GUI_WIDGET_LIST_VIEW || Gui_Widget_Get_Index(wid) >= 0)) {
+		    && (wid->kind != W_GUI_WIDGET_LIST_VIEW || Gui_Widget_Get_Index(wid) >= 0)
+		    && (wid->kind != W_GUI_WIDGET_TREE_VIEW || Gui_Tree_Selected(wid) >= 0)) {
 			REBINT x = 0, y = 0, w = 0, h = 0;
 			Gui_Widget_Get_Box(wid, &x, &y, &w, &h);
 			Gui_Queue_Event(wid->hob, EVT_CLICK, x, y, Modifiers());
@@ -4617,7 +4727,8 @@ static LRESULT CALLBACK Nav_Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 	// A field's or an area's edge in a dark window - see Paint_Dark_Edge().
 	if (msg == WM_NCPAINT && wid
 	    && (wid->kind == W_GUI_WIDGET_FIELD || wid->kind == W_GUI_WIDGET_AREA
-	        || wid->kind == W_GUI_WIDGET_TEXT_LIST || wid->kind == W_GUI_WIDGET_LIST_VIEW)
+	        || wid->kind == W_GUI_WIDGET_TEXT_LIST || wid->kind == W_GUI_WIDGET_LIST_VIEW
+	        || wid->kind == W_GUI_WIDGET_TREE_VIEW)
 	    && Dark_For(wid->owner)) {
 		LRESULT r = base ? CallWindowProcW(base, hwnd, msg, wp, lp)
 		                 : DefWindowProcW(hwnd, msg, wp, lp);
@@ -4743,6 +4854,17 @@ static void Subclass_For_Transparency(GUIWIDGET *wid)
 void Gui_Widget_Set_Background(GUIWIDGET *wid)
 {
 	if (!wid || !wid->handle) return;
+
+	// A tree-view is told its background too, the same way.
+	if (wid->kind == W_GUI_WIDGET_TREE_VIEW) {
+		COLORREF c = GUI_COLOR_HAS(wid->background) && !GUI_BG_IS_CLEAR(wid->background)
+			? RGB(GUI_COLOR_R(wid->background), GUI_COLOR_G(wid->background),
+			      GUI_COLOR_B(wid->background))
+			: List_Default_Back(wid->owner);
+		SendMessageW(HWND_OF_WID(wid), TVM_SETBKCOLOR, 0, (LPARAM)c);
+		InvalidateRect(HWND_OF_WID(wid), NULL, TRUE);
+		return;
+	}
 
 	// ... and so is a list-view's background. Like an entry's, a colour is
 	// honoured and transparency is not.
@@ -5359,6 +5481,102 @@ void Gui_Widget_Invalidate(GUIWIDGET *wid)
 }
 
 
+/***********************************************************************
+**  capture - see gui.h.
+**
+**  The whole top-level window is printed - PrintWindow with
+**  PW_RENDERFULLCONTENT asks DWM for what it composes, which is what is
+**  on screen, covered or not, labels painted by their parents and all -
+**  and the client area, or the widget's box in it, is cut out of that.
+**  Printing a control on its own would leave out whatever its parent
+**  paints for it, and the controls inside a panel.
+**
+**  The bitmap is as big as GetWindowRect, invisible resize borders
+**  included, so the client area is found from the same rectangle. A
+**  32-bit DIB is BGRA already; GDI leaves its alpha byte undefined.
+***********************************************************************/
+#ifndef PW_RENDERFULLCONTENT
+#define PW_RENDERFULLCONTENT 0x00000002
+#endif
+
+REBYTE* Gui_Capture(GUIWIN *win, GUIWIDGET *wid, REBINT *w, REBINT *h)
+{
+	HWND       top, target;
+	RECT       outer, client, box;
+	POINT      origin = {0, 0};
+	BITMAPINFO bmi;
+	HDC        dc;
+	HBITMAP    bmp, old;
+	void      *bits = NULL;
+	REBYTE    *out = NULL;
+	int        ow, oh, bw, bh, y, x;
+
+	target = wid ? HWND_OF_WID(wid) : HWND_OF(win);
+	if (!target) return NULL;
+	top = GetAncestor(target, GA_ROOT);
+	if (!top || !GetWindowRect(top, &outer) || !GetClientRect(top, &client)) return NULL;
+	ow = outer.right - outer.left;
+	oh = outer.bottom - outer.top;
+	if (ow <= 0 || oh <= 0 || client.right <= 0 || client.bottom <= 0) return NULL;
+
+	// What is wanted, in the top window's client coordinates, kept inside it.
+	box = client;
+	if (wid) {
+		RECT r;
+		if (!GetWindowRect(target, &r)) return NULL;
+		MapWindowPoints(NULL, top, (POINT*)&r, 2);
+		if (!IntersectRect(&box, &r, &client)) return NULL;
+	}
+	bw = box.right - box.left;
+	bh = box.bottom - box.top;
+	ClientToScreen(top, &origin);           // the client's corner ...
+	origin.x -= outer.left;                 // ... in the printed bitmap
+	origin.y -= outer.top;
+
+	ZeroMemory(&bmi, sizeof(bmi));
+	bmi.bmiHeader.biSize        = sizeof(BITMAPINFOHEADER);
+	bmi.bmiHeader.biWidth       = ow;
+	bmi.bmiHeader.biHeight      = -oh;      // top-down, as an image! is
+	bmi.bmiHeader.biPlanes      = 1;
+	bmi.bmiHeader.biBitCount    = 32;
+	bmi.bmiHeader.biCompression = BI_RGB;
+
+	dc = CreateCompatibleDC(NULL);
+	if (!dc) return NULL;
+	bmp = CreateDIBSection(dc, &bmi, DIB_RGB_COLORS, &bits, NULL, 0);
+	if (!bmp || !bits) { if (bmp) DeleteObject(bmp); DeleteDC(dc); return NULL; }
+	old = (HBITMAP)SelectObject(dc, bmp);
+
+	// PW_RENDERFULLCONTENT is Windows 8.1 and later; before it, the plain
+	// call, which is the window painting itself into the bitmap.
+	if (!PrintWindow(top, dc, PW_RENDERFULLCONTENT)) PrintWindow(top, dc, 0);
+	GdiFlush();
+
+	out = (REBYTE*)MAKE_MEM((size_t)bw * bh * 4);
+	if (out) {
+		for (y = 0; y < bh; y++) {
+			int sy = origin.y + box.top + y, sx = origin.x + box.left;
+			REBYTE *row = out + (size_t)y * bw * 4;
+			if (sy < 0 || sy >= oh) { memset(row, 0, (size_t)bw * 4); }
+			else for (x = 0; x < bw; x++) {
+				int px = sx + x;
+				if (px >= 0 && px < ow)
+					memcpy(row + x * 4, (REBYTE*)bits + ((size_t)sy * ow + px) * 4, 4);
+				else
+					memset(row + x * 4, 0, 4);
+			}
+			for (x = 0; x < bw; x++) row[x * 4 + 3] = 255;
+		}
+		*w = bw;
+		*h = bh;
+	}
+	SelectObject(dc, old);
+	DeleteObject(bmp);
+	DeleteDC(dc);
+	return out;
+}
+
+
 void Gui_Window_Redraw(GUIWIN *win)
 {
 	if (!win || !win->handle) return;
@@ -5514,14 +5732,295 @@ REBOOL Gui_Widget_Set_Font(GUIWIDGET *wid, const REBYTE *utf8, REBCNT len,
 	// caller laid out is the box it keeps - which is the same promise the
 	// panel's frame makes.
 	SendMessageW(hwnd, WM_SETFONT, (WPARAM)font, MAKELPARAM(TRUE, 0));
+	// ... and puts the platform's own row height back: one set by the
+	// script is kept.
+	Apply_Row_Height(wid, Dpi_Of(hwnd));
 	InvalidateRect(hwnd, NULL, TRUE);
 	return TRUE;
+}
+
+
+/***********************************************************************
+**  Icons - see gui.h.
+**
+**  Each widget's are an image list made anew for the row height: image 0
+**  a blank one, for a row without an icon, which keeps the labels in
+**  line, and icon n as image n + 1. Each image is `w` x `h` with the icon
+**  `px` square in its middle - a ListView's are as tall as its rows.
+**
+**  Each goes in as an icon: a 32-bit colour bitmap with straight alpha,
+**  which is the one form every comctl32 6 image list draws with its
+**  alpha. The mask is all "transparent", which only the blank one uses.
+**
+**  A TreeView and a ListView hold theirs; a text-list draws its own rows
+**  and keeps it in a window property. A ListView destroys its image
+**  lists itself, the other two do not - see WM_NCDESTROY in Nav_Proc.
+***********************************************************************/
+static HIMAGELIST Make_Icon_List(GUIWIDGET *wid, int w, int h, int px)
+{
+	REBCNT     count = Gui_Icon_Count(wid), n;
+	HIMAGELIST list;
+	BITMAPINFO bmi;
+	REBYTE    *mask_bits;
+	HBITMAP    mask;
+	size_t     mask_size = (size_t)((w + 15) / 16) * 2 * h;
+
+	if (px > w) px = w;
+	if (px > h) px = h;
+	list = ImageList_Create(w, h, ILC_COLOR32 | ILC_MASK, (int)count + 1, 4);
+	if (!list) return NULL;
+
+	mask_bits = (REBYTE*)MAKE_MEM(mask_size);
+	if (!mask_bits) { ImageList_Destroy(list); return NULL; }
+	memset(mask_bits, 0xFF, mask_size);
+	mask = CreateBitmap(w, h, 1, 1, mask_bits);
+	FREE_MEM(mask_bits);
+
+	ZeroMemory(&bmi, sizeof(bmi));
+	bmi.bmiHeader.biSize        = sizeof(BITMAPINFOHEADER);
+	bmi.bmiHeader.biWidth       = w;
+	bmi.bmiHeader.biHeight      = -h;   // top-down, as an image! is
+	bmi.bmiHeader.biPlanes      = 1;
+	bmi.bmiHeader.biBitCount    = 32;
+	bmi.bmiHeader.biCompression = BI_RGB;
+
+	for (n = 0; n <= count; n++) {
+		void    *bits = NULL;
+		HBITMAP  color = CreateDIBSection(NULL, &bmi, DIB_RGB_COLORS, &bits, NULL, 0);
+		ICONINFO info;
+		HICON    icon = NULL;
+
+		if (color && bits) {
+			ZeroMemory(bits, (size_t)w * h * 4);
+			if (n > 0)
+				Gui_Scale_Icon(Gui_Icon(wid, (REBINT)n - 1), px,
+				               (REBYTE*)bits + ((h - px) / 2 * w + (w - px) / 2) * 4,
+				               w * 4, FALSE);
+			GdiFlush();
+			ZeroMemory(&info, sizeof(info));
+			info.fIcon    = TRUE;
+			info.hbmMask  = mask;
+			info.hbmColor = color;
+			icon = CreateIconIndirect(&info);
+		}
+		// Every index must be there, or the ones after it would move.
+		if (icon) {
+			ImageList_ReplaceIcon(list, -1, icon);
+			DestroyIcon(icon);
+		} else {
+			ImageList_AddMasked(list, mask, 0); // stands in, blank
+		}
+		if (color) DeleteObject(color);
+	}
+	if (mask) DeleteObject(mask);
+	return list;
+}
+
+// The height of a line of the control's font, in pixels.
+static REBINT Font_Line_Height(HWND hwnd)
+{
+	HDC        dc = GetDC(hwnd);
+	HFONT      font, old = NULL;
+	TEXTMETRICW tm;
+	REBINT     h = 0;
+
+	if (!dc) return 0;
+	font = (HFONT)SendMessageW(hwnd, WM_GETFONT, 0, 0);
+	if (!font) font = Default_Font_At(Dpi_Of(hwnd));
+	if (font) old = (HFONT)SelectObject(dc, font);
+	if (GetTextMetricsW(dc, &tm)) h = tm.tmHeight;
+	if (old) SelectObject(dc, old);
+	ReleaseDC(hwnd, dc);
+	return h;
+}
+
+// Makes the widget's icons for its row height now - after its items, its
+// row height, its font or the DPI changed.
+static void Refresh_Icons(GUIWIDGET *wid, int dpi)
+{
+	HWND       hwnd;
+	HIMAGELIST list = NULL, old;
+	LRESULT    row;
+	REBINT     margin = To_Device(dpi, 4), px;
+	REBCNT     count = Gui_Icon_Count(wid);
+
+	if (!wid || !wid->handle) return;
+	hwnd = HWND_OF_WID(wid);
+
+	switch (wid->kind) {
+	case W_GUI_WIDGET_TREE_VIEW:
+		// None first: a TreeView makes its rows at least as tall as its
+		// images, and the height read below must be the font's - or the
+		// one set.
+		old = (HIMAGELIST)SendMessageW(hwnd, TVM_SETIMAGELIST, TVSIL_NORMAL, 0);
+		if (old) ImageList_Destroy(old);
+		if (count == 0) return;
+		row = (wid->row_height > 0) ? To_Device(dpi, wid->row_height)
+		                            : SendMessageW(hwnd, TVM_GETITEMHEIGHT, 0, 0);
+		px = (REBINT)row - margin;
+		if (px < 4) px = 4;
+		list = Make_Icon_List(wid, px, px, px);
+		if (!list) return;
+		SendMessageW(hwnd, TVM_SETIMAGELIST, TVSIL_NORMAL, (LPARAM)list);
+		if (wid->row_height > 0)
+			SendMessageW(hwnd, TVM_SETITEMHEIGHT, (WPARAM)To_Device(dpi, wid->row_height), 0);
+		break;
+
+	case W_GUI_WIDGET_LIST_VIEW:
+		old = (HIMAGELIST)SendMessageW(hwnd, LVM_SETIMAGELIST, LVSIL_SMALL, 0);
+		if (old) ImageList_Destroy(old);
+		if (count > 0) {
+			// As tall as the rows asked for, or as the font's line and a
+			// margin; the icon in the middle.
+			REBINT h = (wid->row_height > 0) ? To_Device(dpi, wid->row_height)
+			                                 : Font_Line_Height(hwnd) + margin;
+			px = h - margin;
+			if (px < 4) px = 4;
+			list = Make_Icon_List(wid, px, h, px);
+		} else if (wid->row_height > 0) {
+			// No icons: blank images 1 pixel wide, only for the height.
+			list = ImageList_Create(1, To_Device(dpi, wid->row_height), ILC_COLOR32, 0, 0);
+		}
+		if (list) SendMessageW(hwnd, LVM_SETIMAGELIST, LVSIL_SMALL, (LPARAM)list);
+		break;
+
+	case W_GUI_WIDGET_TEXT_LIST:
+		old = (HIMAGELIST)RemovePropW(hwnd, ICONS_PROP);
+		if (old) ImageList_Destroy(old);
+		if (count == 0) break;
+		px = (REBINT)SendMessageW(hwnd, LB_GETITEMHEIGHT, 0, 0) - margin;
+		if (px < 4) px = 4;
+		list = Make_Icon_List(wid, px, px, px);
+		if (list) SetPropW(hwnd, ICONS_PROP, (HANDLE)list);
+		break;
+
+	default:
+		return;
+	}
+	InvalidateRect(hwnd, NULL, TRUE);
+}
+
+void Gui_Icons_Changed(GUIWIDGET *wid)
+{
+	if (wid && wid->handle) Refresh_Icons(wid, Dpi_Of(HWND_OF_WID(wid)));
+}
+
+
+/***********************************************************************
+**  Row height of a text-list, a list-view or a tree-view, at `dpi` - and
+**  their icons, which are sized from it.
+**
+**  A text-list is an owner-drawn list box (see Text_List_Draw), so its
+**  height is always set here: the one asked for, or the font's. A
+**  TreeView takes one directly. A ListView in report mode has no such
+**  message: its rows are as tall as the font or as its small image list,
+**  whichever is taller - so its icons' image list, or one of 1-pixel wide
+**  blank images, sets it (but never below the font's).
+**
+**  Called again after every font or DPI change: WM_SETFONT puts the
+**  platform's own height back.
+***********************************************************************/
+static void Apply_Row_Height(GUIWIDGET *wid, int dpi)
+{
+	HWND   hwnd;
+	REBINT h;
+
+	if (!wid || !wid->handle) return;
+	hwnd = HWND_OF_WID(wid);
+	h = (wid->row_height > 0) ? To_Device(dpi, wid->row_height) : 0;
+
+	switch (wid->kind) {
+	case W_GUI_WIDGET_TEXT_LIST:
+		if (h <= 0) h = Font_Line_Height(hwnd);
+		if (h > 255) h = 255; // a list box keeps the height in a byte
+		if (h > 0) SendMessageW(hwnd, LB_SETITEMHEIGHT, 0, MAKELPARAM(h, 0));
+		break;
+	case W_GUI_WIDGET_TREE_VIEW:
+		SendMessageW(hwnd, TVM_SETITEMHEIGHT, (WPARAM)(h > 0 ? h : -1), 0);
+		break;
+	case W_GUI_WIDGET_LIST_VIEW:
+		break;  // its image list, below
+	default:
+		return;
+	}
+	Refresh_Icons(wid, dpi);
+	InvalidateRect(hwnd, NULL, TRUE);
+}
+
+void Gui_Widget_Set_Row_Height(GUIWIDGET *wid)
+{
+	HWND  hwnd;
+	HFONT font;
+
+	if (!wid || !wid->handle) return;
+	hwnd = HWND_OF_WID(wid);
+	if (wid->row_height <= 0 && wid->kind == W_GUI_WIDGET_LIST_VIEW) {
+		// The same font again: the ListView works the height out anew -
+		// and the font's call makes the image list again.
+		font = (HFONT)SendMessageW(hwnd, WM_GETFONT, 0, 0);
+		if (!font) font = Default_Font_At(Dpi_Of(hwnd));
+		HIMAGELIST old = (HIMAGELIST)SendMessageW(hwnd, LVM_SETIMAGELIST, LVSIL_SMALL, 0);
+		if (old) ImageList_Destroy(old);
+		SendMessageW(hwnd, WM_SETFONT, (WPARAM)font, MAKELPARAM(TRUE, 0));
+	}
+	Apply_Row_Height(wid, Dpi_Of(hwnd));
+}
+
+REBINT Gui_Widget_Get_Row_Height(GUIWIDGET *wid)
+{
+	HWND    hwnd;
+	LRESULT h = 0;
+	RECT    r;
+
+	if (!wid || !wid->handle) return 0;
+	if (wid->row_height > 0) return wid->row_height;
+	hwnd = HWND_OF_WID(wid);
+
+	switch (wid->kind) {
+	case W_GUI_WIDGET_TEXT_LIST:
+		h = SendMessageW(hwnd, LB_GETITEMHEIGHT, 0, 0);
+		break;
+	case W_GUI_WIDGET_TREE_VIEW:
+		h = SendMessageW(hwnd, TVM_GETITEMHEIGHT, 0, 0);
+		break;
+	case W_GUI_WIDGET_LIST_VIEW:
+		r.left = LVIR_BOUNDS;
+		if (SendMessageW(hwnd, LVM_GETITEMCOUNT, 0, 0) > 0
+		    && SendMessageW(hwnd, LVM_GETITEMRECT, 0, (LPARAM)&r)) {
+			h = r.bottom - r.top;
+		} else {
+			// No row to measure: the font's line, as the ListView pads it.
+			HDC        dc = GetDC(hwnd);
+			HFONT      font, old = NULL;
+			TEXTMETRICW tm;
+			if (!dc) return 0;
+			font = (HFONT)SendMessageW(hwnd, WM_GETFONT, 0, 0);
+			if (font) old = (HFONT)SelectObject(dc, font);
+			if (GetTextMetricsW(dc, &tm)) h = tm.tmHeight + To_Device(Dpi_Of(hwnd), 4);
+			if (old) SelectObject(dc, old);
+			ReleaseDC(hwnd, dc);
+		}
+		break;
+	default:
+		return 0;
+	}
+	return (h > 0) ? To_Logical(Dpi_Of(hwnd), (REBINT)h) : 0;
 }
 
 
 REBOOL Gui_Widget_Set_Color(GUIWIDGET *wid)
 {
 	if (!wid || !wid->handle) return FALSE;
+
+	// A TreeView too.
+	if (wid->kind == W_GUI_WIDGET_TREE_VIEW) {
+		COLORREF c = GUI_COLOR_HAS(wid->color)
+			? RGB(GUI_COLOR_R(wid->color), GUI_COLOR_G(wid->color), GUI_COLOR_B(wid->color))
+			: Default_Text_Color(wid->owner);
+		SendMessageW(HWND_OF_WID(wid), TVM_SETTEXTCOLOR, 0, (LPARAM)c);
+		InvalidateRect(HWND_OF_WID(wid), NULL, TRUE);
+		return TRUE;
+	}
 
 	// A ListView paints its own rows and asks no one: it is told.
 	if (wid->kind == W_GUI_WIDGET_LIST_VIEW) {
@@ -5876,6 +6375,7 @@ REBOOL Gui_Widget_Natural_Size(GUIWIDGET *wid, REBINT *w, REBINT *h)
 	WCHAR  *caption = NULL;
 	REBINT  pad_x = 0, pad_y = 0;
 	REBINT  lines = 1;
+	LONG    line;
 	int     dpi;
 
 	if (!wid || !wid->handle) return FALSE;
@@ -5943,11 +6443,14 @@ REBOOL Gui_Widget_Natural_Size(GUIWIDGET *wid, REBINT *w, REBINT *h)
 	case W_GUI_WIDGET_AREA:
 	case W_GUI_WIDGET_TEXT_LIST:
 	case W_GUI_WIDGET_LIST_VIEW:
+	case W_GUI_WIDGET_TREE_VIEW:
 		// One line is not a useful multi-line box; four is the smallest
 		// that looks like one. A list gets a few more, as it is read by
-		// scanning down it - and a list-view one more for its header.
+		// scanning down it - and a list-view one more for its header. A
+		// tree is browsed more than glanced at, and gets eight.
 		lines = (wid->kind == W_GUI_WIDGET_TEXT_LIST) ? 6
-		      : (wid->kind == W_GUI_WIDGET_LIST_VIEW) ? 7 : 4;
+		      : (wid->kind == W_GUI_WIDGET_LIST_VIEW) ? 7
+		      : (wid->kind == W_GUI_WIDGET_TREE_VIEW) ? 8 : 4;
 		// A list-view is as wide as its columns, and the scroll bar.
 		if (wid->kind == W_GUI_WIDGET_LIST_VIEW) {
 			REBCNT n, count = Gui_List_Column_Count(wid);
@@ -5985,8 +6488,12 @@ REBOOL Gui_Widget_Natural_Size(GUIWIDGET *wid, REBINT *w, REBINT *h)
 	// for a single line it is a pixel or two of slack in the only direction
 	// that matters, since a static draws from the top and anything short
 	// clips the descenders.
-	if (h) *h = To_Logical(dpi, (REBINT)(tm.tmHeight + tm.tmExternalLeading) * lines
-	                       + pad_y);
+	line = tm.tmHeight + tm.tmExternalLeading;
+	if (lines > 1 && wid->kind != W_GUI_WIDGET_AREA) {
+		REBINT row = Gui_Widget_Get_Row_Height(wid);
+		if (row > 0) line = To_Device(dpi, row);
+	}
+	if (h) *h = To_Logical(dpi, (REBINT)line * lines + pad_y);
 	return TRUE;
 }
 
@@ -6650,11 +7157,12 @@ REBOOL Gui_Create_Text_List(GUIWIDGET *wid, GUIWIN *owner,
 
 	// WS_VSCROLL without LBS_DISABLENOSCROLL is a scroll bar that shows
 	// only while the items do not fit. LBS_NOINTEGRALHEIGHT keeps the box
-	// the size it was given, rather than shrinking it to whole rows.
+	// the size it was given, rather than shrinking it to whole rows. Owner
+	// drawn, with the strings kept, for the icons: see Text_List_Draw.
 	hwnd = CreateWindowExW(
 		WS_EX_CLIENTEDGE, L"LISTBOX", L"",
 		WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL | WS_GROUP
-		| LBS_NOTIFY | LBS_NOINTEGRALHEIGHT | LBS_HASSTRINGS,
+		| LBS_NOTIFY | LBS_NOINTEGRALHEIGHT | LBS_HASSTRINGS | LBS_OWNERDRAWFIXED,
 		x, y, w, h,
 		Parent_Hwnd(wid, owner),
 		NULL,
@@ -6667,8 +7175,79 @@ REBOOL Gui_Create_Text_List(GUIWIDGET *wid, GUIWIN *owner,
 
 	wid->handle = (void*)hwnd;
 	Subclass_For_Nav(wid);
+	// An owner-drawn list box keeps the row height it had when created,
+	// whatever the font: it is set here, and after every font change.
+	Apply_Row_Height(wid, Dpi_Of(hwnd));
 
 	return TRUE;
+}
+
+/***********************************************************************
+**  A text-list's row, as the list box itself would draw it - its colours
+**  asked of its parent with WM_CTLCOLORLISTBOX, as it would ask - with
+**  the row's icon, when the list has any, before the text.
+***********************************************************************/
+static void Text_List_Draw(GUIWIDGET *wid, DRAWITEMSTRUCT *d)
+{
+	HWND       hwnd = d->hwndItem;
+	HDC        dc   = d->hDC;
+	RECT       r    = d->rcItem, tr;
+	int        dpi  = Dpi_Of(hwnd);
+	HBRUSH     bg;
+	HFONT      font, old_font = NULL;
+	HIMAGELIST list;
+	WCHAR      stack[256], *text = stack;
+	LRESULT    len;
+	int        x;
+
+	if (d->itemID == (UINT)-1) {
+		// No rows: only where the focus is.
+		if ((d->itemState & ODS_FOCUS) && !(d->itemState & ODS_NOFOCUSRECT))
+			DrawFocusRect(dc, &r);
+		return;
+	}
+
+	bg = (HBRUSH)SendMessageW(GetParent(hwnd), WM_CTLCOLORLISTBOX, (WPARAM)dc, (LPARAM)hwnd);
+	if (d->itemState & ODS_SELECTED) {
+		FillRect(dc, &r, GetSysColorBrush(COLOR_HIGHLIGHT));
+		SetTextColor(dc, GetSysColor(COLOR_HIGHLIGHTTEXT));
+	} else if (bg) {
+		FillRect(dc, &r, bg);
+	}
+	if (d->itemState & ODS_DISABLED) SetTextColor(dc, GetSysColor(COLOR_GRAYTEXT));
+	SetBkMode(dc, TRANSPARENT);
+
+	x = r.left + To_Device(dpi, 2);
+	list = (HIMAGELIST)GetPropW(hwnd, ICONS_PROP);
+	if (list) {
+		int iw = 0, ih = 0;
+		REBINT image = Gui_Row_Icon(wid, (REBCNT)d->itemID);
+		ImageList_GetIconSize(list, &iw, &ih);
+		if (image + 1 < ImageList_GetImageCount(list))
+			ImageList_Draw(list, image + 1, dc, x,
+			               r.top + ((r.bottom - r.top) - ih) / 2, ILD_TRANSPARENT);
+		x += iw + To_Device(dpi, 4);
+	}
+
+	len = SendMessageW(hwnd, LB_GETTEXTLEN, (WPARAM)d->itemID, 0);
+	if (len < 0) len = 0;
+	if ((size_t)len >= sizeof(stack) / sizeof(WCHAR))
+		text = (WCHAR*)MAKE_MEM(((size_t)len + 1) * sizeof(WCHAR));
+	if (text) {
+		len = SendMessageW(hwnd, LB_GETTEXT, (WPARAM)d->itemID, (LPARAM)text);
+		if (len < 0) len = 0;
+		font = (HFONT)SendMessageW(hwnd, WM_GETFONT, 0, 0);
+		if (font) old_font = (HFONT)SelectObject(dc, font);
+		tr = r;
+		tr.left = x;
+		DrawTextW(dc, text, (int)len, &tr,
+		          DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_END_ELLIPSIS);
+		if (old_font) SelectObject(dc, old_font);
+		if (text != stack) FREE_MEM(text);
+	}
+
+	if ((d->itemState & ODS_FOCUS) && !(d->itemState & ODS_NOFOCUSRECT))
+		DrawFocusRect(dc, &r);
 }
 
 
@@ -6937,9 +7516,20 @@ static REBOOL List_View_Notify(GUIWIDGET *wid, NMHDR *nm, LRESULT *res)
 		REBCNT  len;
 		int     n = 0;
 		REBINT  field;
-		if (!(di->item.mask & LVIF_TEXT)) return TRUE;
 		// Subitem n is column n (see List_Field_Of), which shows its field.
 		field = List_Field_Of(wid, di->item.iSubItem);
+		// A row's icon is its first field - see Refresh_Icons. One not yet
+		// in the image list (a cell changed in place) remakes it.
+		if ((di->item.mask & LVIF_IMAGE) && di->item.iSubItem == 0) {
+			REBINT image = (field == 0 && di->item.iItem >= 0 && Gui_Icon_Count(wid) > 0)
+				? Gui_Row_Icon(wid, (REBCNT)di->item.iItem) : -1;
+			HIMAGELIST list = (HIMAGELIST)SendMessageW(HWND_OF_WID(wid),
+			                                           LVM_GETIMAGELIST, LVSIL_SMALL, 0);
+			if (list && image >= 0 && image + 1 >= ImageList_GetImageCount(list))
+				PostMessageW(HWND_OF_WID(wid), WM_GUI_ICONS, 0, 0);
+			di->item.iImage = (list && image + 1 < ImageList_GetImageCount(list)) ? image + 1 : 0;
+		}
+		if (!(di->item.mask & LVIF_TEXT)) return TRUE;
 		if (di->item.iItem >= 0 && field >= 0
 		    && Gui_List_Cell(wid, (REBCNT)di->item.iItem, (REBCNT)field, &utf8, &len)
 		    && len > 0) {
@@ -7044,6 +7634,205 @@ static void List_View_Set_Scroll(HWND hwnd, REBDEC where)
 	r.left = LVIR_BOUNDS;
 	if (!SendMessageW(hwnd, LVM_GETITEMRECT, 0, (LPARAM)&r)) return;
 	SendMessageW(hwnd, LVM_SCROLL, 0, (LPARAM)((target - top) * (r.bottom - r.top)));
+}
+
+
+//-- tree-view ----------------------------------------------------------------
+
+/***********************************************************************
+**  A TreeView whose items carry their node's index in lParam - see
+**  gui.h. The labels are copied into the control; the table of nodes
+**  stays in the shared layer.
+**
+**  Set while this file changes the selection or the branches itself:
+**  TVN_SELCHANGED is sent for those too, and collapsing a branch which
+**  holds the selection moves it to the branch - none of it the user's.
+***********************************************************************/
+static REBOOL Setting_Tree = FALSE;
+
+REBOOL Gui_Create_Tree_View(GUIWIDGET *wid, GUIWIN *owner,
+                            REBINT x, REBINT y, REBINT w, REBINT h)
+{
+	HWND hwnd;
+
+	if (!wid || !owner || !owner->handle) return FALSE;
+	Box_To_Device(Dpi_Of(HWND_OF(owner)), &x, &y, &w, &h);
+
+	// Buttons and lines at the top level too, and the selection kept
+	// visible while the focus is elsewhere, as in a text-list.
+	hwnd = CreateWindowExW(
+		WS_EX_CLIENTEDGE, WC_TREEVIEWW, L"",
+		WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_GROUP
+		| TVS_HASBUTTONS | TVS_HASLINES | TVS_LINESATROOT | TVS_SHOWSELALWAYS,
+		x, y, w, h,
+		Parent_Hwnd(wid, owner),
+		NULL,
+		App_Instance, NULL
+	);
+	if (!hwnd) return FALSE;
+
+	SetWindowLongPtrW(hwnd, GWLP_USERDATA, (LONG_PTR)wid);
+	SendMessageW(hwnd, TVM_SETEXTENDEDSTYLE, TVS_EX_DOUBLEBUFFER, TVS_EX_DOUBLEBUFFER);
+	SendMessageW(hwnd, WM_SETFONT, (WPARAM)Default_Font_At(Dpi_Of(hwnd)), TRUE);
+
+	wid->handle = (void*)hwnd;
+	Subclass_For_Nav(wid);
+	Theme_Control(wid, FALSE);
+	return TRUE;
+}
+
+// The node an item stands for, from its lParam; -1 for no item.
+static REBINT Tree_Node_Of(HWND hwnd, HTREEITEM item)
+{
+	TVITEMW it;
+	if (!item) return -1;
+	ZeroMemory(&it, sizeof(it));
+	it.mask  = TVIF_PARAM | TVIF_HANDLE;
+	it.hItem = item;
+	if (!SendMessageW(hwnd, TVM_GETITEMW, 0, (LPARAM)&it)) return -1;
+	return (REBINT)it.lParam;
+}
+
+static HTREEITEM Tree_Item_Of(GUIWIDGET *wid, REBINT n)
+{
+	GUITREE *tree = GUI_TREE_OF(wid);
+	if (!tree || n < 0 || (REBCNT)n >= tree->count) return NULL;
+	return (HTREEITEM)tree->nodes[n].native;
+}
+
+void Gui_Tree_Clear(GUIWIDGET *wid)
+{
+	if (!wid || !wid->handle) return;
+	Setting_Tree = TRUE;
+	SendMessageW(HWND_OF_WID(wid), TVM_DELETEITEM, 0, (LPARAM)TVI_ROOT);
+	Setting_Tree = FALSE;
+}
+
+void* Gui_Tree_Add_Node(GUIWIDGET *wid, REBCNT n)
+{
+	GUITREE *tree = GUI_TREE_OF(wid);
+	GUITREENODE *node;
+	TVINSERTSTRUCTW ins;
+	WCHAR *wide;
+	HTREEITEM item;
+
+	if (!wid || !wid->handle || !tree || n >= tree->count) return NULL;
+	node = &tree->nodes[n];
+	wide = To_Wide(node->label, node->len);
+
+	ZeroMemory(&ins, sizeof(ins));
+	ins.hParent      = node->parent >= 0 ? (HTREEITEM)tree->nodes[node->parent].native : TVI_ROOT;
+	ins.hInsertAfter = TVI_LAST;
+	ins.item.mask    = TVIF_TEXT | TVIF_PARAM;
+	ins.item.pszText = wide ? wide : L"";
+	ins.item.lParam  = (LPARAM)n;
+	// Icon n is image n + 1; 0 is a blank one - see Refresh_Icons.
+	if (Gui_Icon_Count(wid) > 0) {
+		ins.item.mask |= TVIF_IMAGE | TVIF_SELECTEDIMAGE;
+		ins.item.iImage = ins.item.iSelectedImage = (int)node->image + 1;
+	}
+	Setting_Tree = TRUE;
+	item = (HTREEITEM)SendMessageW(HWND_OF_WID(wid), TVM_INSERTITEMW, 0, (LPARAM)&ins);
+	Setting_Tree = FALSE;
+	if (wide) FREE_MEM(wide);
+	return (void*)item;
+}
+
+void Gui_Tree_End(GUIWIDGET *wid)
+{
+	if (!wid || !wid->handle) return;
+	Refresh_Icons(wid, Dpi_Of(HWND_OF_WID(wid)));
+	InvalidateRect(HWND_OF_WID(wid), NULL, TRUE);
+}
+
+
+
+void Gui_Tree_Select(GUIWIDGET *wid, REBINT n)
+{
+	HTREEITEM item;
+	if (!wid || !wid->handle) return;
+	item = Tree_Item_Of(wid, n);
+	Setting_Tree = TRUE;
+	SendMessageW(HWND_OF_WID(wid), TVM_SELECTITEM, TVGN_CARET, (LPARAM)item);
+	if (item) SendMessageW(HWND_OF_WID(wid), TVM_ENSUREVISIBLE, 0, (LPARAM)item);
+	Setting_Tree = FALSE;
+}
+
+REBINT Gui_Tree_Selected(GUIWIDGET *wid)
+{
+	HWND hwnd;
+	if (!wid || !wid->handle) return -1;
+	hwnd = HWND_OF_WID(wid);
+	return Tree_Node_Of(hwnd, (HTREEITEM)SendMessageW(hwnd, TVM_GETNEXTITEM, TVGN_CARET, 0));
+}
+
+// A TreeView keeps an item's open state whether its parent is open or
+// not, which is exactly the contract.
+void Gui_Tree_Expand(GUIWIDGET *wid, REBCNT n, REBOOL open)
+{
+	HTREEITEM item = Tree_Item_Of(wid, (REBINT)n);
+	if (!item) return;
+	Setting_Tree = TRUE;
+	SendMessageW(HWND_OF_WID(wid), TVM_EXPAND, open ? TVE_EXPAND : TVE_COLLAPSE, (LPARAM)item);
+	Setting_Tree = FALSE;
+}
+
+REBOOL Gui_Tree_Is_Expanded(GUIWIDGET *wid, REBCNT n)
+{
+	HTREEITEM item = Tree_Item_Of(wid, (REBINT)n);
+	if (!item) return FALSE;
+	return (SendMessageW(HWND_OF_WID(wid), TVM_GETITEMSTATE, (WPARAM)item, TVIS_EXPANDED)
+	        & TVIS_EXPANDED) ? TRUE : FALSE;
+}
+
+static REBOOL Tree_View_Notify(GUIWIDGET *wid, NMHDR *nm, LRESULT *res)
+{
+	REBINT x = 0, y = 0, w = 0, h = 0;
+
+	*res = 0;
+	switch (nm->code) {
+	case TVN_SELCHANGEDW:
+	case TVN_SELCHANGEDA:
+		if (!Setting_Tree) {
+			NMTREEVIEWW *tv = (NMTREEVIEWW*)nm;
+			Gui_Tree_Picked(wid, Tree_Node_Of(nm->hwndFrom, tv->itemNew.hItem));
+		}
+		return TRUE;
+
+	// Only the user's: TVM_EXPAND sends no notification at all.
+	case TVN_ITEMEXPANDEDW:
+	case TVN_ITEMEXPANDEDA: {
+		NMTREEVIEWW *tv = (NMTREEVIEWW*)nm;
+		if (!Setting_Tree && (tv->action & (TVE_EXPAND | TVE_COLLAPSE)))
+			Gui_Tree_Toggled(wid, (REBINT)tv->itemNew.lParam,
+			                 (tv->action & TVE_EXPAND) ? TRUE : FALSE);
+		return TRUE; }
+
+	case NM_DBLCLK: {
+		// On an item only - not on the empty part below the last one. The
+		// TreeView also opens or closes a branch on a double click, as the
+		// user expects of it.
+		TVHITTESTINFO hit;
+		DWORD at = GetMessagePos();
+		ZeroMemory(&hit, sizeof(hit));
+		hit.pt.x = GET_X_LPARAM(at);
+		hit.pt.y = GET_Y_LPARAM(at);
+		ScreenToClient(nm->hwndFrom, &hit.pt);
+		SendMessageW(nm->hwndFrom, TVM_HITTEST, 0, (LPARAM)&hit);
+		if (!hit.hItem || !(hit.flags & TVHT_ONITEM) || !wid->hob) return TRUE;
+		Gui_Widget_Get_Box(wid, &x, &y, &w, &h);
+		Gui_Queue_Event(wid->hob, EVT_CLICK, x, y, Modifiers());
+		return TRUE; }
+
+	case NM_SETFOCUS:
+	case NM_KILLFOCUS:
+		if (!wid->hob) return TRUE;
+		Gui_Widget_Get_Box(wid, &x, &y, &w, &h);
+		Gui_Queue_Event(wid->hob, nm->code == NM_SETFOCUS ? EVT_FOCUS : EVT_UNFOCUS,
+		                x, y, Modifiers());
+		return TRUE;
+	}
+	return FALSE;
 }
 
 
@@ -7364,6 +8153,12 @@ REBDEC Gui_Widget_Get_Scroll(GUIWIDGET *wid)
 
 	if (!wid || !wid->handle) return -1.0;
 	if (wid->kind == W_GUI_WIDGET_LIST_VIEW) return List_View_Get_Scroll(HWND_OF_WID(wid));
+	// A TreeView's scroll bar counts visible items, and is gone when
+	// they all fit - which is the top, not "does not scroll".
+	if (wid->kind == W_GUI_WIDGET_TREE_VIEW) {
+		if (!Scroll_Span_Of(HWND_OF_WID(wid), &si, &span) || span <= 0) return 0.0;
+		return (REBDEC)(si.nPos - si.nMin) / (REBDEC)span;
+	}
 	if (wid->kind == W_GUI_WIDGET_TEXT_LIST) {
 		span = List_Span_Of(HWND_OF_WID(wid));
 		if (span <= 0) return 0.0;
@@ -7386,6 +8181,15 @@ REBOOL Gui_Widget_Set_Scroll(GUIWIDGET *wid, REBDEC where)
 	if (!wid || !wid->handle) return FALSE;
 	hwnd = HWND_OF_WID(wid);
 	if (wid->kind == W_GUI_WIDGET_LIST_VIEW) { List_View_Set_Scroll(hwnd, where); return TRUE; }
+	// A TreeView scrolls by visible items, and moves to a thumb position
+	// it is sent - clamped by the control.
+	if (wid->kind == W_GUI_WIDGET_TREE_VIEW) {
+		if (!Scroll_Span_Of(hwnd, &si, &span) || span <= 0) return TRUE;
+		target = si.nMin + (REBINT)((REBDEC)span * where + 0.5);
+		SendMessageW(hwnd, WM_VSCROLL, MAKEWPARAM(SB_THUMBPOSITION, target), 0);
+		SendMessageW(hwnd, WM_VSCROLL, MAKEWPARAM(SB_ENDSCROLL, 0), 0);
+		return TRUE;
+	}
 	if (wid->kind == W_GUI_WIDGET_TEXT_LIST) {
 		span = List_Span_Of(hwnd);
 		if (span <= 0) return TRUE;

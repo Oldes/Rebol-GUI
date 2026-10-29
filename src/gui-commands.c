@@ -801,8 +801,10 @@ REBOOL Gui_List_Cell(GUIWIDGET *wid, REBCNT row, REBCNT col, REBYTE **utf8, REBC
 
 	type = RL_GET_VALUE(blk, index + row * cols + col, &val);
 	if (type == 0 || type == RXT_END) return FALSE;  // the block got shorter
-	// A missing value is an empty cell, not the word "none".
-	if (type == RXT_NONE || type == RXT_UNSET) return TRUE;
+	// A missing value is an empty cell, not the word "none"; an icon is
+	// drawn, not written.
+	if (type == RXT_NONE || type == RXT_UNSET || type == RXT_IMAGE) return TRUE;
+	if (type == RXT_GET_WORD && col == 0) return TRUE;
 
 	str = Hob_Scratch(wid->hob, FALSE);
 	if (!str) return FALSE;
@@ -1068,6 +1070,8 @@ static REBSER *List_Columns_Block(GUIWIDGET *wid)
 	return blk;
 }
 
+static void Icons_Free(GUIWIDGET *wid);
+
 // FALSE when the cells do not make whole rows.
 static REBOOL List_Set_Items(GUIWIDGET *wid, REBSER *blk, REBCNT index)
 {
@@ -1086,8 +1090,613 @@ static REBOOL List_Set_Items(GUIWIDGET *wid, REBSER *blk, REBCNT index)
 		Hob_Set_Payload(wid->hob, NULL, RXT_NONE);
 	}
 	wid->picked = -1;
+	// The icons, from the first field of every row - so the backend knows
+	// up front whether to keep room for them.
+	Icons_Free(wid);
+	{
+		REBCNT row, rows = Gui_List_Rows(wid);
+		for (row = 0; row < rows; row++) Gui_Row_Icon(wid, row);
+	}
+	Gui_Icons_Changed(wid);
 	Gui_List_Reload(wid, Gui_List_Rows(wid));
 	return TRUE;
+}
+
+
+/***********************************************************************
+**  Icons - see gui.h.
+***********************************************************************/
+
+static GUIICONS *Icons_Of(GUIWIDGET *wid, REBOOL make)
+{
+	GUIICONS *icons = (GUIICONS*)wid->icons;
+	if (!icons && make) {
+		icons = (GUIICONS*)MAKE_MEM(sizeof(GUIICONS));
+		if (icons) { CLEARS(icons); wid->icons = icons; }
+	}
+	return icons;
+}
+
+static void Icons_Free(GUIWIDGET *wid)
+{
+	GUIICONS *icons = (GUIICONS*)wid->icons;
+	REBCNT n;
+	if (!icons) return;
+	for (n = 0; n < icons->count; n++)
+		if (icons->images[n].pixels) FREE_MEM(icons->images[n].pixels);
+	if (icons->images) FREE_MEM(icons->images);
+	if (icons->rows) FREE_MEM(icons->rows);
+	FREE_MEM(icons);
+	wid->icons = NULL;
+}
+
+// The image! a value stands for - itself, or what a get-word holds - or
+// NULL. `blk` and `n` are where it is, for the get-word to be looked up.
+static REBSER *Icon_Value(REBSER *blk, REBCNT n, REBCNT type, RXIARG *val)
+{
+	RXIARG got;
+	if (type == RXT_IMAGE) return (REBSER*)val->series;
+	if (type == RXT_GET_WORD && RL_GET_VALUE_RESOLVED(blk, n, &got) == RXT_IMAGE)
+		return (REBSER*)got.series;
+	return NULL;
+}
+
+// The image! `img` in the widget's table: its index, or -1. One already
+// there - the same image! for every folder, say - is not copied again.
+static REBINT Icons_Add(GUIWIDGET *wid, REBSER *img)
+{
+	GUIICONS *icons;
+	GUIICON  *slot;
+	REBINT w, h;
+	REBCNT n;
+
+	if (!img) return -1;
+	w = (REBINT)IMG_WIDE(img);
+	h = (REBINT)IMG_HIGH(img);
+	if (w <= 0 || h <= 0 || !IMG_DATA(img)) return -1;
+	icons = Icons_Of(wid, TRUE);
+	if (!icons) return -1;
+	for (n = 0; n < icons->count; n++)
+		if (icons->images[n].source == (void*)img
+		    && icons->images[n].w == w && icons->images[n].h == h)
+			return (REBINT)n;
+
+	if (icons->count == icons->capacity) {
+		REBCNT cap = icons->capacity ? icons->capacity * 2 : 4;
+		GUIICON *images = (GUIICON*)MAKE_MEM(sizeof(GUIICON) * cap);
+		if (!images) return -1;
+		if (icons->images) {
+			COPY_MEM(images, icons->images, sizeof(GUIICON) * icons->count);
+			FREE_MEM(icons->images);
+		}
+		icons->images = images;
+		icons->capacity = cap;
+	}
+	slot = &icons->images[icons->count];
+	slot->pixels = (REBYTE*)MAKE_MEM((size_t)w * (size_t)h * 4);
+	if (!slot->pixels) return -1;
+	COPY_MEM(slot->pixels, IMG_DATA(img), (size_t)w * (size_t)h * 4);
+	slot->w = w;
+	slot->h = h;
+	slot->source = (void*)img;
+	return (REBINT)icons->count++;
+}
+
+// Records `image` as the icon of text-list item `row`.
+static void Icons_Set_Row(GUIWIDGET *wid, REBCNT row, REBINT image)
+{
+	GUIICONS *icons = Icons_Of(wid, image >= 0);
+	REBCNT n;
+	if (!icons) return;
+	if (row >= icons->row_count) {
+		REBCNT  cap = icons->row_count ? icons->row_count : 16;
+		REBINT *rows;
+		while (cap <= row) cap *= 2;
+		rows = (REBINT*)MAKE_MEM(sizeof(REBINT) * cap);
+		if (!rows) return;
+		for (n = 0; n < cap; n++) rows[n] = (n < icons->row_count) ? icons->rows[n] : -1;
+		if (icons->rows) FREE_MEM(icons->rows);
+		icons->rows = rows;
+		icons->row_count = cap;
+	}
+	icons->rows[row] = image;
+}
+
+REBCNT Gui_Icon_Count(GUIWIDGET *wid)
+{
+	GUIICONS *icons = wid ? (GUIICONS*)wid->icons : NULL;
+	return icons ? icons->count : 0;
+}
+
+const GUIICON *Gui_Icon(GUIWIDGET *wid, REBINT n)
+{
+	GUIICONS *icons = wid ? (GUIICONS*)wid->icons : NULL;
+	if (!icons || n < 0 || (REBCNT)n >= icons->count) return NULL;
+	return &icons->images[n];
+}
+
+REBINT Gui_Row_Icon(GUIWIDGET *wid, REBCNT row)
+{
+	GUIICONS *icons = wid ? (GUIICONS*)wid->icons : NULL;
+	if (!wid) return -1;
+	if (wid->kind == W_GUI_WIDGET_TEXT_LIST)
+		return (icons && row < icons->row_count) ? icons->rows[row] : -1;
+	if (wid->kind == W_GUI_WIDGET_LIST_VIEW && wid->fields > 0) {
+		// Looked at again each time: the cells are read as they are shown.
+		REBCNT  index = 0, type;
+		REBSER *blk = List_Items(wid, &index);
+		RXIARG  val;
+		if (!blk) return -1;
+		index += row * wid->fields;
+		type = RL_GET_VALUE(blk, index, &val);
+		return Icons_Add(wid, Icon_Value(blk, index, type, &val));
+	}
+	return -1;
+}
+
+REBINT Gui_Icon_Size(GUIWIDGET *wid)
+{
+	REBINT size = Gui_Widget_Get_Row_Height(wid) - 4;
+	return (size < 4) ? 4 : size;
+}
+
+// An area average: every source pixel under a destination pixel counts by
+// how much of it is covered, and by its alpha - so a transparent pixel's
+// colour does not bleed into its neighbours' edges.
+void Gui_Scale_Icon(const GUIICON *img, REBINT size, REBYTE *dst,
+                    REBINT stride, REBOOL premultiply)
+{
+	REBINT dw = size, dh = size, ox, oy, dx, dy, sx, sy;
+	double fx, fy;
+
+	for (dy = 0; dy < size; dy++) CLEAR(dst + dy * stride, (size_t)size * 4);
+	if (!img || !img->pixels || img->w <= 0 || img->h <= 0 || size <= 0) return;
+
+	if (img->w >= img->h) dh = (REBINT)((double)img->h * size / img->w + 0.5);
+	else                  dw = (REBINT)((double)img->w * size / img->h + 0.5);
+	if (dw < 1) dw = 1;
+	if (dh < 1) dh = 1;
+	ox = (size - dw) / 2;
+	oy = (size - dh) / 2;
+	fx = (double)img->w / dw;
+	fy = (double)img->h / dh;
+
+	for (dy = 0; dy < dh; dy++) {
+		double y0 = dy * fy, y1 = y0 + fy;
+		REBYTE *out = dst + (oy + dy) * stride + ox * 4;
+		for (dx = 0; dx < dw; dx++, out += 4) {
+			double x0 = dx * fx, x1 = x0 + fx;
+			double b = 0, g = 0, r = 0, a = 0, area = 0;
+			for (sy = (REBINT)y0; sy < img->h && sy < y1; sy++) {
+				double wy = ((sy + 1 < y1) ? sy + 1 : y1) - ((sy > y0) ? sy : y0);
+				const REBYTE *in = img->pixels + ((size_t)sy * img->w) * 4;
+				for (sx = (REBINT)x0; sx < img->w && sx < x1; sx++) {
+					double wx = ((sx + 1 < x1) ? sx + 1 : x1) - ((sx > x0) ? sx : x0);
+					double wa = wx * wy * in[sx * 4 + 3] / 255.0;
+					b += in[sx * 4]     * wa;
+					g += in[sx * 4 + 1] * wa;
+					r += in[sx * 4 + 2] * wa;
+					a += wa;
+					area += wx * wy;
+				}
+			}
+			if (a <= 0 || area <= 0) continue;
+			{
+				double alpha = a / area;           // 0..1
+				double k = premultiply ? alpha / a : 1.0 / a;
+				out[0] = (REBYTE)(b * k + 0.5);
+				out[1] = (REBYTE)(g * k + 0.5);
+				out[2] = (REBYTE)(r * k + 0.5);
+				out[3] = (REBYTE)(alpha * 255.0 + 0.5);
+			}
+		}
+	}
+}
+
+/***********************************************************************
+**  tree-view: the nodes.
+**
+**  `items` is the menu dialect's grammar without the shortcuts: a label,
+**  then optionally a word naming the node, then optionally an image! (or a
+**  get-word holding one, looked up when the items are set) - its
+**  icon, scaled to the row's height - then optionally a block of its
+**  children in the same grammar.
+**
+**      ["Documents" docs ["Report.txt" report  "Old" ["a.txt"]]  "Music"]
+**
+**  It is parsed here, once, into a flat table (GUITREE - see gui.h),
+**  parents before their children, and pushed at the backend a node at a
+**  time. The block itself is kept in the payload slot, as a list-view's
+**  is, and read back by `items`; the table holds copies of the labels,
+**  so nothing in it points into Rebol memory.
+**
+**  A node is found by a PATH: a block of each node's word on the way
+**  down, or its label where it has no word - `[docs old "a.txt"]`.
+***********************************************************************/
+
+static void Tree_Free(GUIWIDGET *wid)
+{
+	GUITREE *tree = GUI_TREE_OF(wid);
+	REBCNT   n;
+
+	if (!tree) return;
+	for (n = 0; n < tree->count; n++)
+		if (tree->nodes[n].label) FREE_MEM(tree->nodes[n].label);
+	if (tree->nodes) FREE_MEM(tree->nodes);
+	FREE_MEM(tree);
+	wid->tree = NULL;
+}
+
+// Appends a node under `parent` (-1 for the top); its index, or -1.
+static REBINT Tree_Add(GUITREE *tree, REBINT parent, REBCNT word,
+                       const REBYTE *label, REBCNT len)
+{
+	GUITREENODE *node;
+	REBINT n, *link;
+
+	if (tree->count == tree->capacity) {
+		REBCNT cap = tree->capacity ? tree->capacity * 2 : 16;
+		GUITREENODE *nodes = (GUITREENODE*)MAKE_MEM(sizeof(GUITREENODE) * cap);
+		if (!nodes) return -1;
+		if (tree->nodes) {
+			COPY_MEM(nodes, tree->nodes, sizeof(GUITREENODE) * tree->count);
+			FREE_MEM(tree->nodes);
+		}
+		tree->nodes = nodes;
+		tree->capacity = cap;
+	}
+
+	n = (REBINT)tree->count;
+	node = &tree->nodes[n];
+	CLEARS(node);
+	node->label = (REBYTE*)MAKE_MEM(len + 1);
+	if (!node->label) return -1;
+	if (len) COPY_MEM(node->label, label, len);
+	node->label[len] = 0;
+	node->len    = len;
+	node->word   = word;
+	node->parent = parent;
+	node->first  = -1;
+	node->next   = -1;
+	node->image  = -1;
+	tree->count++;
+
+	// At the end of its parent's children, which keeps the dialect's order.
+	if (parent >= 0) {
+		link = &tree->nodes[parent].first;
+		while (*link >= 0) link = &tree->nodes[*link].next;
+		*link = n;
+	} else {
+		// After the last node at the top - the one with no next yet.
+		REBINT k;
+		for (k = 0; k < n; k++)
+			if (tree->nodes[k].parent < 0 && tree->nodes[k].next < 0) {
+				tree->nodes[k].next = n;
+				break;
+			}
+	}
+	return n;
+}
+
+
+// One level of the dialect, into `parent`. Anything which is not a label
+// where one is expected is skipped, as in a menu.
+static void Block_To_Tree(GUIWIDGET *wid, GUITREE *tree, REBSER *blk, REBCNT index, REBINT parent)
+{
+	REBCNT n, type;
+	RXIARG val;
+
+	for (n = index; (type = RL_GET_VALUE(blk, n, &val)) != 0; n++) {
+		REBYTE *label = NULL;
+		int     len;
+		REBCNT  word = 0, next_type;
+		RXIARG  next;
+		REBINT  node;
+
+		if (type == RXT_END) break;
+		if (type != RXT_STRING) continue;
+		len = RL_GET_UTF8_STRING((REBSER*)val.series, val.index, (void**)&label);
+		if (len < 0) continue;
+
+		next_type = RL_GET_VALUE(blk, n + 1, &next);
+		if (next_type == RXT_WORD) {
+			word = (REBCNT)next.int32a;
+			n++;
+			next_type = RL_GET_VALUE(blk, n + 1, &next);
+		}
+		node = Tree_Add(tree, parent, word, label, (REBCNT)len);
+		if (node < 0) return;
+		// The icon: an image!, or a get-word holding one - `:folder`.
+		if (next_type == RXT_GET_WORD || next_type == RXT_IMAGE) {
+			tree->nodes[node].image = Icons_Add(wid, Icon_Value(blk, n + 1, next_type, &next));
+			n++;
+			next_type = RL_GET_VALUE(blk, n + 1, &next);
+		}
+		if (next_type == RXT_BLOCK) {
+			Block_To_Tree(wid, tree, (REBSER*)next.series, next.index, node);
+			n++;
+		}
+	}
+}
+
+// Replaces the nodes; a NULL block leaves none.
+static REBOOL Tree_Set_Items(GUIWIDGET *wid, REBSER *blk, REBCNT index)
+{
+	GUITREE *tree;
+	RXIARG   val;
+	REBCNT   n;
+
+	Gui_Tree_Clear(wid);
+	Tree_Free(wid);
+	Icons_Free(wid);
+	wid->picked = -1;
+
+	if (!blk) {
+		Hob_Set_Payload(wid->hob, NULL, RXT_NONE);
+		Gui_Tree_End(wid);
+		return TRUE;
+	}
+
+	tree = (GUITREE*)MAKE_MEM(sizeof(GUITREE));
+	if (!tree) return FALSE;
+	CLEARS(tree);
+	wid->tree = tree;
+	Block_To_Tree(wid, tree, blk, index, -1);
+
+	CLEARS(&val);
+	val.series = blk;
+	val.index  = index;
+	Hob_Set_Payload(wid->hob, &val, RXT_BLOCK);
+
+	// Parents come before their children in the table, so every parent's
+	// native item exists by the time its children are added.
+	for (n = 0; n < tree->count; n++) {
+		GUITREENODE *node = &tree->nodes[n];
+		if (node->parent >= 0 && !tree->nodes[node->parent].native) continue;
+		node->native = Gui_Tree_Add_Node(wid, n);
+	}
+	Gui_Tree_End(wid);
+	return TRUE;
+}
+
+// A node's name in a path: its word, or its label.
+static void Tree_Id(GUITREENODE *node, RXIARG *val, REBCNT *type)
+{
+	CLEARS(val);
+	if (node->word) {
+		val->int32a = (i32)node->word;
+		*type = RXT_WORD;
+		return;
+	}
+	val->series = RL_DECODE_UTF_STRING(node->label, node->len, 8, FALSE, FALSE);
+	val->index  = 0;
+	*type = val->series ? RXT_STRING : RXT_NONE;
+}
+
+// The path to node `n`, as a new block. Deeper than 64 levels, the top
+// of the path is left out - a tree that deep is not one a person reads.
+#define TREE_MAX_DEPTH 64
+
+static REBSER *Tree_Path(GUIWIDGET *wid, REBINT n)
+{
+	GUITREE *tree = GUI_TREE_OF(wid);
+	REBSER  *blk;
+	REBINT   up[TREE_MAX_DEPTH], depth = 0, k;
+	RXIARG   val;
+	REBCNT   type;
+
+	if (!tree || n < 0 || n >= (REBINT)tree->count) return NULL;
+	for (k = n; k >= 0 && depth < TREE_MAX_DEPTH; k = tree->nodes[k].parent)
+		up[depth++] = k;
+	blk = (REBSER*)RL_MAKE_BLOCK((u32)depth);
+	if (!blk) return NULL;
+
+	// From the top down: a value is set by appending at the tail.
+	RL_PROTECT_GC(blk, 1);
+	for (k = 0; depth > 0; k++) {
+		Tree_Id(&tree->nodes[up[--depth]], &val, &type);
+		RL_SET_VALUE(blk, (u32)k, val, (int)type);
+	}
+	RL_PROTECT_GC(blk, 0);
+	return blk;
+}
+
+/***********************************************************************
+**  Node `n` as a script sees it: a node at the top is its word, or its
+**  label, alone - a path of one would be `#(path! [docs])` - and any
+**  other the path to it. FALSE when there is no such node.
+***********************************************************************/
+static REBOOL Tree_Value(GUIWIDGET *wid, REBINT n, RXIARG *val, REBCNT *type)
+{
+	GUITREE *tree = GUI_TREE_OF(wid);
+	REBSER  *path;
+
+	CLEARS(val);
+	*type = RXT_NONE;
+	if (!tree || n < 0 || n >= (REBINT)tree->count) return FALSE;
+	if (tree->nodes[n].parent < 0) {
+		Tree_Id(&tree->nodes[n], val, type);
+		return *type != RXT_NONE;
+	}
+	path = Tree_Path(wid, n);
+	if (!path) return FALSE;
+	val->series = path;
+	val->index  = 0;
+	*type = RXT_PATH;
+	return TRUE;
+}
+
+// Whether a node is the one a word or a label names.
+static REBOOL Tree_Is(GUITREENODE *node, REBCNT type, RXIARG *val)
+{
+	if (type == RXT_WORD) return node->word && node->word == (REBCNT)val->int32a;
+	if (type == RXT_STRING) {
+		REBYTE *utf8 = NULL;
+		int len;
+		if (node->word) return FALSE;   // a node with a word is named by it
+		len = RL_GET_UTF8_STRING((REBSER*)val->series, val->index, (void**)&utf8);
+		return len >= 0 && (REBCNT)len == node->len
+		    && (len == 0 || memcmp(utf8, node->label, (size_t)len) == 0);
+	}
+	return FALSE;
+}
+
+/***********************************************************************
+**  The node a value names: a path (or a block of the same) is followed
+**  from the top. A word or a label alone is a node at the top when there
+**  is one - it is what a top node reads back as - and otherwise the first
+**  node anywhere with it, parents before children. -1 for none.
+***********************************************************************/
+static REBINT Tree_Find(GUIWIDGET *wid, REBCNT type, RXIARG *val)
+{
+	GUITREE *tree = GUI_TREE_OF(wid);
+	REBCNT   n;
+
+	if (!tree || tree->count == 0) return -1;
+
+	if (type == RXT_PATH || type == RXT_BLOCK) {
+		REBSER *path = (REBSER*)val->series;
+		REBINT  at = -1, child;
+		RXIARG  step;
+		REBCNT  t;
+		for (n = val->index; (t = RL_GET_VALUE(path, n, &step)) != 0 && t != RXT_END; n++) {
+			child = (at < 0) ? 0 : tree->nodes[at].first;
+			if (at < 0) {
+				// The top level: the nodes without a parent.
+				REBCNT k;
+				child = -1;
+				for (k = 0; k < tree->count; k++)
+					if (tree->nodes[k].parent < 0 && Tree_Is(&tree->nodes[k], t, &step)) {
+						child = (REBINT)k;
+						break;
+					}
+			} else {
+				while (child >= 0 && !Tree_Is(&tree->nodes[child], t, &step))
+					child = tree->nodes[child].next;
+			}
+			if (child < 0) return -1;
+			at = child;
+		}
+		return at;
+	}
+
+	if (type == RXT_WORD || type == RXT_STRING) {
+		for (n = 0; n < tree->count; n++)
+			if (tree->nodes[n].parent < 0 && Tree_Is(&tree->nodes[n], type, val))
+				return (REBINT)n;
+		for (n = 0; n < tree->count; n++)
+			if (Tree_Is(&tree->nodes[n], type, val)) return (REBINT)n;
+	}
+	return -1;
+}
+
+// Opens every branch above node `n`, so that it can be seen.
+static void Tree_Open_To(GUIWIDGET *wid, REBINT n)
+{
+	GUITREE *tree = GUI_TREE_OF(wid);
+	REBINT   up[TREE_MAX_DEPTH], depth = 0, k;
+
+	if (!tree || n < 0) return;
+	for (k = tree->nodes[n].parent; k >= 0 && depth < TREE_MAX_DEPTH; k = tree->nodes[k].parent)
+		up[depth++] = k;
+	// From the top down, since a branch opens into its parent's.
+	while (depth > 0) Gui_Tree_Expand(wid, (REBCNT)up[--depth], TRUE);
+}
+
+// Picks node `n` (-1: none) without it being reported.
+static void Tree_Select(GUIWIDGET *wid, REBINT n)
+{
+	GUITREE *tree = GUI_TREE_OF(wid);
+	if (!tree || n >= (REBINT)tree->count) n = -1;
+	Tree_Open_To(wid, n);
+	wid->picked = n;
+	Gui_Tree_Select(wid, n);
+}
+
+void Gui_Tree_Picked(GUIWIDGET *wid, REBINT n)
+{
+	REBINT x = 0, y = 0, w = 0, h = 0;
+
+	if (!wid || n == wid->picked) return;
+	wid->picked = n;
+	if (!wid->hob) return;
+	Gui_Widget_Get_Box(wid, &x, &y, &w, &h);
+	Gui_Queue_Event(wid->hob, EVT_CHANGE, x, y, 0);
+}
+
+// The open branches, each as a path, in the order of the nodes.
+static REBSER *Tree_Expanded(GUIWIDGET *wid)
+{
+	GUITREE *tree = GUI_TREE_OF(wid);
+	REBSER  *blk;
+	REBCNT   n, at = 0;
+	RXIARG   val;
+
+	blk = (REBSER*)RL_MAKE_BLOCK(4);
+	if (!blk || !tree) return blk;
+	RL_PROTECT_GC(blk, 1);
+	for (n = 0; n < tree->count; n++) {
+		REBCNT type;
+		if (tree->nodes[n].first < 0) continue;   // a leaf opens nothing
+		if (!Gui_Tree_Is_Expanded(wid, n)) continue;
+		if (!Tree_Value(wid, (REBINT)n, &val, &type)) continue;
+		RL_SET_VALUE(blk, at++, val, (int)type);
+	}
+	RL_PROTECT_GC(blk, 0);
+	return blk;
+}
+
+// Every node, as a path, in the order of the table - which is what the
+// `code` of an `open` or `close` event counts in.
+static REBSER *Tree_Nodes(GUIWIDGET *wid)
+{
+	GUITREE *tree = GUI_TREE_OF(wid);
+	REBSER  *blk;
+	REBCNT   n;
+	RXIARG   val;
+
+	blk = (REBSER*)RL_MAKE_BLOCK(tree ? tree->count : 0);
+	if (!blk || !tree) return blk;
+	RL_PROTECT_GC(blk, 1);
+	for (n = 0; n < tree->count; n++) {
+		REBCNT type;
+		Tree_Value(wid, (REBINT)n, &val, &type);
+		RL_SET_VALUE(blk, n, val, (int)type);
+	}
+	RL_PROTECT_GC(blk, 0);
+	return blk;
+}
+
+void Gui_Tree_Toggled(GUIWIDGET *wid, REBINT n, REBOOL open)
+{
+	REBINT x = 0, y = 0, w = 0, h = 0;
+	if (!wid || !wid->hob || n < 0) return;
+	Gui_Widget_Get_Box(wid, &x, &y, &w, &h);
+	// 1-based, like every position a script sees.
+	Gui_Queue_Event(wid->hob, open ? EVT_OPEN : EVT_CLOSE, x, y, n + 1);
+}
+
+// Opens exactly the branches named - with those above them - and closes
+// the rest. Each is a path, or a word or label naming the first such node.
+static void Tree_Set_Expanded(GUIWIDGET *wid, REBSER *blk, REBCNT index)
+{
+	GUITREE *tree = GUI_TREE_OF(wid);
+	REBCNT   n, type;
+	RXIARG   val;
+
+	if (!tree) return;
+	// Deepest first, so a branch closes before the one holding it.
+	for (n = tree->count; n-- > 0; )
+		if (tree->nodes[n].first >= 0) Gui_Tree_Expand(wid, n, FALSE);
+	for (n = index; (type = RL_GET_VALUE(blk, n, &val)) != 0 && type != RXT_END; n++) {
+		REBINT node = Tree_Find(wid, type, &val);
+		if (node < 0) continue;
+		Tree_Open_To(wid, node);
+		Gui_Tree_Expand(wid, (REBCNT)node, TRUE);
+	}
+	// Closing a branch may have taken the selection with it on some
+	// platforms; what is picked now is not news to the script.
+	wid->picked = Gui_Tree_Selected(wid);
 }
 
 
@@ -1283,14 +1892,17 @@ static REBOOL Kind_Has_Text(REBCNT kind)
 	     // the first cell of the picked row; read-only
 	     || kind == W_GUI_WIDGET_LIST_VIEW
 	     // the label of the tab shown; read-only, like a drop-list's
-	     || kind == W_GUI_WIDGET_TAB_PANEL) ? TRUE : FALSE;
+	     || kind == W_GUI_WIDGET_TAB_PANEL
+	     // the label of the picked node; read-only
+	     || kind == W_GUI_WIDGET_TREE_VIEW) ? TRUE : FALSE;
 }
 
 // Which kinds have a native border that `border?` and `/flat` switch off. A
 // panel's frame is `border?` too, but drawn by the extension itself.
 #define Kind_Has_Border(kind) \
 	((kind) == W_GUI_WIDGET_FIELD || (kind) == W_GUI_WIDGET_AREA \
-	 || (kind) == W_GUI_WIDGET_TEXT_LIST || (kind) == W_GUI_WIDGET_LIST_VIEW)
+	 || (kind) == W_GUI_WIDGET_TEXT_LIST || (kind) == W_GUI_WIDGET_LIST_VIEW \
+	 || (kind) == W_GUI_WIDGET_TREE_VIEW)
 
 /***********************************************************************
 **  A date! as it crosses the extension boundary (3.22.9 and later): the
@@ -1423,17 +2035,19 @@ static REBSER* Items_To_Block(GUIWIDGET *wid)
 
 // Replaces the list. Anything in the block which is not a string is
 // skipped rather than refused - a block of words or files is a reasonable
-// thing to hand over, and FORM-ing it is the caller's business.
+// thing to hand over, and FORM-ing it is the caller's business. In a
+// text-list, an image! - or a get-word holding one - after a string is
+// that item's icon.
 static void Block_To_Items(GUIWIDGET *wid, REBSER *blk)
 {
-	REBCNT n;
+	REBCNT n, rows = 0;
 	REBCNT type;
 	RXIARG val;
+	REBOOL icons = (wid->kind == W_GUI_WIDGET_TEXT_LIST);
 
 	Gui_Widget_Clear_Items(wid);
-	if (!blk) return;
-
-	for (n = 0; (type = RL_GET_VALUE(blk, n, &val)) != 0; n++) {
+	if (icons) Icons_Free(wid);
+	if (blk) for (n = 0; (type = RL_GET_VALUE(blk, n, &val)) != 0; n++) {
 		REBYTE *utf8 = NULL;
 		int len;
 
@@ -1442,8 +2056,18 @@ static void Block_To_Items(GUIWIDGET *wid, REBSER *blk)
 
 		len = RL_GET_UTF8_STRING((REBSER*)val.series, val.index, (void**)&utf8);
 		if (len < 0) continue;
-		Gui_Widget_Add_Item(wid, utf8, (REBCNT)len);
+		if (!Gui_Widget_Add_Item(wid, utf8, (REBCNT)len)) continue;
+		if (icons) {
+			RXIARG next;
+			REBCNT next_type = RL_GET_VALUE(blk, n + 1, &next);
+			if (next_type == RXT_IMAGE || next_type == RXT_GET_WORD) {
+				Icons_Set_Row(wid, rows, Icons_Add(wid, Icon_Value(blk, n + 1, next_type, &next)));
+				n++;
+			}
+		}
+		rows++;
 	}
+	if (icons) Gui_Icons_Changed(wid);
 }
 
 
@@ -1716,11 +2340,16 @@ static REBOOL Kind_Has_Enabled(REBCNT kind)
 #define Kind_Has_Read_Only(kind) \
 	((kind) == W_GUI_WIDGET_FIELD || (kind) == W_GUI_WIDGET_AREA)
 
+// Which kinds show their items in rows, which `row-height` sets.
+#define Kind_Has_Rows(kind) \
+	((kind) == W_GUI_WIDGET_TEXT_LIST || (kind) == W_GUI_WIDGET_LIST_VIEW \
+	 || (kind) == W_GUI_WIDGET_TREE_VIEW)
+
 // Which kinds scroll, and can be asked where they are. A drop-list's or a
 // drop-down's list scrolls too, but is not addressable.
 #define Kind_Scrolls(kind) \
 	((kind) == W_GUI_WIDGET_AREA || (kind) == W_GUI_WIDGET_TEXT_LIST \
-	 || (kind) == W_GUI_WIDGET_LIST_VIEW)
+	 || (kind) == W_GUI_WIDGET_LIST_VIEW || (kind) == W_GUI_WIDGET_TREE_VIEW)
 
 static const char* Kind_Name(REBCNT kind)
 {
@@ -1743,6 +2372,7 @@ static const char* Kind_Name(REBCNT kind)
 	case W_GUI_WIDGET_TAB_PANEL: return "tab-panel";
 	case W_GUI_WIDGET_LIST_VIEW: return "list-view";
 	case W_GUI_WIDGET_SCROLLER:  return "scroller";
+	case W_GUI_WIDGET_TREE_VIEW: return "tree-view";
 	default:                 return "button";
 	}
 }
@@ -2522,6 +3152,19 @@ COMMAND cmd_gui_poll_events(RXIFRM *frm, void *ctx)
 			ev.data  = (u32)evt->x;
 			break;
 
+		case EVT_OPEN:
+		case EVT_CLOSE:
+			// A tree-view's branch: the node's number in `nodes`. A window's
+			// `close` is positional, like the rest.
+			if (ev.hob->sym != Handle_GuiWidget) {
+				ev.flags = (1 << EVF_HAS_XY) | Event_Modifier_Bits(evt->value);
+				ev.data  = (((u32)(evt->y & 0xffff)) << 16) | ((u32)evt->x & 0xffff);
+				break;
+			}
+			ev.flags = (1 << EVF_HAS_CODE);
+			ev.data  = (u32)evt->value;
+			break;
+
 		case EVT_SORT:
 			// The 1-based number of the column whose header was clicked.
 		case EVT_SCROLL_LINE:
@@ -3141,6 +3784,59 @@ COMMAND cmd_gui_add_list_view(RXIFRM *frm, void *ctx)
 
 
 /***********************************************************************
+**  add-tree-view parent items [block!] offset [pair!] size [pair!] /flat
+**
+**  Frame: 1 parent, 2 items, 3 offset, 4 size, 5 /flat.
+***********************************************************************/
+COMMAND cmd_gui_add_tree_view(RXIFRM *frm, void *ctx)
+{
+	REBHOB    *hob;
+	GUIWIDGET *wid;
+	GUIWIDGET *panel = NULL;
+	GUIWIN    *win = Frm_Parent(frm, 1, &panel);
+	REBINT     x, y, w, h, req_w, req_h;
+
+	if (!win || !win->handle) RETURN_ERROR(ERR_INVALID_HANDLE);
+
+	x = (REBINT)RXA_PAIR(frm, 3).x;
+	y = (REBINT)RXA_PAIR(frm, 3).y;
+	w = (REBINT)RXA_PAIR(frm, 4).x;
+	h = (REBINT)RXA_PAIR(frm, 4).y;
+	if (w < 0 || h < 0) RETURN_ERROR(ERR_BAD_SIZE);
+
+	// A zero axis asks for the natural size - see Add_Button_Control.
+	req_w = w; req_h = h;
+	if (w <= 0) w = 1;
+	if (h <= 0) h = 1;
+
+	hob = RL_MAKE_HANDLE_CONTEXT(Handle_GuiWidget);
+	if (hob == NULL) RETURN_ERROR(ERR_NO_HANDLE);
+
+	wid = (GUIWIDGET*)hob->data;
+	CLEARS(wid);
+	wid->hob    = hob;
+	wid->kind   = W_GUI_WIDGET_TREE_VIEW;
+	wid->owner  = win;
+	wid->parent = panel;
+	wid->picked = -1;
+
+	if (!Gui_Create_Tree_View(wid, win, x, y, w, h)) {
+		wid->owner  = NULL;
+		wid->parent = NULL;
+		RL_FREE_HANDLE_CONTEXT(hob);
+		RETURN_ERROR(ERR_NO_WIDGET);
+	}
+
+	if (RXA_REF(frm, 5)) Gui_Widget_Set_Border(wid, FALSE);
+	Tree_Set_Items(wid, RXA_SERIES(frm, 2), RXA_INDEX(frm, 2));
+
+	Attach_Widget(wid, win, req_w, req_h);
+
+	RETURN_HANDLE(hob);
+}
+
+
+/***********************************************************************
 **  add-date-field parent offset size /date when [date!] /time
 ***********************************************************************/
 COMMAND cmd_gui_add_date_field(RXIFRM *frm, void *ctx)
@@ -3245,6 +3941,41 @@ COMMAND cmd_gui_redraw(RXIFRM *frm, void *ctx)
 		return RXR_TRUE;
 	}
 	RETURN_ERROR(ERR_INVALID_HANDLE);
+}
+
+
+/***********************************************************************
+**  capture target
+**
+**  A window's client area or a widget, as an image! of device pixels.
+**  The backend draws it offscreen into its own memory, and it is copied
+**  into the image here - the image's series is Rebol's to allocate.
+***********************************************************************/
+COMMAND cmd_gui_capture(RXIFRM *frm, void *ctx)
+{
+	GUIWIDGET *wid = Frm_Widget(frm, 1);
+	GUIWIN    *win = wid ? NULL : Frm_Window(frm, 1);
+	REBINT     w = 0, h = 0;
+	REBYTE    *bits;
+	REBSER    *img;
+
+	if (!wid && !win) RETURN_ERROR(ERR_INVALID_HANDLE);
+	if ((wid && !wid->handle) || (win && !win->handle)) return RXR_NONE;
+	bits = Gui_Capture(win, wid, &w, &h);
+	if (!bits) return RXR_NONE;
+	if (w <= 0 || h <= 0) { FREE_MEM(bits); return RXR_NONE; }
+
+	img = (REBSER*)RL_MAKE_IMAGE((u32)w, (u32)h);
+	if (!img) { FREE_MEM(bits); return RXR_NONE; }
+	COPY_MEM(IMG_DATA(img), bits, (size_t)w * (size_t)h * 4);
+	FREE_MEM(bits);
+
+	RXA_ARG(frm, 1).image  = img;
+	RXA_ARG(frm, 1).width  = w;
+	RXA_ARG(frm, 1).height = h;
+	RXA_ARG(frm, 1).image_index = 0;
+	RXA_TYPE(frm, 1) = RXT_IMAGE;
+	return RXR_VALUE;
 }
 
 
@@ -4032,6 +4763,8 @@ int GuiWidget_free(void *hndl)
 		Gui_Widget_Closed(wid);
 	}
 	debug_print("releasing GUI widget handle: %p\n", (void*)wid);
+	Tree_Free(wid);
+	Icons_Free(wid);
 	CLEARS(wid);
 	UNMARK_HOB(hob);
 	return 0;
@@ -4060,6 +4793,18 @@ int GuiWidget_get_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 	case W_GUI_ARG_TEXT: {
 		REBSER *str;
 		if (!Kind_Has_Text(wid->kind)) { *type = RXT_NONE; break; }
+		if (wid->kind == W_GUI_WIDGET_TREE_VIEW) {
+			// The label of the picked node - none when nothing is.
+			GUITREE *tree = GUI_TREE_OF(wid);
+			REBINT   n = Gui_Tree_Selected(wid);
+			if (!tree || n < 0 || n >= (REBINT)tree->count) { *type = RXT_NONE; break; }
+			str = RL_DECODE_UTF_STRING(tree->nodes[n].label, tree->nodes[n].len, 8, FALSE, FALSE);
+			if (!str) { *type = RXT_NONE; break; }
+			arg->series = str;
+			arg->index  = 0;
+			*type = RXT_STRING;
+			break;
+		}
 		if (wid->kind == W_GUI_WIDGET_LIST_VIEW) {
 			// The first cell of the picked row, formed into a string of
 			// its own - none when nothing is picked.
@@ -4069,6 +4814,9 @@ int GuiWidget_get_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 			RXIARG  val;
 			if (n < 0 || !blk || wid->fields == 0) { *type = RXT_NONE; break; }
 			cell = RL_GET_VALUE(blk, index + (REBCNT)n * wid->fields, &val);
+			// A row's icon is not its text: the cell after it is.
+			if ((cell == RXT_IMAGE || cell == RXT_GET_WORD) && wid->fields > 1)
+				cell = RL_GET_VALUE(blk, index + (REBCNT)n * wid->fields + 1, &val);
 			if (cell == 0 || cell == RXT_END) { *type = RXT_NONE; break; }
 			str = (REBSER*)RL_MAKE_STRING(16, FALSE);
 			if (!str) { *type = RXT_NONE; break; }
@@ -4265,6 +5013,16 @@ int GuiWidget_get_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 
 	case W_GUI_ARG_ITEMS: {
 		REBSER *blk;
+		if (wid->kind == W_GUI_WIDGET_TREE_VIEW) {
+			// The very block it was given, as a list-view's.
+			REBCNT index = 0;
+			blk = List_Items(wid, &index);
+			if (!blk) { *type = RXT_NONE; break; }
+			arg->series = blk;
+			arg->index  = index;
+			*type = RXT_BLOCK;
+			break;
+		}
 		if (!Kind_Has_Items(wid->kind)) { *type = RXT_NONE; break; }
 		if (wid->kind == W_GUI_WIDGET_LIST_VIEW) {
 			// The very block it was given - see List_Items().
@@ -4346,6 +5104,37 @@ int GuiWidget_get_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 		REBSER *blk;
 		if (wid->kind != W_GUI_WIDGET_LIST_VIEW) { *type = RXT_NONE; break; }
 		blk = List_Columns_Block(wid);
+		if (!blk) { *type = RXT_NONE; break; }
+		arg->series = blk;
+		arg->index  = 0;
+		*type = RXT_BLOCK;
+		break; }
+
+	case W_GUI_ARG_SELECTED:
+		if (wid->kind != W_GUI_WIDGET_TREE_VIEW) { *type = RXT_NONE; break; }
+		if (!Tree_Value(wid, Gui_Tree_Selected(wid), arg, type)) *type = RXT_NONE;
+		break;
+
+	case W_GUI_ARG_ROW_HEIGHT:
+		if (!Kind_Has_Rows(wid->kind)) { *type = RXT_NONE; break; }
+		*type = RXT_INTEGER;
+		arg->int64 = (i64)Gui_Widget_Get_Row_Height(wid);
+		break;
+
+	case W_GUI_ARG_NODES: {
+		REBSER *blk;
+		if (wid->kind != W_GUI_WIDGET_TREE_VIEW) { *type = RXT_NONE; break; }
+		blk = Tree_Nodes(wid);
+		if (!blk) { *type = RXT_NONE; break; }
+		arg->series = blk;
+		arg->index  = 0;
+		*type = RXT_BLOCK;
+		break; }
+
+	case W_GUI_ARG_EXPANDED: {
+		REBSER *blk;
+		if (wid->kind != W_GUI_WIDGET_TREE_VIEW) { *type = RXT_NONE; break; }
+		blk = Tree_Expanded(wid);
 		if (!blk) { *type = RXT_NONE; break; }
 		arg->series = blk;
 		arg->index  = 0;
@@ -4479,6 +5268,12 @@ int GuiWidget_set_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 
 	switch (word) {
 	case W_GUI_ARG_ITEMS:
+		if (wid->kind == W_GUI_WIDGET_TREE_VIEW) {
+			if (*type == RXT_NONE) { Tree_Set_Items(wid, NULL, 0); break; }
+			if (*type != RXT_BLOCK) return PE_BAD_SET_TYPE;
+			if (!Tree_Set_Items(wid, (REBSER*)arg->series, arg->index)) return PE_BAD_SET;
+			break;
+		}
 		if (!Kind_Has_Items(wid->kind)) return PE_BAD_SET;
 		if (wid->kind == W_GUI_WIDGET_LIST_VIEW) {
 			if (*type == RXT_NONE) { List_Set_Items(wid, NULL, 0); break; }
@@ -4816,6 +5611,37 @@ int GuiWidget_set_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 
 		Gui_Widget_Set_Scroll(wid, where);
 		break; }
+
+	// A path, a word or a label; none picks nothing. One that names no
+	// node picks nothing either, rather than erroring: the tree may just
+	// have been replaced.
+	case W_GUI_ARG_SELECTED:
+		if (wid->kind != W_GUI_WIDGET_TREE_VIEW) return PE_BAD_SET;
+		if (*type == RXT_NONE) { Tree_Select(wid, -1); break; }
+		if (*type != RXT_PATH && *type != RXT_BLOCK
+		 && *type != RXT_WORD && *type != RXT_STRING)
+			return PE_BAD_SET_TYPE;
+		Tree_Select(wid, Tree_Find(wid, *type, arg));
+		break;
+
+	// A row is at least as tall as a pixel, and no taller than a screen
+	// - anything else is a mistake rather than a layout.
+	case W_GUI_ARG_ROW_HEIGHT:
+		if (!Kind_Has_Rows(wid->kind)) return PE_BAD_SET;
+		if (*type == RXT_NONE) wid->row_height = 0;
+		else if (*type == RXT_INTEGER) {
+			if (arg->int64 < 1 || arg->int64 > 1000) return PE_BAD_RANGE;
+			wid->row_height = (REBINT)arg->int64;
+		}
+		else return PE_BAD_SET_TYPE;
+		Gui_Widget_Set_Row_Height(wid);
+		break;
+
+	case W_GUI_ARG_EXPANDED:
+		if (wid->kind != W_GUI_WIDGET_TREE_VIEW) return PE_BAD_SET;
+		if (*type != RXT_BLOCK) return PE_BAD_SET_TYPE;
+		Tree_Set_Expanded(wid, (REBSER*)arg->series, arg->index);
+		break;
 
 	case W_GUI_ARG_COLUMNS:
 		if (wid->kind != W_GUI_WIDGET_LIST_VIEW) return PE_BAD_SET;
