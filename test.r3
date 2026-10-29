@@ -1065,7 +1065,8 @@ print as-yellow "^/== Scroller"
 ;;
 ;; WATCH: a "Scroller" window with the bird at twice its size, in a box with
 ;; both scroll bars. The bars, the wheel (Shift for across) and a touchpad
-;; scroll it, and the button and the check go along - and still work:
+;; scroll it, and the panel with the button and the check goes along, and
+;; they still work:
 ;; clicking them logs `click`, the check ticks. No `!! move` notes in
 ;; the log while moving over it, whatever it is scrolled to - a child's `at`
 ;; follows the scrolling.
@@ -1080,11 +1081,16 @@ viewer: open-window/title/at/hidden 300x240 "Scroller" 1000x580
 sc:     add-scroller viewer 10x10 280x220
 big:    add-image/size sc bird 0x0 512x512
 ;; ON the picture means IN the image widget: as siblings overlapping it, the
-;; image would take their clicks on Windows.
-add-button big "On the picture" 20x20 0x0
-add-check  big "And this" 20x60 0x0
+;; image would take their clicks on Windows. And in a light panel there: on
+;; macOS a control blends its bezel with what is behind it, and on the bird's
+;; dark background it would come out dark, black text and all.
+tools: add-panel/border big 20x20 170x80
+tools/background: 235.238.242
+add-button tools "On the picture" 10x10 0x0
+add-check  tools "And this" 10x46 0x0
 print ["scroller:" sc/kind "holds:" length? sc/children "(expected scroller 1)"]
-print ["the picture holds:" length? big/children "(expected 2)"]
+print ["the picture holds:" length? big/children big/children/1/kind "(expected 1 panel)"]
+print ["the panel holds:" length? tools/children "(expected 2)"]
 print ["starts at the top-left:" sc/scroll "(expected 0x0)"]
 print ["no size of its own:" error? try [add-scroller viewer 0x0 0x0]]
 
