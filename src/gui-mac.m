@@ -4329,6 +4329,7 @@ void Gui_Scroller_Set_Pos(GUIWIDGET *wid, REBINT x, REBINT y)
 		NSScrollView *sv;
 		NSClipView   *clip;
 		NSSize        doc, view;
+		NSRect        want;
 		CGFloat       px = (CGFloat)x, py = (CGFloat)y;
 
 		if (!wid || !wid->handle || !wid->inner) return;
@@ -4342,8 +4343,14 @@ void Gui_Scroller_Set_Pos(GUIWIDGET *wid, REBINT x, REBINT y)
 		if (px < 0) px = 0;
 		if (py < 0) py = 0;
 
-		// Constrained by the clip view, which centres what fits.
-		[clip scrollToPoint:NSMakePoint(px, py)];
+		// Through the clip view's constraint, which centres what fits.
+		// Asked here rather than left to -scrollToPoint:, which does not
+		// apply it: 0x0 put a centred document back in the corner every
+		// time the scroller was laid out again - on every resize.
+		want = [clip bounds];
+		want.origin = NSMakePoint(px, py);
+		want = [clip constrainBoundsRect:want];
+		[clip scrollToPoint:want.origin];
 		[sv reflectScrolledClipView:clip];
 		Display_Pending = TRUE;
 	}

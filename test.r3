@@ -1134,6 +1134,11 @@ viewer/size: 700x600
 fit-viewer   ;; what its `resize` will do too, once it is polled
 print ["smaller, centred:" big/at "offset:" big/offset "scrolled:" sc/scroll]
 print ["  (expected 94x44 0x0 0x0)"]
+viewer/size: 800x700
+fit-viewer
+print ["resized, centred again:" big/at "(expected 144x94)"]
+viewer/size: 700x600
+fit-viewer
 sc/centered?: false
 print ["not centred:" big/at "(expected 10x10)"]
 sc/centered?: true
