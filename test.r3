@@ -1243,6 +1243,16 @@ print ["exactly those, and above:" mold tree/expanded "(expected [docs docs/old]
 print ["every node:" length? tree/nodes "(expected 8)" "the fifth:" mold pick tree/nodes 5
 	{(expected docs/old/"b.txt")}]
 print ["the same block back:" same? tree/items tree/items]
+;; Setting `items` again starts afresh: nothing picked, nothing open.
+;;
+;; WATCH: the tree shows Documents open and Old inside it CLOSED. On macOS
+;; the outline used to keep the old tree's branches open - and to ask for
+;; rows of the nodes just freed.
+tree/selected: 'report
+tree/items: tree/items
+print ["items set again:" mold tree/selected mold tree/expanded "(expected none [])"]
+tree/expanded: [docs]
+print ["one branch opened:" mold tree/expanded "(expected [docs])"]
 spare-tree: add-tree-view trees ["x"] 0x0 0x0
 print ["a zero size measures it:" spare-tree/size]
 remove-widget spare-tree

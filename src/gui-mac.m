@@ -1495,9 +1495,11 @@ static CGFloat Row_Height_For(GUIWIDGET *ctx, NSTableView *table, NSFont *font)
 	NSMutableArray    *icons;      // NSImage or NSNull, by image index
 	CGFloat            icon_side;  // the size they were made for
 	BOOL               quiet;
+	BOOL               building;   // between Gui_Tree_Clear and _End: empty
 }
 - (void)setContext:(GUIWIDGET*)ctx;
 - (void)setQuiet:(BOOL)on;
+- (void)setBuilding:(BOOL)on;
 - (NSMutableArray*)nodes;
 - (NSMutableIndexSet*)open;
 - (void)forgetIcons;
@@ -1508,6 +1510,7 @@ static CGFloat Row_Height_For(GUIWIDGET *ctx, NSTableView *table, NSFont *font)
 
 - (void)setContext:(GUIWIDGET*)ctx { context = ctx; }
 - (void)setQuiet:(BOOL)on { quiet = on; }
+- (void)setBuilding:(BOOL)on { building = on; }
 
 - (NSMutableArray*)nodes
 {
@@ -1534,7 +1537,11 @@ static CGFloat Row_Height_For(GUIWIDGET *ctx, NSTableView *table, NSFont *font)
 
 
 // The node an item stands for, and the first child of one: -1 for none.
-- (GUITREE*)table { return context ? GUI_TREE_OF(context) : NULL; }
+// No table while the nodes are being replaced: the shared layer frees the
+// old one and builds the new one between Gui_Tree_Clear and Gui_Tree_End,
+// and every answer the outline asked for meanwhile would be about nodes
+// which are gone, or not there yet.
+- (GUITREE*)table { return (context && !building) ? GUI_TREE_OF(context) : NULL; }
 
 - (REBINT)firstChildOf:(id)item
 {
@@ -5269,10 +5276,19 @@ void Gui_Tree_Clear(GUIWIDGET *wid)
 		RebolGuiTree *tree = Tree_Of(wid);
 		if (!tree) return;
 		[tree setQuiet:YES];
+		// The outline remembers which ITEMS are open across a reload, and
+		// node n's item is the same NSNumber in the new tree as in the old
+		// one - so every branch is closed first, while the old table is
+		// still there to answer for it.
+		[tree collapseItem:nil collapseChildren:YES];
+		// Empty from here until Gui_Tree_End - see -table. The reload is
+		// also what makes the outline let go of the old items, which it
+		// does not retain: they are released only after it.
+		[tree setBuilding:YES];
+		[tree reloadData];
 		[[tree nodes] removeAllObjects];
 		[[tree open] removeAllIndexes];
 		[tree forgetIcons];
-		[tree reloadData];
 		[tree setQuiet:NO];
 	}
 }
@@ -5298,6 +5314,7 @@ void Gui_Tree_End(GUIWIDGET *wid)
 		RebolGuiTree *tree = Tree_Of(wid);
 		if (!tree) return;
 		[tree setQuiet:YES];
+		[tree setBuilding:NO];
 		[tree reloadData];
 		[tree setQuiet:NO];
 		Display_Pending = TRUE;
