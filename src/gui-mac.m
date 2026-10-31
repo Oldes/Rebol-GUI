@@ -5682,9 +5682,17 @@ REBOOL Gui_Widget_Add_Item(GUIWIDGET *wid, const REBYTE *utf8, REBCNT len)
 
 		// Titles are a menu's identity to AppKit, which would drop a repeat;
 		// a list of strings is data here, so duplicates have to survive.
-		[[NSPOPUP_OF(wid) menu] addItem:
-			[[[NSMenuItem alloc] initWithTitle:title action:NULL keyEquivalent:@""]
-				autorelease]];
+		{
+			NSPopUpButton *popup = NSPOPUP_OF(wid);
+			NSInteger      was   = [popup indexOfSelectedItem];   // -1: none
+			[[popup menu] addItem:
+				[[[NSMenuItem alloc] initWithTitle:title action:NULL keyEquivalent:@""]
+					autorelease]];
+			// AppKit picks the first item put into an empty pop-up. Items
+			// given from Rebol start with none picked, as on the other
+			// platforms - `index` (or `/index`) picks one.
+			if (was < 0) [popup selectItem:nil];
+		}
 		return TRUE;
 	}
 }
