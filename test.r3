@@ -2,8 +2,10 @@ Rebol [
 	Title:   "Rebol/GUI extension test"
 	Needs:   3.22.10
 	Purpose: {
-		Opens a window and prints the mouse events it produces. Meant to be
-		run by a human - close the window to end it.
+		Checks what can be checked from a script, then opens the windows and
+		prints the events they produce. The checks report as they go and the
+		totals are printed when the main window is closed; the exit code is
+		1 when any failed. What only a person can judge is marked WATCH.
 
 		Usage:
 			r3 test.r3
@@ -12,6 +14,89 @@ Rebol [
 
 
 print ["Running test on Rebol build:" mold to-block system/build]
+
+;;=============================================================================
+;; Minimal self-contained harness
+;;=============================================================================
+
+test-count: 0
+fail-count: 0
+skip-count: 0
+failed: copy []
+
+group: func ["Starts a named group of tests" name [string!]][
+	print ajoin [lf as-yellow "== " as-yellow name]
+]
+
+;; NOTE: plain `func` with explicit locals - `function` would collect the
+;; counter set-words as locals and the totals would never move.
+;;
+;; A test block must EVALUATE to true; anything else counts as a failure and
+;; is printed as the detail, so a check can hand back a string saying what
+;; went wrong. Never use `return` inside one - it would return from
+;; `--test--` itself and the result would never be counted.
+--test--: func [
+	"Passes when the code block evaluates to true"
+	name [string!]
+	code [block!]
+	/local result
+][
+	test-count: test-count + 1
+	result: try code
+	case [
+		error? :result [
+			fail-count: fail-count + 1
+			append failed name
+			print [as-red "[FAIL]" name]
+			print [as-red "      " mold/flat :result]
+		]
+		:result = true [
+			print [as-green "[ ok ]" name]
+		]
+		true [
+			fail-count: fail-count + 1
+			append failed name
+			print [as-red "[FAIL]" name "=>" mold/flat/part :result 60]
+		]
+	]
+	:result
+]
+
+--skip--: func ["Counts a test which cannot run here" name [string!]][
+	skip-count: skip-count + 1
+	print [as-purple "[skip]" name]
+]
+
+--rejects--: func [
+	"Checks that the code is refused with an error"
+	label [string!]
+	code  [block!]
+][
+	--test-- ajoin [label " is refused"] compose/only [error? try (code)]
+]
+
+;; Compares a result with what it should be and hands back the actual value
+;; when they differ, so the failure line shows it.
+is?: func ["Compares a value with the expected one" value expected][
+	any [value == expected  ajoin ["got " mold/flat/part value 60]]
+]
+
+summary: does [
+	print ajoin [lf as-yellow "-----------------------------------------------------------------------------"]
+	print [
+		"tests:" test-count
+		as-green ajoin ["passed: " test-count - fail-count - skip-count]
+		either fail-count > 0 [as-red ajoin ["failed: " fail-count]][ajoin ["failed: " fail-count]]
+		as-purple ajoin ["skipped: " skip-count]
+	]
+	if fail-count > 0 [
+		print as-red ajoin ["^/Failed tests:^/  " mold/flat failed]
+	]
+	print ""
+	quit/return either fail-count > 0 [1][0]
+]
+
+;;=============================================================================
 
 ;; make sure that we load a fresh extension
 try [system/modules/gui: none]
@@ -23,14 +108,18 @@ if modules-dir: get-env 'REBOL_MODULES_DIR [
 
 gui: import 'gui
 
+;;=============================================================================
+group "Helpers"
+;;=============================================================================
+
 ;; `within?` - the box test every mouse handler below uses. Left and top
 ;; edges are in, right and bottom out.
-print ["within? inside:        " within? 15x15 10x10 20x20]
-print ["within? top-left edge: " within? 10x10 10x10 20x20]
-print ["within? right edge out:" not within? 30x15 10x10 20x20]
-print ["within? bottom edge out:" not within? 15x30 10x10 20x20]
-print ["within? empty box:     " not within? 10x10 10x10 0x0]
-print ["popup-menu needs a window or widget:" error? try [popup-menu 42 []]]
+--test-- "within? inside"          [within? 15x15 10x10 20x20]
+--test-- "within? top-left edge"   [within? 10x10 10x10 20x20]
+--test-- "within? right edge out"  [not within? 30x15 10x10 20x20]
+--test-- "within? bottom edge out" [not within? 15x30 10x10 20x20]
+--test-- "within? empty box"       [not within? 10x10 10x10 0x0]
+--rejects-- "popup-menu on a non-handle" [popup-menu 42 []]
 ? gui
 
 ;; An area's text is plain LF on every platform: on Windows the extension
@@ -38,7 +127,7 @@ print ["popup-menu needs a window or widget:" error? try [popup-menu 42 []]]
 NL: LF
 
 ;;=============================================================================
-print as-yellow "^/== Opening a window"
+group "Opening a window"
 ;;=============================================================================
 
 ;; /hidden, and shown again once the layout below is complete.
@@ -51,12 +140,14 @@ win: open-window/title/at/hidden 640x480 "Rebol GUI extension" 200x120
 
 print ["window:  " win]
 print ["id:      " win/id]
-print ["open?:   " win/open?]
-print ["title:   " mold win/title]
-print ["size:    " win/size]
 print ["offset:  " win/offset]
 print ["scale:   " win/scale "(device pixels per unit - sizes below are logical)"]
-print ["resizable?" win/resizable? " title?" win/title?]
+--test-- "window is open"        [win/open?]
+--test-- "window title"          [is? win/title "Rebol GUI extension"]
+--test-- "window size"           [is? win/size 640x480]
+--test-- "resizable? by default" [win/resizable?]
+--test-- "title? by default"     [win/title?]
+--test-- "scale is positive"     [win/scale > 0]
 
 ;; The icon, from an image!: a round spot with a transparent outside - the
 ;; alpha channel is used, 255 opaque. It is copied when set, so the image is
@@ -71,12 +162,12 @@ repeat y 32 [repeat x 32 [
 	d: (as-pair x y) - 16.5x16.5
 	ico/(as-pair x y): either 225 > ((d/x * d/x) + (d/y * d/y)) [230.120.30.255][0.0.0.0]
 ]]
-print ["icon before:" win/icon "(expected none)"]
+--test-- "no icon by default" [none? win/icon]
 win/icon: ico
-print ["icon set, the same image back?" same? win/icon ico "(expected true)"]
+--test-- "icon set, the same image back" [same? win/icon ico]
 win/icon: none
-print ["icon removed:" win/icon "(expected none)"]
-print ["a string is refused:" error? try [win/icon: "x"]]
+--test-- "icon removed" [none? win/icon]
+--rejects-- "a string as an icon" [win/icon: "x"]
 ;; The real one, from a file next to this script. "Repaint" swaps it for the
 ;; disc in a new colour and back - an icon changes at runtime as often as
 ;; it is set.
@@ -86,16 +177,16 @@ recolor-icon: does [
 	win/icon: either same? win/icon bird [ico/rgb: random 255.255.255  ico][bird]
 ]
 ;; Asked of the system each time; `theme-change` reports when it switches.
-print ["dark?:   " win/dark?]
+--test-- "dark? is a logic!" [logic? win/dark?]
 
 ;; Off by default: on Windows only the title bar follows the appearance. With
 ;; it on, the controls and every colour left at `none` follow as well.
 ;;
 ;; WATCH (Windows, dark system): every window starts light inside, with a
 ;; dark title bar. Turn the main window's controls dark from the View menu.
-print ["dark-controls? by default:" win/dark-controls?]
+--test-- "dark-controls? off by default" [not win/dark-controls?]
 win/dark-controls?: true
-print ["and on:                   " win/dark-controls?]
+--test-- "dark-controls? on" [win/dark-controls?]
 win/dark-controls?: false ;; turn it off again
 
 ;; `keys?` reports every key pressed in the window - whichever widget has the
@@ -103,20 +194,22 @@ win/dark-controls?: false ;; turn it off again
 ;; `key` carries a char!, `named-key` a word; both have a `-up` pair.
 ;;
 ;; WATCH: keys typed in the main window appear in the log area.
-print ["keys? by default:" win/keys?]
+--test-- "keys? off by default" [not win/keys?]
 win/keys?: true
+--test-- "keys? on" [win/keys?]
 
 ;; `caps-lock?` asks the system each time; it needs no window and no `keys?`.
 ;;
 ;; WATCH: with Caps Lock on, logged keys end with "(caps lock)".
-print ["caps-lock?" caps-lock? "- a logic! either way:" logic? caps-lock?]
+--test-- "caps-lock? is a logic!" [logic? caps-lock?]
 
 ;; every accessor which can be read can also be written, except id and open?
 win/title: "Rebol GUI extension - move the mouse"
-print ["title:   " mold win/title]
+--test-- "title set" [is? win/title "Rebol GUI extension - move the mouse"]
+--rejects-- "setting open?" [win/open?: false]
 
 ;;=============================================================================
-print as-yellow "^/== Native buttons"
+group "Native buttons"
 ;;=============================================================================
 
 ;; Both are children of the window's client area, positioned from its
@@ -127,16 +220,16 @@ print as-yellow "^/== Native buttons"
 counter: add-button win "Click me"  20x20 140x32
 closer:  add-button win "Close it" 180x20 0x0
 
-print ["button:   " counter]
-print ["kind:     " counter/kind]
-print ["text:     " mold counter/text]
-print ["offset:   " counter/offset]
-print ["size:     " counter/size]
-print ["enabled?: " counter/enabled?]
-print ["parent:   " counter/parent "^/is the window?" counter/parent = win]
+--test-- "button kind"     [is? counter/kind 'button]
+--test-- "button text"     [is? counter/text "Click me"]
+--test-- "button offset"   [is? counter/offset 20x20]
+--test-- "button size"     [is? counter/size 140x32]
+--test-- "button enabled?" [counter/enabled?]
+--test-- "button parent is the window" [counter/parent == win]
+--test-- "a zero size is measured" [all [closer/size/x > 0 closer/size/y > 0]]
 
 ;;=============================================================================
-print as-yellow "^/== An image widget"
+group "An image widget"
 ;;=============================================================================
 
 ;; The widget keeps a REFERENCE to this image, not a copy - so drawing into
@@ -170,41 +263,39 @@ caption/transparent?: true
 caption/color: 255.255.255
 caption/bold?:  true
 
-print ["caption's parent is the image:" caption/parent = canvas]
-print ["and its window is still the window:" caption/window = win]
-print ["transparent?" caption/transparent? " background:" mold caption/background]
+--test-- "caption's parent is the image"     [caption/parent == canvas]
+--test-- "its window is still the window"    [caption/window == win]
+--test-- "caption transparent?"              [caption/transparent?]
+--test-- "a transparent one has no background" [none? caption/background]
 
 ;; `at` is where a widget sits in its WINDOW, however deeply nested - the
 ;; point mouse offsets are measured from. For something the window holds
 ;; directly it is just `offset`; one level down it adds up. A window's own
 ;; is 0x0, so `evt/offset - evt/source/at` works whatever the source.
-print ["canvas/at is its offset:" canvas/at == canvas/offset]
-print ["caption/at adds the canvas:" caption/at == (canvas/at + caption/offset)]
-print ["win/at:" win/at]
+--test-- "canvas/at is its offset"    [is? canvas/at canvas/offset]
+--test-- "caption/at adds the canvas" [is? caption/at canvas/at + caption/offset]
+--test-- "a window's at is 0x0"       [is? win/at 0x0]
 
 ;; Every container answers `children`, kept in the handle's own GC-marked
 ;; slot alongside whatever else that kind holds - the image! here, the menu
 ;; block on a window.
-print ["the image holds:" length? canvas/children "widget(s)"]
-print ["and it is the caption:" caption = first canvas/children]
-print ["a kind which cannot hold any says none:" mold counter/children]
+--test-- "the image holds one widget" [is? length? canvas/children 1]
+--test-- "and it is the caption"      [caption == first canvas/children]
+--test-- "a button has no children"   [none? counter/children]
 
-print ["image:    " canvas]
-print ["kind:     " canvas/kind]
-print ["size:     " canvas/size]
+--test-- "image kind" [is? canvas/kind 'image]
+--test-- "image size" [is? canvas/size 240x160]
 ;; Reading the image back out of the widget. NEVER mold an image! into the
 ;; console - that is every pixel as text - so only its type and size.
 ;;
-;; The size is worth printing: it comes from the series itself, so a wrong
-;; answer here would mean the accessor lost the dimensions on the way out.
-shown: canvas/image
-print ["image is: " type? shown "size:" shown/size "(expected 240x160)"]
-print ["same series:" same? shown pic]
-shown: none
-print ["text:     " mold canvas/text  "(none - an image carries no text)"]
+;; The size comes from the series itself, so a wrong answer here would mean
+;; the accessor lost the dimensions on the way out.
+--test-- "image read back"    [all [image? canvas/image  canvas/image/size = 240x160]]
+--test-- "the same series"    [same? canvas/image pic]
+--test-- "an image has no text" [none? canvas/text]
 
 ;;=============================================================================
-print as-yellow "^/== Text widgets"
+group "Text widgets"
 ;;=============================================================================
 
 ;; A label, a one-line entry and a multi-line entry. All three carry their
@@ -213,15 +304,15 @@ label: add-text  win "Type your name:"  300x70  220x0
 name:  add-field win ""                 300x100 240x0
 log:   add-area  win "-- event log --"  300x140 300x200
 
-print ["label kind:" label/kind "  field kind:" name/kind "  area kind:" log/kind]
-print ["natural heights - label:" label/size "field:" name/size]
-print ["and the button that asked for one:" closer/size]
-print ["label text:" mold label/text]
+--test-- "text kinds" [is? reduce [label/kind name/kind log/kind] [text field area]]
+print ["natural heights - label:" label/size "field:" name/size "button:" closer/size]
+--test-- "a zero height is measured" [all [label/size/y > 0  name/size/y > 0]]
+--test-- "label text" [is? label/text "Type your name:"]
 
 ;; Writing to a control from Rebol does NOT come back as a `change` event -
 ;; only what the user types does.
 name/text: "world"
-print ["field text after setting it:" mold name/text]
+--test-- "field text set" [is? name/text "world"]
 
 ;; The log is written to by the handler and by nobody else, so it is made
 ;; read-only: unlike `enabled?: false`, the text keeps its normal colours,
@@ -230,35 +321,35 @@ print ["field text after setting it:" mold name/text]
 ;; TRY IT: click in the log and type - nothing should happen - then select
 ;; some of it, which should still work.
 log/read-only?: true
-print ["log read-only?:" log/read-only? " still enabled?:" log/enabled?]
-print ["a label has no such flag:" mold label/read-only?]
+--test-- "log read-only?, still enabled" [all [log/read-only?  log/enabled?]]
+--test-- "a label has no read-only?" [none? label/read-only?]
 
 ;; The two are separate questions, and on macOS they are one property - so
 ;; a disable/enable cycle must leave the read-only flag standing.
 log/enabled?: false
 log/enabled?: true
-print ["read-only survives an enable cycle:" log/read-only?]
+--test-- "read-only survives an enable cycle" [log/read-only?]
 
 ;; `scroll` is a percent, and takes one of `top`, `bottom` and `end` as well -
 ;; the words for the two positions anyone actually asks for. An area which
 ;; fits its own text has nowhere to go and answers 0%.
-print ["log scroll:" log/scroll]
-print ["a field does not scroll:" mold name/scroll]
+--test-- "an area which fits is at 0%" [is? log/scroll 0%]
+--test-- "a field does not scroll"     [none? name/scroll]
 
 ;; Enough lines to need the scrollbar, then the three ways of moving it.
 loop 40 [log/text: append log/text join NL "filler"]
-print ["an area reads back LF, not CR LF:" not find log/text CR]
+--test-- "an area reads back LF, not CR LF" [not find log/text CR]
 log/scroll: 'end
-print ["after scrolling to the end:" log/scroll]
+--test-- "scrolled to the end" [is? log/scroll 100%]
 log/scroll: 'top
-print ["and back to the top:      " log/scroll]
+--test-- "back to the top" [is? log/scroll 0%]
 log/scroll: 50%
-print ["and halfway:              " log/scroll]
+--test-- "halfway" [all [log/scroll > 40%  log/scroll < 60%]]
 log/text: "-- event log --"
 log/scroll: 'top
 
 ;;=============================================================================
-print as-yellow "^/== Typography"
+group "Typography"
 ;;=============================================================================
 
 ;; Anything with `text` has `font`, `font-size`, `bold?`, `italic?` and
@@ -271,8 +362,9 @@ was: label/size
 label/font-size: 15
 label/bold?:     true
 label/color:     30.90.170
-print ["... and is now:  " mold label/font label/font-size "bold?" label/bold?]
-print ["colour reads back as:" mold label/color]
+--test-- "font-size set" [is? label/font-size 15]
+--test-- "bold? set"     [label/bold?]
+--test-- "colour reads back" [is? label/color 30.90.170]
 
 ;; Changing only the family or the style keeps the size the font has, to the
 ;; fraction of a point. (On macOS the system's 13 units are 9.75 points, read
@@ -281,40 +373,39 @@ sized: add-text win "Size kept" 400x5 0x0
 was-size: sized/size
 sized/font: sized/font
 sized/size: 0x0
-print ["the same family again, same size:" sized/size = was-size "(expected true)"]
+--test-- "the same family again, same size" [is? sized/size was-size]
 remove-widget sized
 
 ;; `bold?` and `italic?` are one setting underneath and share one code path -
 ;; each must change only itself. (`bold?: true` once set italic instead.)
-print ["bold, and only bold:    " all [label/bold?  not label/italic?]]
+--test-- "bold, and only bold" [all [label/bold?  not label/italic?]]
 label/italic?: true
-print ["italic added, bold kept:" all [label/bold?  label/italic?]]
+--test-- "italic added, bold kept" [all [label/bold?  label/italic?]]
 label/italic?: false
-print ["italic off, bold kept:  " all [label/bold?  not label/italic?]]
+--test-- "italic off, bold kept" [all [label/bold?  not label/italic?]]
 
 ;; Nothing re-measures itself: a control which was told how big to be keeps
 ;; that size, whatever happens to its font, because the box a script laid out
 ;; is the box it meant. A bigger font in the old box clips.
-print ["size after the font change:" label/size "(unchanged)"]
+--test-- "size unchanged by the font" [is? label/size was]
 
 ;; Asking for a re-fit is a ZERO AXIS in `size` - the same convention `add-*`
 ;; uses. `label` was created 220x0, so 220x0 is also how to say "keep the
 ;; width you were given, measure the height again".
 label/size: 220x0
-print ["after asking to re-fit:   " label/size]
-print ["the measured height grew: " label/size/y > was/y]
-print ["the given width is kept:  " label/size/x = 220]
+--test-- "re-fit: the measured height grew" [label/size/y > was/y]
+--test-- "re-fit: the given width is kept"  [label/size/x = 220]
 
 ;; 0x0 measures both. The width of a label is its text, so this one ends up
 ;; snug around it - then back to a given width, which is how it is left for
 ;; the rest of the script.
 label/size: 0x0
-print ["and 0x0 measures both:    " label/size]
+--test-- "0x0 measures both" [all [label/size/x > 0  label/size/y > 0]]
 label/size: 220x0
 
 ;; A kind with no size of its own refuses to be asked, rather than quietly
 ;; doing nothing.
-print ["asking an image to re-fit:" error? try [canvas/size: 0x0]]
+--rejects-- "asking an image to re-fit" [canvas/size: 0x0]
 
 ;; `none` puts a part back to whatever the platform uses.
 log/font: "Courier New"          ;; a missing family falls back, never fails
@@ -325,7 +416,7 @@ name/color: 150.30.30
 ;; an owner-drawn button could say otherwise. The value is still kept and
 ;; still reads back - it just does not show there. On macOS it does.
 counter/color: 200.110.0
-print ["button colour asked for:" mold counter/color]
+--test-- "button colour kept" [is? counter/color 200.110.0]
 
 ;; A window carries a default which widgets pick up AS THEY ARE CREATED.
 ;; Setting it does not reach back into what is already on screen.
@@ -333,16 +424,16 @@ win/font-size: 15
 win/italic?:   true
 styled: add-text win "made after the window default was set" 300x395 320x24
 
-print ["window default:" win/font-size "italic?" win/italic?]
-print ["the new label took it:" styled/font-size "italic?" styled/italic?]
-print ["the first one did not: " label/font-size "italic?" label/italic?]
+--test-- "window default set"     [all [win/font-size = 15  win/italic?]]
+--test-- "the new label took it"  [all [styled/font-size = 15  styled/italic?]]
+--test-- "the first one did not"  [not label/italic?]
 
 ;; Put it back, so the rest of this script builds ordinary widgets.
 win/font-size: none
 win/italic?:   false
 
 ;;=============================================================================
-print as-yellow "^/== Checks and radios"
+group "Checks and radios"
 ;;=============================================================================
 
 toggle: add-check win "Counting enabled" 20x250 220x24
@@ -385,11 +476,13 @@ fast: add-radio/group win "Fast" 150x350 110x22 2
 ;;
 ;; WATCH: a thin vertical rule between "Warm" and "Cool" in the panel.
 rule: add-line box 124x24 0x26
-print ["line:" rule/kind "size:" rule/size "parent is the panel:" rule/parent = box]
-print ["it takes no focus:  " not set-focus rule]
-print ["it has no enabled?: " none? rule/enabled?]
-print ["nor any text:       " none? rule/text]
-print ["0x0 is refused:     " error? try [add-line box 0x0 0x0]]
+--test-- "line kind"           [is? rule/kind 'line]
+--test-- "line: its thickness" [all [rule/size/x > 0  rule/size/y = 26]]
+--test-- "line's parent is the panel" [rule/parent == box]
+--test-- "a line takes no focus"   [not set-focus rule]
+--test-- "a line has no enabled?"  [none? rule/enabled?]
+--test-- "a line has no text"      [none? rule/text]
+--rejects-- "a line of 0x0" [add-line box 0x0 0x0]
 
 warm/state: true
 slow/state: true
@@ -399,36 +492,37 @@ slow/state: true
 ;; tuple would fill with that instead.
 warm/transparent?: true
 cool/transparent?: true
-print ["radios are transparent:" warm/transparent? cool/transparent?]
-print ["the panel's colour:" mold box/background]
+--test-- "radios are transparent" [all [warm/transparent?  cool/transparent?]]
+--test-- "the panel's colour" [is? box/background panel-color did all [win/dark-controls? win/dark?]]
 
 ;; In the order they were added, and only the ones this panel holds - slow
 ;; and fast are in the window, so they are in ITS list instead.
-print ["the panel holds:" length? box/children]
-print ["in creation order:" (first box/children) = warm]
-print ["the window holds rather more:" length? win/children]
-print ["a panel's radios are not in it:" not find win/children warm]
+--test-- "the panel holds radios and the line" [is? length? box/children 3]
+--test-- "in creation order" [warm == first box/children]
+print ["the window holds:" length? win/children "widget(s)"]
+--test-- "a panel's radios are not in the window's list" [not find win/children warm]
 
-print ["check:" toggle/kind "state:" toggle/state]
-print ["radio:" warm/kind "group:" warm/group "state:" warm/state]
+--test-- "check kind and state" [all [toggle/kind = 'check  toggle/state]]
+--test-- "radio kind, group and state" [all [warm/kind = 'radio  warm/group = 1  warm/state]]
 
 ;; The frame and its caption are readable and writable after the fact - both
 ;; are drawn by the extension at paint time, so neither rebuilds the control
 ;; and neither moves anything the panel holds.
-print ["panel border?:" box/border? "caption:" mold box/text]
+--test-- "panel border?"  [box/border?]
+--test-- "panel caption"  [is? box/text "Temperature"]
 box/text: "Temperature (group box)"
-print ["... retitled to:" mold box/text]
-print ["a check has no border?:" mold toggle/border?]
+--test-- "panel retitled" [is? box/text "Temperature (group box)"]
+--test-- "a check has no border?" [none? toggle/border?]
 
 ;; `parent` is whatever holds it; `window` is the window either way.
-print ["warm sits in a" warm/parent/kind "at" warm/offset]
-print ["... and its window is the same one:" warm/window = win]
-print ["slow sits directly in the window:" slow/parent = win]
+--test-- "warm sits in the panel" [all [warm/parent == box  warm/offset = 10x26]]
+--test-- "... and its window is the window" [warm/window == win]
+--test-- "slow sits directly in the window" [slow/parent == win]
 
 ;; Turning one on turns its own group off - and leaves the other alone.
 cool/state: true
-print ["after cool/state: true  -> warm:" warm/state "cool:" cool/state]
-print ["the other group is untouched -> slow:" slow/state "fast:" fast/state]
+--test-- "a radio turns its group off"  [all [cool/state  not warm/state]]
+--test-- "the other group is untouched" [all [slow/state  not fast/state]]
 warm/state: true
 
 ;; A toggle is a push button which stays pushed: on or off like a check,
@@ -438,18 +532,18 @@ warm/state: true
 ;; WATCH: "Bold log" stays pushed in after a click and makes the log bold;
 ;; a second click lets it out again.
 bolder: add-toggle win "Bold log" 20x440 100x0
-print ["toggle:" bolder/kind "state:" bolder/state]
+--test-- "toggle kind, off" [all [bolder/kind = 'toggle  not bolder/state]]
 bolder/state: true
-print ["set from Rebol:" bolder/state]
+--test-- "toggle set from Rebol" [bolder/state]
 bolder/state: false
-print ["and back:      " bolder/state]
-print ["a button has no state:" none? counter/state]
+--test-- "toggle back" [not bolder/state]
+--test-- "a button has no state" [none? counter/state]
 
 keys-switch: add-toggle win "Catch keys" 130x440 0x0
 keys-switch/state: win/keys?
 
 ;;=============================================================================
-print as-yellow "^/== Slider and progress"
+group "Slider and progress"
 ;;=============================================================================
 
 ;; Both carry a `value` from 0% to 100%. A slider taller than it is wide
@@ -457,23 +551,23 @@ print as-yellow "^/== Slider and progress"
 level: add-slider/value   win 20x375 240x20 25%
 meter: add-progress/value win 20x410 240x10 25%
 
-print ["slider:" level/kind "value:" level/value]
-print ["progress:" meter/kind "value:" meter/value]
-print ["a progress bar has no enabled state:" mold meter/enabled?]
+--test-- "slider"   [all [level/kind = 'slider    level/value = 25%]]
+--test-- "progress" [all [meter/kind = 'progress  meter/value = 25%]]
+--test-- "a progress bar has no enabled?" [none? meter/enabled?]
 
 ;; Taller than wide - no extra argument, just the proportions. `0%` is the
 ;; bottom on both platforms; Windows flips the trackbar's inverted axis so
 ;; the caller never sees it.
 riser: add-slider/value win 265x70 20x160 25%
-print ["vertical slider:" riser/kind "value:" riser/value]
+--test-- "vertical slider" [is? riser/value 25%]
 riser/value: 100%
-print ["at the top:" riser/value]
+--test-- "vertical slider at the top" [is? riser/value 100%]
 riser/value: 0%
-print ["at the bottom:" riser/value]
+--test-- "vertical slider at the bottom" [is? riser/value 0%]
 riser/value: 25%
 
 ;;=============================================================================
-print as-yellow "^/== Drop-list"
+group "Drop-list"
 ;;=============================================================================
 
 ;; The non-editable one - a button that drops a list. `size` is the closed
@@ -482,18 +576,19 @@ print as-yellow "^/== Drop-list"
 picker: add-drop-list/index win
 	["Bilberry" "Cloudberry" "Lingonberry" "Rowan"] 300x350 100x26 2
 
-print ["drop-list:" picker/kind]
-print ["items:    " mold picker/items]
-print ["index:    " picker/index "-> text:" mold picker/text]
+--test-- "drop-list kind"  [is? picker/kind 'drop-list]
+--test-- "drop-list items" [is? picker/items ["Bilberry" "Cloudberry" "Lingonberry" "Rowan"]]
+--test-- "drop-list index and text" [all [picker/index = 2  picker/text = "Cloudberry"]]
 
 ;; Replacing the list is a plain block assignment; the selection is dropped
 ;; with the items it referred to.
 picker/items: ["Ash" "Birch" "Elm" "Oak" "Rowan"]
+--test-- "replacing the items drops the pick" [is? picker/index 0]
 picker/index: 4
-print ["after replacing the items:" picker/index mold picker/text]
+--test-- "picked in the new items" [all [picker/index = 4  picker/text = "Oak"]]
 
 ;;=============================================================================
-print as-yellow "^/== Drop-down"
+group "Drop-down"
 ;;=============================================================================
 
 ;; The editable one - a combo box: pick from the list, or type free text.
@@ -508,64 +603,66 @@ print as-yellow "^/== Drop-down"
 combo: add-drop-down/index win
 	["Small" "Medium" "Large"] 410x350 100x0 1
 
-print ["drop-down:" combo/kind]
-print ["items:    " mold combo/items]
-print ["index:    " combo/index "-> text:" mold combo/text]
+--test-- "drop-down kind"  [is? combo/kind 'drop-down]
+--test-- "drop-down items" [is? combo/items ["Small" "Medium" "Large"]]
+--test-- "drop-down index and text" [all [combo/index = 1  combo/text = "Small"]]
 combo/text: "Extra Large"
-print ["typed directly:" mold combo/text]
+--test-- "drop-down text typed directly" [is? combo/text "Extra Large"]
+--rejects-- "a drop-list's text" [picker/text: "x"]
 
 ;;=============================================================================
-print as-yellow "^/== Text-list"
+group "Text-list"
 ;;=============================================================================
 
 ;; The same list as a drop-list, shown in a box. It is kept short on purpose:
 ;; the items do not fit, so the vertical scroll bar shows up on its own.
 trees: add-text-list win ["Ash" "Birch" "Elm" "Oak" "Rowan" "Willow"] 300x425 300x48
 
-print ["text-list:" trees/kind]
-print ["items:    " mold trees/items]
-print ["nothing picked:" trees/index mold trees/text "(expected 0 none)"]
+--test-- "text-list kind"  [is? trees/kind 'text-list]
+--test-- "text-list items" [is? trees/items ["Ash" "Birch" "Elm" "Oak" "Rowan" "Willow"]]
+--test-- "nothing picked"  [all [trees/index = 0  none? trees/text]]
 
 trees/index: 3
-print ["picked from Rebol:" trees/index mold trees/text "(expected 3 ^"Elm^")"]
-print ["text is read-only:" error? try [trees/text: "Yew"]]
+--test-- "picked from Rebol" [all [trees/index = 3  trees/text = "Elm"]]
+--rejects-- "a text-list's text" [trees/text: "Yew"]
 
 ;; Replacing the list drops the selection with the items it referred to.
 trees/items: ["Alder" "Hazel" "Linden" "Maple" "Poplar" "Spruce" "Yew"]
-print ["after replacing the items:" length? trees/items trees/index "(expected 7 0)"]
+--test-- "replaced items, pick dropped" [all [7 = length? trees/items  trees/index = 0]]
 trees/index: 7            ;; the last one - scrolled into view
-print ["last picked:" mold trees/text]
+--test-- "the last one picked" [is? trees/text "Yew"]
 trees/index: 0            ;; zero, or anything out of range, picks nothing
-print ["cleared:" mold trees/text]
+--test-- "pick cleared" [none? trees/text]
 
 ;; `scroll` works as for an area, a fraction of the way down.
 trees/scroll: 'top
-print ["scrolled to the top:" trees/scroll "(expected 0%)"]
+--test-- "text-list scrolled to the top" [is? trees/scroll 0%]
 trees/scroll: 'end
-print ["and to the end:     " trees/scroll "(expected 100%)"]
+--test-- "text-list scrolled to the end" [is? trees/scroll 100%]
 
 ;; An integer brings that item into view without picking it, scrolling as
 ;; little as it takes; out of range is clamped.
 trees/scroll: 1
-print ["item 1 in view:     " trees/scroll "(expected 0%)" "index:" trees/index "(expected 0)"]
+--test-- "item 1 in view, not picked" [all [trees/scroll = 0%  trees/index = 0]]
 trees/scroll: 100
-print ["past the end:       " trees/scroll "(expected 100%)"]
-print ["an area takes no integer:" error? try [log/scroll: 1]]
+--test-- "past the end is clamped" [is? trees/scroll 100%]
+--rejects-- "an integer scroll on an area" [log/scroll: 1]
 
 ;; `scrollable?` off takes the scroll bar and the wheel away from the user;
 ;; code still scrolls it.
-print ["scrollable? by default:" trees/scrollable?]
+--test-- "scrollable? by default" [trees/scrollable?]
 trees/scrollable?: false
-print ["and off:               " trees/scrollable?]
+--test-- "scrollable? off" [not trees/scrollable?]
 trees/scroll: 'top
-print ["still scrolled by code:" trees/scroll "(expected 0%)"]
+--test-- "still scrolled by code" [is? trees/scroll 0%]
 trees/scrollable?: true
-print ["not a list's accessor: " mold picker/scrollable? "(expected none)"]
+--test-- "not a drop-list's accessor" [none? picker/scrollable?]
 
 ;; `/index` picks one at creation, as for a drop-list; a zero size asks the
 ;; list for its natural one. This one is removed straight away.
 spare: add-text-list/index win ["one" "two"] 0x0 0x0 2
-print ["natural size:" spare/size "picked:" mold spare/text]
+--test-- "/index picks at creation" [is? spare/text "two"]
+--test-- "a zero size is measured"  [all [spare/size/x > 0  spare/size/y > 0]]
 remove-widget spare
 release spare
 
@@ -581,7 +678,7 @@ note: func ["Appends a line to the area" line [string!]][
 
 
 ;;=============================================================================
-print as-yellow "^/== Tooltips"
+group "Tooltips"
 ;;=============================================================================
 
 ;; The platform's own tooltip - its delay, its placement, its look. Any kind
@@ -590,7 +687,7 @@ print as-yellow "^/== Tooltips"
 ;; WATCH: rest the pointer on "Click me", on the picture, on the label above
 ;; the field and on the slider - each shows its tip. A label is a special
 ;; case on Windows (it never sees the mouse itself), so it is worth checking.
-print ["no tip to begin with:" none? counter/tip]
+--test-- "no tip to begin with" [none? counter/tip]
 counter/tip: "Counts the clicks and repaints the picture"
 canvas/tip:  "Drop an image file here to show it"
 label/tip:   "Greets whoever types in the field below"
@@ -598,24 +695,24 @@ level/tip:   "Drives the progress bar below it"
 name/tip:    "Type your name - Enter reports a click"
 log/tip:     "Read-only: select and copy, but no typing"
 combo/tip:   "Pick one, or type your own"
-print ["and read back:       " mold counter/tip]
-print ["a label has one too: " mold label/tip]
+--test-- "a tip reads back"     [is? counter/tip "Counts the clicks and repaints the picture"]
+--test-- "a label has one too"  [is? label/tip "Greets whoever types in the field below"]
 
 ;; Replaced, not added to...
 counter/tip: "Counts the clicks^/and repaints the picture"
-print ["replaced, two lines: " mold counter/tip]
+--test-- "a tip replaced, two lines" [is? counter/tip "Counts the clicks^/and repaints the picture"]
 
 ;; ... and taken away with either `none` or an empty string.
 closer/tip: "about to go"
 closer/tip: none
-print ["removed with none:   " none? closer/tip]
+--test-- "a tip removed with none" [none? closer/tip]
 closer/tip: "about to go"
 closer/tip: ""
-print ["removed with empty:  " none? closer/tip]
-print ["a wrong type is refused:" error? try [closer/tip: 42]]
+--test-- "a tip removed with an empty string" [none? closer/tip]
+--rejects-- "an integer tip" [closer/tip: 42]
 
 ;;=============================================================================
-print as-yellow "^/== Showing the finished layout"
+group "Showing the finished layout"
 ;;=============================================================================
 
 ;; Everything above was created while the window was hidden, and nothing
@@ -629,34 +726,34 @@ show-window win
 print "the window is up - it should have arrived with everything on it"
 
 ;;=============================================================================
-print as-yellow "^/== The keyboard focus"
+group "The keyboard focus"
 ;;=============================================================================
 
 ;; `focused?` is asked of the platform rather than remembered, because focus
 ;; moves for reasons this extension never hears about - a click, the window
 ;; being activated, another application taking over.
-print ["the field takes it:  " set-focus name]
-print ["and reports it:      " name/focused?]
-print ["the button does not: " not counter/focused?]
+--test-- "the field takes the focus" [set-focus name]
+--test-- "and reports it"            [name/focused?]
+--test-- "the button does not"       [not counter/focused?]
 
-print ["a button takes it too:" set-focus counter]
-print ["... and the field has lost it:" not name/focused?]
+--test-- "a button takes it too"     [set-focus counter]
+--test-- "and the field has lost it" [not name/focused?]
 
 ;; A progress bar is not something a user can reach.
 ;; Refused by KIND, before the platform is asked, because the platforms
 ;; disagree: Win32's SetFocus works on any enabled window and would take a
 ;; progress bar or a label, showing nothing and doing nothing with a
 ;; keystroke, while AppKit refuses both. One answer is more use than two.
-print ["a progress bar refuses:" not set-focus meter]
-print ["and never reports it:  " not meter/focused?]
-print ["nor does a label:      " not set-focus label]
-print ["nor a panel:           " not set-focus box]
+--test-- "a progress bar refuses the focus" [not set-focus meter]
+--test-- "and never reports it"             [not meter/focused?]
+--test-- "nor does a label"                 [not set-focus label]
+--test-- "nor a panel"                      [not set-focus box]
 
 ;; Left on the field, which is where a typist wants it.
 set-focus name
 
 ;;=============================================================================
-print as-yellow "^/== Moving a widget over a sibling"
+group "Moving a widget over a sibling"
 ;;=============================================================================
 
 ;; The area a widget vacates when it moves or shrinks belongs to the WINDOW,
@@ -671,30 +768,31 @@ print as-yellow "^/== Moving a widget over a sibling"
 ;;
 ;; WATCH THE TOP EDGE OF THE FIELD: the label grows down across it and shrinks
 ;; back, and the field's frame must be unbroken afterwards.
-print ["label at" label/offset label/size " field at" name/offset name/size]
+field-box: reduce [name/offset name/size]
+was: label/size
 
 label/font-size: 20        ;; the same thing the `big` menu item does
 label/size: 220x0          ;; ... and re-fit, which now reaches the field
-print ["label grown to:" label/size]
+--test-- "the label grew" [label/size/y > was/y]
+grown: label/size
 wait 0.2
 
 label/font-size: none      ;; `normal` again
 label/size: 220x0
-print ["and back to:   " label/size]
+--test-- "and shrank back" [label/size/y < grown/y]
 wait 0.2
 
-print ["the field is still there:" mold name/text]
-print ["and reports its own box: " name/offset name/size]
+--test-- "the field is untouched"   [is? name/text "world"]
+--test-- "and keeps its own box"    [is? reduce [name/offset name/size] field-box]
 
 ;;=============================================================================
-print as-yellow "^/== The GUI device"
+group "The GUI device"
 ;;=============================================================================
 
 ;; The extension registers a device with RDO_AUTO_POLL, which is what makes
 ;; `wait` pump the OS message queue. Any positive id means the host accepted
 ;; it; a refusal would be one of the negative RDR_ codes.
-print ["device id:" dev-id: gui-device]
-if dev-id <= 0 [print as-red "the host refused the device - see the note below"]
+--test-- "the host accepted the device" [gui-device > 0]
 
 ;; Polled from OS_Wait, so a plain `wait` must move the counter. This is half
 ;; the event model in one assertion: if it does not move, the window stops
@@ -705,17 +803,16 @@ if dev-id <= 0 [print as-red "the host refused the device - see the note below"]
 ;; for the whole time `do-events` may be asleep for.
 polls: gui-device-polls
 wait 0.2
-print ["polls before:" polls "after a 0.2 wait:" gui-device-polls]
-print ["the host polls the device:" gui-device-polls > polls]
-print ["and more than once:      " (gui-device-polls - polls) > 1]
+--test-- "the host polls the device" [gui-device-polls > polls]
+--test-- "and more than once"        [(gui-device-polls - polls) > 1]
 
 ;; The other half: the device has a port, and pushes an event to it when
 ;; there is something to drain. `read` on it reports how many - the request
 ;; goes through the device's own command table, so a number coming back is
 ;; also proof that RDC_OPEN reached it rather than being a no-op.
-print ["event port:      " mold gui/event-port]
+--test-- "the event port is open" [port? gui/event-port]
 poll-events                      ;; drop whatever the sections above queued
-print ["nothing waiting: " zero? read gui/event-port]
+--test-- "nothing waiting after a drain" [zero? read gui/event-port]
 
 ;; A quiet wait must SLEEP. A device cannot ask to be woken by its return
 ;; code - a non-zero answer from a poll makes the host attach the REBREQ it
@@ -723,12 +820,12 @@ print ["nothing waiting: " zero? read gui/event-port]
 ;; that may shorten a wait is a pushed event.
 ;;
 ;; "Quiet" means the mouse is off the window: a `move` event is an event like
-;; any other and will ring the doorbell, which is the point.
+;; any other and will ring the doorbell, which is the point. So this is only
+;; reported, not counted.
 start:   now/precise
 wait 0.2
 elapsed: difference now/precise start
-print ["a quiet 0.2 wait took:" elapsed "(it must sleep, not spin)"]
-print ["slept:" elapsed >= 0:0:0.15 "(false if the mouse is over a window)"]
+print ["a quiet 0.2 wait took:" elapsed "- it must sleep, not spin (shorter if the mouse is over a window)"]
 
 ;; ...and a wait with an event pushed into it must RETURN EARLY. Resizing the
 ;; window from the program side produces one without touching the mouse: the
@@ -741,30 +838,29 @@ win/size: win/size + 1x1
 start:   now/precise
 wait reduce [gui/event-port 2]   ;; two seconds it must not take
 elapsed: difference now/precise start
-print ["a 2s wait on the port took:" elapsed]
-print ["woken early:         " elapsed < 0:0:1]
-print ["the device pushed it:" gui-device-events > events]
-print ["and it is waiting:   " (read gui/event-port) > 0]
+--test-- "a wait on the port is woken early" [elapsed < 0:0:1]
+--test-- "the device pushed the event"       [gui-device-events > events]
+--test-- "and it is waiting"                 [(read gui/event-port) > 0]
 
 ;; One push per batch, however many polls go by: a second wake for an event
 ;; nobody has drained yet would be one more unhandled event on the system
 ;; port every time the host looks.
 events: gui-device-events
 wait 0.3
-print ["no second push for the same batch:" gui-device-events = events]
+--test-- "no second push for the same batch" [gui-device-events = events]
 print ["drained:" length? poll-events "event(s)"]
-print ["and the doorbell is armed again:" zero? read gui/event-port]
+--test-- "the doorbell is armed again" [zero? read gui/event-port]
 
 
 ;;=============================================================================
-print as-yellow "^/== Screens"
+group "Screens"
 ;;=============================================================================
 
 ;; One handle per display, the primary first. Every read asks the platform
 ;; again, so a handle always describes the display as it is NOW - and one
 ;; whose display has been unplugged reads none for everything.
 all-screens: screens
-print ["screens:" length? all-screens]
+--test-- "at least one screen" [not empty? all-screens]
 foreach scr all-screens [
 	print [
 		pad mold scr/name 28
@@ -776,29 +872,29 @@ foreach scr all-screens [
 ]
 
 main: first all-screens
-print ["the first one is the primary:" main/primary?]
+--test-- "the first one is the primary" [main/primary?]
 primaries: 0
 foreach scr all-screens [if scr/primary? [primaries: primaries + 1]]
-print ["and there is exactly one:    " primaries = 1]
+--test-- "there is exactly one primary" [is? primaries 1]
 
 ;; The same display is the same HANDLE, however it was reached - so `==`
 ;; answers "is this the same screen?" as it does for windows and widgets.
 ;; (`=` would not: on handles it compares only the type.)
-print ["asking twice gives one handle:" main == first screens]
+--test-- "asking twice gives one handle" [main == first screens]
 on-screen?: func [scr][
 	foreach s screens [if s == scr [return true]]
 	false
 ]
-print ["the window knows its screen:  " on-screen? win/screen]
+--test-- "the window knows its screen" [on-screen? win/screen]
 
 ;; Everything is in the space a window's `offset` uses, so the two can be
 ;; compared directly: the window's top-left corner is on its own screen.
 home: win/screen
-print ["the window is on it:          " within? win/offset home/offset home/size]
+--test-- "the window is on it" [within? win/offset home/offset home/size]
 
 ;; The work area is the part not covered by the taskbar, the Dock or the
 ;; menu bar - inside the screen, and never bigger than it.
-print ["the work area is inside:      " did all [
+--test-- "the work area is inside the screen" [did all [
 	within? home/work-offset home/offset home/size
 	home/work-size/x <= home/size/x
 	home/work-size/y <= home/size/y
@@ -807,21 +903,21 @@ print ["the work area is inside:      " did all [
 ;; A window's scale IS its screen's - on Windows too, where the process is
 ;; per-monitor DPI aware (Windows 10 1703 and later; older systems report
 ;; the system scale for every screen).
-print ["and so is the window's scale: " win/scale = home/scale]
+--test-- "the window's scale is its screen's" [win/scale = home/scale]
 
 ;; A word this extension does not know still reaches the core's own answer.
-print ["a screen handle's type:" main/type]
+--test-- "a screen handle's type" [is? main/type 'GUI-SCREEN]
 
 ;;=============================================================================
-print as-yellow "^/== Window frames"
+group "Window frames"
 ;;=============================================================================
 
 ;; `/fixed` opens a window the user cannot resize, and `/borderless` one with
 ;; no title bar and no frame at all. Both are readable and writable afterwards
 ;; - and changing either keeps the CLIENT size, so nothing inside moves.
 fixed: open-window/title/at/fixed 240x120 "Fixed size" 700x120
-print ["fixed window - resizable?" fixed/resizable? " title?" fixed/title?]
-print ["client size:" fixed/size]
+--test-- "a /fixed window is not resizable" [all [not fixed/resizable?  fixed/title?]]
+--test-- "its client size" [is? fixed/size 240x120]
 
 ;; `/flat` makes an entry or a list without its border - a plain box of text.
 ;; `border?` reads it back, and turns it on and off afterwards; the box stays
@@ -837,13 +933,13 @@ sheet: add-area/flat  fixed "a flat area^/with two lines" 10x44 220x66
 
 ;; WATCH: a horizontal rule between the flat field and the flat area.
 hr: add-line fixed 10x38 220x0
-print ["horizontal line:" hr/size "(expected 220x2)"]
-print ["flat field - border?" plain/border? " area:" sheet/border? "(expected false false)"]
-print ["a normal field has one:" name/border? "(expected true)"]
+--test-- "a horizontal line: its length, a thickness" [all [hr/size/x = 220  hr/size/y > 0]]
+--test-- "/flat: no border" [all [not plain/border?  not sheet/border?]]
+--test-- "a normal field has one" [name/border?]
 plain/border?: true
-print ["turned on: " plain/border?]
+--test-- "border? turned on" [plain/border?]
 plain/border?: false
-print ["and off:   " plain/border?]
+--test-- "border? turned off" [not plain/border?]
 
 ;; A window can carry a colour of its own, which every widget on it then
 ;; resolves to - a transparent label on a dark window needs no colour of its
@@ -853,15 +949,16 @@ tinted/background: 24.26.34
 note-dark: add-text tinted "on a dark window" 12x12 230x0
 note-dark/transparent?: true
 note-dark/color: 225.228.235
-print ["window background:" mold tinted/background]
-print ["and a widget on it is transparent:" note-dark/transparent?]
+--test-- "window background" [is? tinted/background 24.26.34]
+--test-- "a transparent label on it" [note-dark/transparent?]
 
 ;; `/secure` masks what is typed. The script still reads the real text.
 ;;
 ;; WATCH: dots in the "Dark window", not "hunter2"; copying out is refused.
 secret: add-field/secure tinted "hunter2" 12x44 230x0
-print ["secure?" secret/secure? "text:" mold secret/text "(expected true ^"hunter2^")"]
-print ["an ordinary field is not:" name/secure? " a button has none:" mold counter/secure?]
+--test-- "secure? field, the real text" [all [secret/secure?  secret/text = "hunter2"]]
+--test-- "an ordinary field is not secure" [not name/secure?]
+--test-- "a button has no secure?" [none? counter/secure?]
 
 
 ;; And one which is SEE-THROUGH: the client area is dropped by the compositor
@@ -872,17 +969,18 @@ print ["an ordinary field is not:" name/secure? " a button has none:" mold count
 ;; confusing than a frame around a hole.
 ghost: open-window/at/borderless/transparent 240x80 700x580
 float: add-button ghost "floating" 20x20 200x36
-print ["ghost transparent?:" ghost/transparent? " background:" mold ghost/background]
+--test-- "a transparent window, no background" [all [ghost/transparent?  none? ghost/background]]
 
 ;; Turning it off makes it a solid window again, and back on again after.
 ghost/transparent?: false
-print ["... solid now:" not ghost/transparent?]
+--test-- "solid again" [not ghost/transparent?]
 wait 0.5
 ghost/transparent?: true
 
 bare: open-window/at/borderless 240x120 700x280
-print ["bare window  - resizable?" bare/resizable? " title?" bare/title?]
-print ["client size:" bare/size "(unchanged by having no frame)"]
+--test-- "a borderless window: no title bar" [not bare/title?]
+--test-- "its client size is unchanged by having no frame" [is? bare/size 240x120]
+print ["bare window resizable?" bare/resizable?]
 
 ;; A borderless window has no close box and nothing to drag, so the program
 ;; is the only thing that can move or close it. Give this one a way out.
@@ -891,7 +989,8 @@ back-again: add-button bare "Give me a frame" 10x50 0x0
 ;; `/borderless` means nothing around it at all - no outline, no shadow -
 ;; and that is kept when the button gives the title bar back and takes it
 ;; away again. A titled window always reads as having a border.
-print ["bare border?:" bare/border? "(expected false)" " fixed border?:" fixed/border? "(expected true)"]
+--test-- "a /borderless window has no border?" [not bare/border?]
+--test-- "a titled window always has one"      [fixed/border?]
 ;; ... and a toggle next to the button switches it. It shows only while
 ;; there is no title bar, but the setting is kept either way.
 bordered: add-toggle bare "Border" 150x50 0x0
@@ -903,24 +1002,25 @@ bordered: add-toggle bare "Border" 150x50 0x0
 ;; Not on the "Dark window": its background is set by hand, and the macOS
 ;; stepper arrows are drawn for the system's light or dark look, not for it.
 when: add-date-field/date/time bare 10x88 0x0 24-Dec-2026/18:30
-print ["date-field:" when/kind "size:" when/size]
-print ["value:" when/value "(expected 24-Dec-2026/18:30)"]
+--test-- "date-field kind" [is? when/kind 'date-field]
+print ["date-field size:" when/size]
+--test-- "date-field value" [when/value = 24-Dec-2026/18:30]
 when/value: 31-Dec-2026            ;; no time given - the time of day is kept
-print ["date set: " when/value "(expected 31-Dec-2026/18:30)"]
+--test-- "a date set keeps the time" [when/value = 31-Dec-2026/18:30]
 when/value: 1-Jan-2027/9:15
-print ["both set: " when/value "(expected 1-Jan-2027/9:15)"]
+--test-- "a date and time set" [when/value = 1-Jan-2027/9:15]
 plain-date: add-date-field bare 10x88 0x0
-print ["without /time, a plain date:" plain-date/value "(expected" now/date ")"]
+--test-- "without /time, a plain date of today" [all [none? plain-date/value/time  plain-date/value = now/date]]
 remove-widget plain-date
 release plain-date
 
 ;; Turning the border back on does not turn resizing back on: they are two
 ;; properties, and this window never had the second one.
 fixed/resizable?: true
-print ["... and now the fixed one is resizable?" fixed/resizable?]
+--test-- "resizable? set on a /fixed window" [fixed/resizable?]
 
 ;;=============================================================================
-print as-yellow "^/== Tab-panel"
+group "Tab-panel"
 ;;=============================================================================
 
 ;; A page per tab, made for you: a panel each, in `children`, with `group`
@@ -931,25 +1031,26 @@ print as-yellow "^/== Tab-panel"
 tabbed: open-window/title/at 300x180 "Tabs" 1000x120
 tabs:   add-tab-panel/index tabbed ["General" "Advanced" "About"] 10x10 280x160 2
 pages:  tabs/children
-print ["tab-panel:" tabs/kind "items:" mold tabs/items]
-print ["shown:" tabs/index mold tabs/text {(expected 2 "Advanced")}]
-print ["pages:" length? pages "the second is tab" pages/2/group "a" pages/2/kind]
-print ["a page's parent is the tab-panel:" pages/1/parent = tabs]
+--test-- "tab-panel kind and labels" [all [tabs/kind = 'tab-panel  tabs/items = ["General" "Advanced" "About"]]]
+--test-- "/index shows the tab" [all [tabs/index = 2  tabs/text = "Advanced"]]
+--test-- "a page per tab" [is? length? pages 3]
+--test-- "a page is a panel with its tab as group" [all [pages/2/group = 2  pages/2/kind = 'panel]]
+--test-- "a page's parent is the tab-panel" [pages/1/parent == tabs]
 
 add-check pages/1 "Enabled" 10x10 0x0
 add-field pages/2 "on the second page" 10x10 200x0
 add-text  pages/3 "Rebol/GUI" 10x10 0x0
 
 tabs/index: 1
-print ["switched from Rebol:" tabs/index mold tabs/text "(no `change` is reported)"]
+--test-- "switched from Rebol (no `change` reported)" [all [tabs/index = 1  tabs/text = "General"]]
 tabs/index: 9
-print ["out of range keeps it:" tabs/index]
-print ["the labels are read-only:" error? try [tabs/items: ["x"]]]
-print ["and so is the text:      " error? try [tabs/text: "x"]]
-print ["an empty block is refused:" error? try [add-tab-panel tabbed [] 0x0 10x10]]
+--test-- "out of range keeps it" [is? tabs/index 1]
+--rejects-- "setting a tab-panel's labels" [tabs/items: ["x"]]
+--rejects-- "setting a tab-panel's text"   [tabs/text: "x"]
+--rejects-- "a tab-panel with no tabs"     [add-tab-panel tabbed [] 0x0 10x10]
 
 ;;=============================================================================
-print as-yellow "^/== List-view"
+group "List-view"
 ;;=============================================================================
 
 ;; A table: titles with optional widths, and the cells as one flat block, row
@@ -970,42 +1071,50 @@ files-data: [
 table: open-window/title/at 360x200 "Table" 1000x340
 files: add-list-view/with/index table ["Name" 140 "Size" 70 right "Date" none center] 10x10 340x180 files-data 2
 
-print ["list-view:" files/kind "columns:" mold files/columns]
-print [{  (expected ["Name" 140 "Size" 70 right "Date" none center] - the last fills)}]
-print ["rows: " (length? files/items) / 3 "the same block?" same? files/items files-data "(expected true)"]
-print ["picked:" files/index mold files/text {(expected 2 "logo.png")}]
+--test-- "list-view kind" [is? files/kind 'list-view]
+;; A width of none reads back as none!, which molds as `_`.
+--test-- "columns read back" [is? files/columns reduce ["Name" 140 "Size" 70 'right "Date" none 'center]]
+--test-- "five rows" [is? (length? files/items) / 3 5]
+--test-- "items are the very block given" [same? files/items files-data]
+--test-- "/index picks a row; text is its first cell" [all [files/index = 2  files/text = "logo.png"]]
 files/index: 5
-print ["a file! formed:" mold files/text {(expected "data/file.bin")}]
+--test-- "a file! cell is formed" [is? files/text "data/file.bin"]
 files/index: 0
-print ["nothing picked:" files/index mold files/text "(expected 0 none)"]
-print ["half a row is refused:     " error? try [files/items: ["x" 1]]]
-print ["and so at creation:        " error? try [add-list-view/with table ["A" "B"] 0x0 10x10 [1 2 3]]]
-print ["no cells at all is fine:   " not error? try [remove-widget add-list-view table ["A" "B"] 0x0 10x10]]
-print ["a bad column spec:         " error? try [add-list-view table [10 "A"] 0x0 10x10]]
+--test-- "nothing picked" [all [files/index = 0  none? files/text]]
+--rejects-- "half a row"                [files/items: ["x" 1]]
+--rejects-- "half a row at creation"    [add-list-view/with table ["A" "B"] 0x0 10x10 [1 2 3]]
+--test-- "no cells at all is fine"      [not error? try [remove-widget add-list-view table ["A" "B"] 0x0 10x10]]
+--rejects-- "a bad column spec"         [add-list-view table [10 "A"] 0x0 10x10]
 ;; `none` in a literal block is the word - accepted as "fit the title", like
 ;; a reduced none! value.
-print ["word none as a width:      " not error? try [remove-widget add-list-view table ["A" none] 0x0 10x10]]
-print ["none! value as a width:    " not error? try [remove-widget add-list-view table reduce ["A" none] 0x0 10x10]]
-print ["another word is refused:   " error? try [add-list-view table ["A" auto] 0x0 10x10]]
-print ["text is read-only:         " error? try [files/text: "x"]]
+--test-- "the word none as a width"     [not error? try [remove-widget add-list-view table ["A" none] 0x0 10x10]]
+--test-- "a none! value as a width"     [not error? try [remove-widget add-list-view table reduce ["A" none] 0x0 10x10]]
+--rejects-- "another word as a width"   [add-list-view table ["A" auto] 0x0 10x10]
+--rejects-- "a list-view's text"        [files/text: "x"]
 files/sort-column: -2
-print ["sort arrow:" files/sort-column "(expected -2)"]
+--test-- "sort arrow" [is? files/sort-column -2]
 files/sort-column: none
-print ["no arrow:  " files/sort-column "(expected none)"]
+--test-- "no arrow" [none? files/sort-column]
 append files-data ["zzz.log" 1 6-Jun-2026]
 files/items: files-data
-print ["a row appended:" (length? files/items) / 3 "(expected 6)"]
+--test-- "a row appended" [is? (length? files/items) / 3 6]
 files/index: 6
-print ["scrolled to it, picked:" files/index]
+--test-- "the new row picked" [is? files/index 6]
 
 ;; A number of columns set again keeps the cells when it is the same...
 files/columns: ["File" none "Bytes" 80 right "When" center 120]
-print ["renamed:" mold files/columns "rows kept:" (length? any [files/items []]) / 3]
-print [{  (expected ["File" <fits the title> "Bytes" 80 right "When" 120 center] - none on the last only fills)}]
-print ["read back and set again, same:" (mold files/columns) = (files/columns: files/columns  mold files/columns)]
-print ["two widths are refused:     " error? try [files/columns: ["A" 10 20]]]
-print ["two alignments are refused: " error? try [files/columns: ["A" left right]]]
-print ["an unknown word is refused: " error? try [files/columns: ["A" middle]]]
+--test-- "renamed columns, rows kept" [is? (length? any [files/items []]) / 3 6]
+;; none on a column which is not the last fits its title: an integer then.
+--test-- "renamed columns read back" [
+	all [
+		files/columns/1 = "File"  integer? files/columns/2
+		(skip files/columns 2) = reduce ["Bytes" 80 'right "When" 120 'center]
+	]
+]
+--test-- "read back and set again, the same" [(mold files/columns) = (files/columns: files/columns  mold files/columns)]
+--rejects-- "two widths"     [files/columns: ["A" 10 20]]
+--rejects-- "two alignments" [files/columns: ["A" left right]]
+--rejects-- "an unknown word in columns" [files/columns: ["A" middle]]
 ;; WATCH (Windows): the Explorer look - the row under the pointer is
 ;; highlighted, the picked row is a filled bar across all columns with no
 ;; dotted focus rectangle in it.
@@ -1016,15 +1125,17 @@ files/columns: ["Name" 140 "Size" 70 right "Date" none center]
 ;; Stripes are `background` with two colours - the rows alternate. One colour,
 ;; or none, takes them off again. The first of the two may be none.
 files/background: [none 235.240.250]
-print ["stripes:" mold files/background "(expected [_ 235.240.250] - none molds as _)"]
+--test-- "stripes" [is? files/background reduce [none 235.240.250]]
 files/background: 250.250.250
-print ["one colour:" mold files/background "(expected 250.250.250)"]
-print ["three colours are refused:" error? try [files/background: [1.1.1 2.2.2 3.3.3]]]
-print ["reversed:" (files/background: [235.240.250 none]  mold files/background) "(expected [235.240.250 _])"]
-print ["none none is no stripes:" (files/background: [none none]  mold files/background) "(expected none)"]
-print ["one colour in a block is refused:" error? try [files/background: [1.1.1]]]
-print ["another word is refused: " error? try [files/background: [1.1.1 auto]]]
-print ["not on other kinds:       " error? try [counter/background: [1.1.1 2.2.2]]]
+--test-- "one colour" [is? files/background 250.250.250]
+--rejects-- "three colours" [files/background: [1.1.1 2.2.2 3.3.3]]
+files/background: [235.240.250 none]
+--test-- "stripes reversed" [is? files/background reduce [235.240.250 none]]
+files/background: [none none]
+--test-- "none none is no stripes" [none? files/background]
+--rejects-- "one colour in a block" [files/background: [1.1.1]]
+--rejects-- "another word in stripes" [files/background: [1.1.1 auto]]
+--rejects-- "stripes on another kind" [counter/background: [1.1.1 2.2.2]]
 ;; WATCH (Windows, dark system theme): the table starts light, like the main
 ;; window. "Dark controls" from the menu switches both: the table's rows go
 ;; dark grey with light text, the header dark with light titles, the scroll
@@ -1044,29 +1155,28 @@ hid: add-list-view/with table ["id" 0 "Name" 100 "path" 0] 0x0 10x10 [
 	101 "readme" %docs/readme.txt
 	102 "logo"   %img/logo.png
 ]
-print ["hidden columns read back:" mold hid/columns]
-print [{  (expected ["id" 0 "Name" 100 "path" 0])}]
-print ["rows:" (length? hid/items) / 3 "(expected 2 - three values a row, two hidden)"]
+--test-- "hidden columns read back" [is? hid/columns ["id" 0 "Name" 100 "path" 0]]
+--test-- "rows: three values a row, two hidden" [is? (length? hid/items) / 3 2]
 hid/index: 2
-print ["text is the hidden id:" mold hid/text {(expected "102")}]
-print ["half a row is still refused:" error? try [hid/items: [1 "x"]]]
+--test-- "text is the hidden id" [is? hid/text "102"]
+--rejects-- "half a row with hidden columns" [hid/items: [1 "x"]]
 hid/columns: ["id" 0 "Name" none "path" 0]
-print ["fill skips hidden:" mold hid/columns]
-print [{  (expected ["id" 0 "Name" none "path" 0] - Name is the last SHOWN column)}]
+;; Name is the last SHOWN column, so its none fills.
+--test-- "fill skips hidden columns" [is? hid/columns reduce ["id" 0 "Name" none "path" 0]]
 remove-widget hid
 
 ;; No titles at all: no header row. The header comes back with a title.
 bare-lv: add-list-view/with table ["" 60 "" none] 0x0 10x10 [1 2]
-print ["untitled columns read back:" mold bare-lv/columns "(no header)"]
+--test-- "untitled columns read back" [is? bare-lv/columns reduce ["" 60 "" none]]
 remove-widget bare-lv
 ;; ... and clears them when it is not.
 spare-lv: add-list-view/with table ["One" "Two"] 0x0 10x10 [1 2 3 4]
 spare-lv/columns: ["Only"]
-print ["columns changed, items:" mold spare-lv/items "(expected none)"]
+--test-- "another number of columns clears the items" [none? spare-lv/items]
 remove-widget spare-lv
 
 ;;=============================================================================
-print as-yellow "^/== Scroller"
+group "Scroller"
 ;;=============================================================================
 
 ;; A panel which scrolls. Its children are placed in its content, from the
@@ -1085,78 +1195,95 @@ print as-yellow "^/== Scroller"
 ;; set to.
 ;; WATCH: resizing the window resizes the scroller with it. Made bigger than
 ;; the bird, the bars go and the bird stays in the middle (`centered?`), on
-;; the scroller's light colour - with no frame lines around or near it; smaller
+;; the scroller's colour - with no frame lines around or near it; smaller
 ;; again, it scrolls from its corner.
+;; WATCH: switch the system between light and dark - the scroller and the
+;; panel on the picture change colour with it, and the bars, the button's
+;; text and the check's label stay readable in both.
 viewer: open-window/title/at/hidden 300x240 "Scroller" 1000x580
+;; Its controls follow the appearance on Windows too, as they always do on
+;; macOS and Linux - so the colours below can follow it the same way.
+viewer/dark-controls?: true
 sc:     add-scroller viewer 10x10 280x220
 big:    add-image/size sc bird 0x0 512x512
 ;; ON the picture means IN the image widget: as siblings overlapping it, the
-;; image would take their clicks on Windows. And in a light panel there: on
-;; macOS a control blends its bezel with what is behind it, and on the bird's
-;; dark background it would come out dark, black text and all.
+;; image would take their clicks on Windows. And in a panel there: a control
+;; is drawn for the light or the dark appearance whatever is behind it - on
+;; macOS its bezel even blends with it - so on the bird's dark background, in
+;; the light appearance, it would come out dark, black text and all.
 tools: add-panel/border big 20x20 170x80
-tools/background: 235.238.242
 add-button tools "On the picture" 10x10 0x0
 add-check  tools "And this" 10x46 0x0
-print ["scroller:" sc/kind "holds:" length? sc/children "(expected scroller 1)"]
-print ["the picture holds:" length? big/children big/children/1/kind "(expected 1 panel)"]
-print ["the panel holds:" length? tools/children "(expected 2)"]
-print ["starts at the top-left:" sc/scroll "(expected 0x0)"]
-print ["no size of its own:" error? try [add-scroller viewer 0x0 0x0]]
+--test-- "scroller kind, one child" [all [sc/kind = 'scroller  1 = length? sc/children]]
+--test-- "the picture holds a panel" [all [1 = length? big/children  big/children/1/kind = 'panel]]
+--test-- "the panel holds two" [is? length? tools/children 2]
+--test-- "starts at the top-left" [is? sc/scroll 0x0]
+--rejects-- "a scroller with no size" [add-scroller viewer 0x0 0x0]
 
 sc/scroll: 100x50
-print ["scrolled from Rebol:" sc/scroll "(expected 100x50)"]
-print ["the offset stays:" big/offset "the at moves:" big/at "(expected 0x0 -90x-40)"]
+--test-- "scrolled from Rebol" [is? sc/scroll 100x50]
+--test-- "the offset stays" [is? big/offset 0x0]
+--test-- "the at moves" [is? big/at -90x-40]
 ;; As far as it goes: the picture less the part which shows - a little less
 ;; where the scroll bars take room of their own.
 sc/scroll: 9999x9999
-print ["clamped to the end:" sc/scroll "about 232x292:" within? sc/scroll 232x292 25x25]
+--test-- "clamped to the end, about 232x292" [any [within? sc/scroll 232x292 25x25  ajoin ["got " sc/scroll]]]
 sc/scroll: 'top
-print ["top keeps it across:" sc/scroll/y = 0 sc/scroll/x > 0]
+--test-- "top keeps it across" [all [sc/scroll/y = 0  sc/scroll/x > 0]]
 sc/scroll: 'bottom
-print ["bottom keeps it across:" sc/scroll/y > 0 sc/scroll/x > 0]
+--test-- "bottom keeps it across" [all [sc/scroll/y > 0  sc/scroll/x > 0]]
 sc/scroll: -5x-5
-print ["and to the start:" sc/scroll "(expected 0x0)"]
-print ["a percent is refused:" error? try [sc/scroll: 50%]]
+--test-- "clamped to the start" [is? sc/scroll 0x0]
+--rejects-- "a percent scroll on a scroller" [sc/scroll: 50%]
 
 ;; A child further out widens what there is to scroll; removing it, or making
 ;; one smaller, narrows it again - and the position with it.
 far: add-button sc "Far" 900x10 0x0
 sc/scroll: 9999x0
-print ["a child further out widens it:" sc/scroll/x > 600]
+--test-- "a child further out widens it" [sc/scroll/x > 600]
 remove-widget far
-print ["removed, back within the picture:" sc/scroll/x <= 260]
+--test-- "removed, back within the picture" [sc/scroll/x <= 260]
 big/size: 200x150
-print ["all of it fits, nothing to scroll:" sc/scroll "(expected 0x0)"]
+--test-- "all of it fits, nothing to scroll" [is? sc/scroll 0x0]
 big/size: 512x512
-print ["a child of a scroller is a child:" big/parent == sc]
+--test-- "a child of a scroller is a child" [big/parent == sc]
 
 ;; `centered?` puts content smaller than the visible part in the middle of
 ;; it, on that axis. The children keep their offsets; their `at` says where
 ;; they ended up. Off by default, and only a scroller has it.
-print ["centered? by default:" sc/centered? "(expected false)"]
-print ["not on other kinds:" none? counter/centered? error? try [counter/centered?: true]]
+--test-- "centered? off by default" [not sc/centered?]
+--test-- "no centered? on other kinds" [none? counter/centered?]
+--rejects-- "centered? on a button" [counter/centered?: true]
 sc/centered?: true
-;; A light colour: on macOS a control blends its bezel with what is behind
-;; it, and in the light appearance looks dark on a dark colour.
-sc/background: 225.230.238
-print ["a scroller has a background:" sc/background "(expected 225.230.238)"]
+;; Colours of our own, for the appearance the controls are drawn for: a light
+;; one in the dark appearance leaves white text and white scroll bars on it,
+;; and a dark one in the light appearance dark buttons. Set again on every
+;; `theme-change`, in `report`.
+viewer-colors: func [dark [logic!]][
+	either dark [[46.50.58 58.62.72]][[225.230.238 235.238.242]]
+]
+color-viewer: function [][
+	colors: viewer-colors did all [viewer/dark-controls? viewer/dark?]
+	sc/background:    colors/1
+	tools/background: colors/2
+]
+color-viewer
+--test-- "a scroller has a background" [is? sc/background first viewer-colors viewer/dark?]
 
 ;; The scroller fills its window - kept so on every `resize`, in `report`.
 fit-viewer: does [sc/size: viewer/size - 20x20]
 fit-viewer
-print ["bigger than the scroller, from its corner:" big/at "(expected 10x10)"]
+--test-- "bigger than the scroller, from its corner" [is? big/at 10x10]
 viewer/size: 700x600
 fit-viewer   ;; what its `resize` will do too, once it is polled
-print ["smaller, centred:" big/at "offset:" big/offset "scrolled:" sc/scroll]
-print ["  (expected 94x44 0x0 0x0)"]
+--test-- "smaller, centred" [is? reduce [big/at big/offset sc/scroll] [94x44 0x0 0x0]]
 viewer/size: 800x700
 fit-viewer
-print ["resized, centred again:" big/at "(expected 144x94)"]
+--test-- "resized, centred again" [is? big/at 144x94]
 viewer/size: 700x600
 fit-viewer
 sc/centered?: false
-print ["not centred:" big/at "(expected 10x10)"]
+--test-- "not centred" [is? big/at 10x10]
 sc/centered?: true
 viewer/size: 300x240
 fit-viewer
@@ -1164,7 +1291,7 @@ show-window viewer
 
 
 ;;=============================================================================
-print as-yellow "^/== Tree-view"
+group "Tree-view"
 ;;=============================================================================
 
 ;; The menu dialect's grammar: a label, a word naming the node if it needs
@@ -1208,51 +1335,58 @@ big-tree/expanded: ["Pictures"]
 ;; A text-list takes an icon after an item's string, a list-view as a row's
 ;; first cell - the same image! or get-word.
 icon-list: add-text-list/index trees ["Docs" :folder  "a.txt" :file  "plain"] 10x260 220x150 2
-print ["text-list with icons:" icon-list/text length? icon-list/items "(expected a.txt 3 - items reads back the strings)"]
+--test-- "a text-list with icons: its text" [is? icon-list/text "a.txt"]
+--test-- "items read back the strings only" [is? icon-list/items ["Docs" "a.txt" "plain"]]
 icon-view: add-list-view/with/index trees ["" 28  "Name" 100  "Size" none right] 240x260 220x150 [
 	:folder "docs"   0
 	:file   "a.txt" 12
 	none    "plain"  3
 ] 2
-print ["list-view text skips the icon:" mold icon-view/text {(expected "a.txt")}]
+--test-- "a list-view's text skips the icon" [is? icon-view/text "a.txt"]
 
 ;; `capture` - a window's client area or a widget, as an image! of device
-;; pixels.
+;; pixels - within a pixel of the logical size times the scale.
+about?: func [size [pair!] want [pair!] /local d][
+	d: size - want
+	any [all [(abs d/x) <= 1  (abs d/y) <= 1]  ajoin ["got " size " for " want]]
+]
 shot: capture trees
-print ["capture of a window:" type? shot shot/size "(expected image!" to pair! trees/size * trees/scale ")"]
+--test-- "capture of a window" [all [image? shot  about? shot/size trees/size * trees/scale]]
 shot: capture icon-view
-print ["capture of a widget:" shot/size "(expected" to pair! icon-view/size * trees/scale ")"]
+--test-- "capture of a widget" [about? shot/size icon-view/size * trees/scale]
+shot: none
 
-print ["tree-view:" tree/kind "nothing picked:" mold tree/selected "(expected none)"]
+--test-- "tree-view kind, nothing picked" [all [tree/kind = 'tree-view  none? tree/selected]]
 tree/selected: 'docs/old/"b.txt"
-print ["picked by path:" mold tree/selected mold tree/text
-	{(expected docs/old/"b.txt" "b.txt")}]
+--test-- "picked by path" [is? mold tree/selected {docs/old/"b.txt"}]
+--test-- "its text is the label" [is? tree/text "b.txt"]
 ;; The text is the picked node's label, so it is read-only - `selected`
 ;; picks the node. (Setting it used to reach the native control: an
 ;; exception on macOS, a renamed window on Windows.)
-print ["text is read-only:" error? try [tree/text: "x"] mold tree/text {(expected true "b.txt")}]
-print ["a path! it is:" path? tree/selected]
-print ["its branches opened:" mold tree/expanded "(expected [docs docs/old])"]
+--rejects-- "a tree-view's text" [tree/text: "x"]
+--test-- "and the label is unchanged" [is? tree/text "b.txt"]
+--test-- "a path! it is" [path? tree/selected]
+--test-- "its branches opened" [is? mold tree/expanded "[docs docs/old]"]
 tree/selected: 'report
-print ["picked by word:" mold tree/selected "(expected docs/report)"]
+--test-- "picked by word" [is? mold tree/selected "docs/report"]
 tree/selected: "Song.mp3"
-print ["picked by label:" mold tree/selected {(expected music/"Song.mp3")}]
+--test-- "picked by label" [is? mold tree/selected {music/"Song.mp3"}]
 tree/selected: 'music
-print ["a node at the top:" mold tree/selected type? tree/selected "(expected music word!)"]
+--test-- "a node at the top is a word" [all [word? tree/selected  tree/selected = 'music]]
 tree/selected: "Notes.txt"
-print ["... without a word:" mold tree/selected {(expected "Notes.txt")}]
+--test-- "... or a string without a word" [is? tree/selected "Notes.txt"]
 tree/selected: 'docs/nothing
 tree/selected: [music "Song.mp3"]
-print ["a block works too:" mold tree/selected {(expected music/"Song.mp3")}]
+--test-- "a block works too" [is? mold tree/selected {music/"Song.mp3"}]
 tree/selected: 'docs/nothing
-print ["a path to nothing:" mold tree/selected "(expected none)"]
+--test-- "a path to nothing picks nothing" [none? tree/selected]
 tree/expanded: [music docs/old]
-print ["opened as asked:" mold tree/expanded "(expected [docs docs/old music])"]
+--test-- "opened as asked, with what is above" [is? mold tree/expanded "[docs docs/old music]"]
 tree/expanded: [docs/old]
-print ["exactly those, and above:" mold tree/expanded "(expected [docs docs/old])"]
-print ["every node:" length? tree/nodes "(expected 8)" "the fifth:" mold pick tree/nodes 5
-	{(expected docs/old/"b.txt")}]
-print ["the same block back:" same? tree/items tree/items]
+--test-- "exactly those, and above" [is? mold tree/expanded "[docs docs/old]"]
+--test-- "every node" [is? length? tree/nodes 8]
+--test-- "the fifth node" [is? mold pick tree/nodes 5 {docs/old/"b.txt"}]
+--test-- "the same items block back" [same? tree/items tree/items]
 ;; Setting `items` again starts afresh: nothing picked, nothing open.
 ;;
 ;; WATCH: the tree shows Documents open and Old inside it CLOSED. On macOS
@@ -1260,26 +1394,28 @@ print ["the same block back:" same? tree/items tree/items]
 ;; rows of the nodes just freed.
 tree/selected: 'report
 tree/items: tree/items
-print ["items set again:" mold tree/selected mold tree/expanded "(expected none [])"]
+--test-- "items set again: nothing picked, nothing open" [all [none? tree/selected  empty? tree/expanded]]
 tree/expanded: [docs]
-print ["one branch opened:" mold tree/expanded "(expected [docs])"]
+--test-- "one branch opened" [is? mold tree/expanded "[docs]"]
 spare-tree: add-tree-view trees ["x"] 0x0 0x0
-print ["a zero size measures it:" spare-tree/size]
+--test-- "a zero size measures a tree" [all [spare-tree/size/x > 0  spare-tree/size/y > 0]]
 remove-widget spare-tree
 
 ;; `row-height` is the height of a row of any of the three kinds with rows,
 ;; in logical units; none hands it back to the platform, which follows the
 ;; font.
-print ["platform's row height:" tree/row-height]
+own-height: tree/row-height
+--test-- "the platform's row height" [all [integer? own-height  own-height > 0]]
 tree/row-height: 32
 tree/font-size: 14
-print ["set, and kept past a new font:" tree/row-height "(expected 32)"]
+--test-- "row-height set, and kept past a new font" [is? tree/row-height 32]
 tree/row-height: none
 tree/font-size: none
-print ["none puts the platform's back:" tree/row-height]
+--test-- "none puts the platform's back" [is? tree/row-height own-height]
+--test-- "no row-height on other kinds" [none? counter/row-height]
 
 ;;=============================================================================
-print as-yellow "^/== Menu bar"
+group "Menu bar"
 ;;=============================================================================
 
 ;; A label followed by a WORD is an item - and it is the word, not the label,
@@ -1288,7 +1424,7 @@ print as-yellow "^/== Menu bar"
 ;;
 ;; A char! after the id is a shortcut on the platform's own menu modifier -
 ;; Ctrl on Windows, Cmd on macOS - and a block adds more modifiers to it.
-win/menu: [
+menu-spec: [
 	"File" [
 		"Reset counter" reset  #"R"
 		"Log a note"    note   [shift #"L"]
@@ -1309,23 +1445,26 @@ win/menu: [
 	]
 	"Help" ["About" about]
 ]
+win/menu: menu-spec
 
 ;; Reads back as the very block it was given - not a rebuilt one.
-print ["menu is a" type? win/menu "of" length? win/menu "menus"]
+--test-- "the menu is the very block given" [same? win/menu menu-spec]
 
 ;; Greying out is by word, and merges: only `note` changes here.
 win/menu-enabled?: [note false]
-print ["menu-enabled? reports:" mold win/menu-enabled?]
+enabled: win/menu-enabled?
+--test-- "menu-enabled? greys one out"  [false = select enabled 'note]
+--test-- "... and leaves the rest alone" [all [true = select enabled 'reset  true = select enabled 'about]]
 
 ;;=============================================================================
-print as-yellow "^/== Dropped files"
+group "Dropped files"
 ;;=============================================================================
 
 ;; Off until asked for: a window which silently swallows a drop is worse than
 ;; one which visibly refuses it.
-print ["drop? before asking:" win/drop?]
+--test-- "drop? off by default" [not win/drop?]
 win/drop?: true
-print ["and after:          " win/drop?]
+--test-- "drop? on" [win/drop?]
 
 
 ;; TRY IT: drag files onto the window. The log names them and says what they
@@ -1338,7 +1477,7 @@ Drop an image onto the picture and it replaces it.
 }
 
 ;;=============================================================================
-print as-yellow "^/== Events"
+group "Events"
 ;;=============================================================================
 
 print {
@@ -1625,6 +1764,7 @@ if all [type = 'alt-down  source == canvas] [
 		note ajoin ["theme: " event/code " (dark? " source/dark? ")"]
 		;; The one colour of our own in this window follows the switch.
 		if source == win [box/background: panel-color did all [win/dark-controls? source/dark?]]
+		if source == viewer [color-viewer]
 		unless (event/code = 'dark) = source/dark? [note "!! code and dark? disagree"]
 	]
 
@@ -1780,19 +1920,21 @@ if all [type = 'alt-down  source == canvas] [
 	]
 ]
 
+
 ;;- modal dialogs ------------------------------------------------------------
 ;; `/modal owner` blocks every other window until the dialog closes; the owner
 ;; only decides placement (centred on it). Dialogs nest - only the newest one
 ;; takes input.
 dlg: open-window/modal/title 260x100 win "Confirm"
 add-text dlg "A modal dialog" 10x10 0x0
-print ["dialog modal?:" dlg/modal? "(expected true)  main modal?:" win/modal? "(expected false)"]
-print ["closing the owner:" either error? try [close-window win] ["refused (expected)"]["closed!?"]]
+--test-- "a dialog is modal?"    [dlg/modal?]
+--test-- "its owner is not"      [not win/modal?]
+--rejects-- "closing the owner of an open dialog" [close-window win]
 inner: open-window/modal/title 200x80 dlg "Nested"
-print ["closing a nested owner:" either error? try [close-window dlg] ["refused (expected)"]["closed!?"]]
+--rejects-- "closing a nested owner" [close-window dlg]
 close-window inner
 close-window dlg
-print ["after the dialogs, main still open?:" win/open? "(expected true)"]
+--test-- "after the dialogs, the main window is still open" [win/open?]
 ;; WATCH: while a dialog was up nothing else took clicks or keys; a
 ;; theme-change still arrives from blocked windows.
 
@@ -1800,7 +1942,7 @@ print ["after the dialogs, main still open?:" win/open? "(expected true)"]
 spare: open-window/title 200x80 "Spare owner"
 dlg2: open-window/modal 160x60 spare
 release spare
-print ["dialog after owner release - open?:" dlg2/open? "(expected false)"]
+--test-- "a dialog closes with its released owner" [not dlg2/open?]
 
 ;; A modal Yes/No dialog run by a nested `do-events` - returns true for Yes.
 confirm-quit: function [][
@@ -1819,37 +1961,46 @@ confirm-quit: function [][
 	answer
 ]
 
+;; The checks so far, before the windows are handed to the user; the totals
+;; are printed again, with what follows, once the main window is closed.
+print ajoin [lf as-yellow "so far: " test-count " tests, " fail-count " failed"]
+
 ;; Pumps the OS queue, hands every event! to `report`, and returns once the
 ;; window has been closed. This is the whole event model - there is no
 ;; system/ports/event involvement at all.
 do-events win :report
 track-mouse false   ;; nothing left to report to
 
-print ["^/window closed - open?:" win/open?]
-print ["what was typed: " mold attempt [name/text] "(none - the control is gone)"]
+;;=============================================================================
+group "After closing"
+;;=============================================================================
+
+--test-- "the window is closed" [not win/open?]
+--test-- "a widget of a closed window reads none" [none? attempt [name/text]]
 
 ;; Widgets go with their window: the handles stay usable and simply report
 ;; themselves as removed, rather than pointing at freed controls.
-print ["button after close:" counter "parent:" counter/parent]
+--test-- "a button has no parent after its window closed" [none? counter/parent]
+--test-- "its id is 0" [is? counter/id 0]
 
 ;; Everything the panel held went with it, however it was reached.
-print ["a radio inside the panel:" warm "parent:" warm/parent]
+--test-- "nor a radio inside the panel" [none? warm/parent]
 
 ;; The extra windows go too - a `close` on the main one ends the loop, and
 ;; these two have nothing watching them.
-foreach extra reduce [fixed bare tinted ghost tabbed table] [
+foreach extra reduce [fixed bare tinted ghost tabbed table viewer trees] [
 	if extra/open? [close-window extra]
 ]
 
 ;; The image itself is untouched by any of this - the widget only ever held
 ;; a reference to it.
-print ["the image survives:" type? pic pic/size]
+--test-- "the image survives" [all [image? pic  pic/size = 240x160]]
 
 ;; The handles stay usable after the window is gone. Releasing them is
 ;; optional - the recycler would do it too.
 foreach handle reduce [
 	canvas counter closer label name log styled
-	toggle box warm cool slow fast level meter picker combo trees rule hr tabs keys-switch files
+	toggle box warm cool slow fast level meter picker combo rule hr tabs keys-switch files
 	fixed bare back-again bordered
 ][	release handle ]
 ;; Screen handles lock nothing native, so they need no release - the
@@ -1857,4 +2008,4 @@ foreach handle reduce [
 release win
 print ["released:" win]
 
-print "done"
+summary
