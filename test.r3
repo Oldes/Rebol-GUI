@@ -1462,6 +1462,12 @@ win/menu-enabled?: [note false]
 enabled: win/menu-enabled?
 --test-- "menu-enabled? greys one out"  [false = select enabled 'note]
 --test-- "... and leaves the rest alone" [all [true = select enabled 'reset  true = select enabled 'about]]
+;; `false` in that literal block is the WORD false, taken for the value; a
+;; reduced logic! works the same. (The word was once taken for an item.)
+win/menu-enabled?: reduce ['note true]
+--test-- "a logic! value enables it again" [true = select win/menu-enabled? 'note]
+win/menu-enabled?: [note off]
+--test-- "off is false too" [false = select win/menu-enabled? 'note]
 
 ;;=============================================================================
 group "Dropped files"

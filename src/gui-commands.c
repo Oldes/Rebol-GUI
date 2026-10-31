@@ -866,6 +866,28 @@ static REBOOL Is_None_Width(REBCNT type, RXIARG *val)
 	return ((u32)val->int32a == none_sym) ? TRUE : FALSE;
 }
 
+/***********************************************************************
+**  A logic! value, none, or - in a block that is not reduced, as in
+**  `win/menu-enabled?: [save false]` - one of the WORDS which hold one:
+**  true, false, on, off, yes and no. Sets *on and answers TRUE for any
+**  of them, FALSE for anything else.
+***********************************************************************/
+static REBOOL Logic_Of(REBCNT type, RXIARG *val, REBOOL *on)
+{
+	static u32 syms[6] = {0};
+	static const char *names[6] = {"true", "on", "yes", "false", "off", "no"};
+	int n;
+
+	if (type == RXT_LOGIC) { *on = val->int32a ? TRUE : FALSE; return TRUE; }
+	if (type == RXT_NONE)  { *on = FALSE; return TRUE; }
+	if (type != RXT_WORD)  return FALSE;
+	if (!syms[0]) for (n = 0; n < 6; n++) syms[n] = RL_MAP_WORD((REBYTE*)names[n]);
+	for (n = 0; n < 6; n++) {
+		if ((u32)val->int32a == syms[n]) { *on = (n < 3) ? TRUE : FALSE; return TRUE; }
+	}
+	return FALSE;
+}
+
 // GUI_ALIGN_* for an alignment word, or -1 for anything else.
 static REBINT Align_Of(REBCNT type, RXIARG *val)
 {
@@ -4701,11 +4723,17 @@ int GuiWindow_set_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 		blk = (REBSER*)arg->series;
 
 		for (n = arg->index; (t = RL_GET_VALUE(blk, n, &item)) != 0; n++) {
+			REBOOL on;
 			if (t == RXT_END) break;
-			if (t == RXT_WORD) { word = (REBCNT)item.int32a; continue; }
+			// After an item's word, `false` written in a literal block is
+			// the WORD false - taken for the value it names, as the README
+			// writes it. Before one, any word is the item.
+			if (t == RXT_WORD && !(word && Logic_Of(t, &item, &on))) {
+				word = (REBCNT)item.int32a;
+				continue;
+			}
 			if (!word) continue;
-			if (t == RXT_LOGIC || t == RXT_NONE) {
-				REBOOL on = (t == RXT_LOGIC && item.int32a) ? TRUE : FALSE;
+			if (Logic_Of(t, &item, &on)) {
 				REBCNT i;
 				// Every item with that word, so one word used twice in a
 				// menu turns both on or both off.
