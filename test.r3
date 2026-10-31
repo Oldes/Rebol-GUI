@@ -1145,7 +1145,14 @@ files/background: [none none]
 ;; A stripe to suit the appearance, from the first row: the second colour
 ;; none, so every other row keeps the platform's own - light or dark.
 stripes: func [dark [logic!]][either dark [[55.55.60 none]][[235.240.250 none]]]
-files/background: stripes did all [table/dark-controls? table/dark?]
+;; Whether a window's controls are drawn for the dark appearance: always with
+;; it on macOS and Linux, and on Windows only with `dark-controls?` - a light
+;; stripe under the white text of a dark list is unreadable.
+dark-look?: func [w [handle!]][
+	did all [w/dark?  any [w/dark-controls?  system/platform <> 'Windows]]
+]
+files/background: stripes dark-look? table
+--test-- "the stripe suits the look" [is? files/background reduce stripes dark-look? table]
 
 ;; A width of 0 hides a column: its values stay in the rows - a row is as
 ;; long as the whole spec - but nothing shows them. `text` is still the first
@@ -1765,6 +1772,7 @@ if all [type = 'alt-down  source == canvas] [
 		;; The one colour of our own in this window follows the switch.
 		if source == win [box/background: panel-color did all [win/dark-controls? source/dark?]]
 		if source == viewer [color-viewer]
+		if source == table  [files/background: stripes dark-look? table]
 		unless (event/code = 'dark) = source/dark? [note "!! code and dark? disagree"]
 	]
 
@@ -1793,7 +1801,7 @@ if all [type = 'alt-down  source == canvas] [
 				;; The table window follows, and its stripe with it.
 				if table/open? [
 					table/dark-controls?: win/dark-controls?
-					files/background: stripes did all [table/dark-controls? table/dark?]
+					files/background: stripes dark-look? table
 				]
 				note ajoin ["dark controls: " win/dark-controls?]
 			]
