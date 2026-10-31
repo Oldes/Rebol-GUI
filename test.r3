@@ -1914,6 +1914,9 @@ if all [type = 'alt-down  source == canvas] [
 		case [
 			;; A wheel event is `scroll-line`, and its line count is in `code` -
 			;; where a position would otherwise be, which is why it has none.
+			;; WATCH (macOS): a slow two-finger swipe on the trackpad logs a
+			;; few lines, all of one sign - not one per tiny movement, and
+			;; no -1/+1 flicker when the fingers stop.
 			type = 'scroll-line [ajoin ["lines: " event/code]]
 			type = 'click [source]
 

@@ -2175,6 +2175,10 @@ static GUIWIDGET *Widget_At_Point(GUIWIN *win, NSView *root, NSPoint inRoot)
 
 //-- wheel --------------------------------------------------------------------
 
+// What a trackpad has moved short of a whole line (see -scrollWheel:).
+// One for all windows: only one gesture is ever under the fingers.
+static CGFloat Wheel_Rest = 0.0;
+
 - (void)scrollWheel:(NSEvent*)evt
 {
 	NSPoint pt;
@@ -2184,13 +2188,26 @@ static GUIWIDGET *Widget_At_Point(GUIWIN *win, NSView *root, NSPoint inRoot)
 	if (!context || !context->hob) return;
 
 	dy = [evt scrollingDeltaY];
-	// A trackpad or a Magic Mouse reports pixel-precise deltas; a wheel
-	// reports whole lines already.
-	if ([evt hasPreciseScrollingDeltas]) dy /= 10.0;
-
-	// Sub-line movement still has to say which way it went, hence the
-	// rounding away from zero.
-	lines = (REBINT)(dy > 0 ? ceil(dy) : floor(dy));
+	if ([evt hasPreciseScrollingDeltas]) {
+		// A trackpad or a Magic Mouse reports pixels, a few at a time and
+		// with jitter either way. They are added up until they make a line
+		// (10 points), and only whole lines are reported - the rest waits
+		// for the next event. A new gesture, or a turn the other way,
+		// starts the count again, so a leftover never leaks into it.
+		// (Rounding each tiny delta away from zero gave a line per event,
+		// and a jitter of -1/+1 when the fingers stopped.)
+		if ([evt phase] == NSEventPhaseBegan
+		 || (dy != 0 && Wheel_Rest != 0 && (Wheel_Rest > 0) != (dy > 0)))
+			Wheel_Rest = 0;
+		Wheel_Rest += dy / 10.0;
+		lines = (REBINT)Wheel_Rest;          // toward zero
+		Wheel_Rest -= lines;
+	}
+	else {
+		// A wheel reports whole lines already - except an accelerated one,
+		// whose fractions still have to say which way they went.
+		lines = (REBINT)(dy > 0 ? ceil(dy) : floor(dy));
+	}
 	if (lines == 0) return;
 
 	// NOTE: this follows the user's "natural scrolling" setting, exactly as
