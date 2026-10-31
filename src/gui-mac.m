@@ -4686,7 +4686,7 @@ void Gui_Panel_Border_Changed(GUIWIDGET *wid)
 
 /***********************************************************************
 **  The clip view puts a document smaller than itself in the middle,
-**  for `centered?`. AppKit asks it for every bounds it is about to
+**  for `centered?`, and at the top-left otherwise. AppKit asks it for every bounds it is about to
 **  take - scrolling, resizing - so this is the one place to do it: a
 **  negative origin moves the (flipped) document right and down.
 ***********************************************************************/
@@ -4706,12 +4706,18 @@ void Gui_Panel_Border_Changed(GUIWIDGET *wid)
 	NSRect r   = [super constrainBoundsRect:proposed];
 	NSView *doc = [self documentView];
 
-	if (doc && context && (context->state & GUI_SCROLL_CENTER)) {
-		NSSize size = [doc frame].size;
+	// A document smaller than the clip view is put at the top-left when it
+	// is not centred - not where AppKit puts it, which for a flipped one is
+	// the bottom: a document sized a scroll bar short of the clip view (its
+	// size is worked out while a bar is still counted) went down by the
+	// bar's width when `centered?` was turned off.
+	if (doc && context) {
+		NSSize size   = [doc frame].size;
+		BOOL   center = (context->state & GUI_SCROLL_CENTER) ? YES : NO;
 		if (size.width  < r.size.width)
-			r.origin.x = -floor((r.size.width  - size.width)  / 2.0);
+			r.origin.x = center ? -floor((r.size.width  - size.width)  / 2.0) : 0;
 		if (size.height < r.size.height)
-			r.origin.y = -floor((r.size.height - size.height) / 2.0);
+			r.origin.y = center ? -floor((r.size.height - size.height) / 2.0) : 0;
 	}
 	return r;
 }
