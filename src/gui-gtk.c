@@ -870,6 +870,42 @@ static GUIWIDGET *Widget_Under_Point(GUIWIN *win, gdouble cx, gdouble cy, REBOOL
 	return found;
 }
 
+// The widget a context menu at this point is about: the deepest one, as
+// for a `move`, but a label counts - it can have a `menu` of its own.
+static GUIWIDGET *Widget_For_Context(GUIWIN *win, gdouble cx, gdouble cy)
+{
+	GUIWIDGET *found = NULL, *wid;
+	REBOOL deeper = TRUE;
+
+	if (!win) return NULL;
+	while (deeper) {
+		deeper = FALSE;
+		for (wid = (GUIWIDGET*)win->widgets; wid; wid = (GUIWIDGET*)wid->next) {
+			if ((GUIWIDGET*)wid->parent != found || !wid->handle) continue;
+			if (!Widget_Shown(wid) || !gtk_widget_is_sensitive(GTKW(wid))) continue;
+			if (Widget_Contains(wid, cx, cy)) { found = wid; deeper = TRUE; break; }
+		}
+	}
+	return found;
+}
+
+// The kinds which open a context menu of their own on a right press - an
+// entry's Cut/Copy/Paste. When the widget has a `menu`, GTK does not see
+// the press, so only that one opens. A list still sees it, which picks the
+// row under the pointer first, as a file manager's does.
+static REBOOL Has_Own_Context_Menu(REBCNT kind)
+{
+	switch (kind) {
+	case W_GUI_WIDGET_FIELD:
+	case W_GUI_WIDGET_AREA:
+	case W_GUI_WIDGET_DROP_DOWN:
+	case W_GUI_WIDGET_DATE_FIELD:
+	case W_GUI_WIDGET_TEXT:
+		return TRUE;
+	}
+	return FALSE;
+}
+
 // The kinds whose presses are theirs to report: what Rebol draws on, and
 // the controls one presses. The rest take the mouse for themselves (a
 // field selects text, a list picks a row) and report what it meant; a
@@ -1084,6 +1120,16 @@ static void Event_Hook(GdkEvent *ev, gpointer data)
 			if (source)
 				Gui_Queue_Event(source, type, (REBINT)floor(cx), (REBINT)floor(cy),
 				                Modifier_Bits(b->state) | extra);
+			// A right press over a widget with a `menu` (or inside one).
+			if (b->button == 3) {
+				GUIWIDGET *ctx = Widget_For_Context(win, cx, cy);
+				if (ctx && Gui_Widget_Context(ctx, TRUE, (REBINT)floor(cx), (REBINT)floor(cy))
+				    && Has_Own_Context_Menu(ctx->kind)) {
+					Press_Buttons &= ~(1u << b->button);
+					if (Press_Buttons == 0) { Press_Source = NULL; Press_Window = NULL; Press_Kind = 0; }
+					return;
+				}
+			}
 			break; }
 
 		case GDK_2BUTTON_PRESS:
@@ -1195,6 +1241,14 @@ static void Event_Hook(GdkEvent *ev, gpointer data)
 		case GDK_KEY_PRESS:
 		case GDK_KEY_RELEASE:
 			if (Gui_Window_Blocked(win)) return;
+			// The Menu key, or Shift+F10: the focused widget's `menu`.
+			if (ev->type == GDK_KEY_PRESS
+			    && (ev->key.keyval == GDK_KEY_Menu
+			     || (ev->key.keyval == GDK_KEY_F10 && (ev->key.state & GDK_SHIFT_MASK)))) {
+				GtkWidget *focus = gtk_window_get_focus(GTKWINDOW(win));
+				GUIWIDGET *ctx = focus ? Widget_Of_Gtk(focus) : NULL;
+				if (ctx && ctx->owner == win && Gui_Widget_Context(ctx, FALSE, 0, 0)) return;
+			}
 			if (win->flags & GUIW_KEYS) Report_Key(win, &ev->key);
 			break;
 

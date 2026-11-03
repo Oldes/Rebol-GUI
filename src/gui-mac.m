@@ -192,6 +192,20 @@ static void Apply_Button_Color(GUIWIDGET *wid);
 
 // The GUIWIN behind a window; defined with the content view, below.
 static GUIWIN *Window_Context(NSWindow *window);
+@class RebolGuiView, RebolGuiImageView;
+
+// The widget a view belongs to: the one whose handle it is, or is inside -
+// a table in its scroll view, a field's editor. Asked of the window's own
+// list, so a view which is not ours names no widget.
+static GUIWIDGET *Widget_Of_View(GUIWIN *win, NSView *view)
+{
+	GUIWIDGET *w;
+	if (!win) return NULL;
+	for (; view; view = [view superview])
+		for (w = (GUIWIDGET*)win->widgets; w; w = (GUIWIDGET*)w->next)
+			if ((NSView*)w->handle == view) return w;
+	return NULL;
+}
 
 @implementation RebolGuiWindow
 - (BOOL)canBecomeKeyWindow  { return YES; }
@@ -231,6 +245,31 @@ static GUIWIN *Window_Context(NSWindow *window);
 			return;
 		default:
 			break;
+		}
+	}
+
+	// A right click, or a Control-click: a widget's `menu`, when it or a
+	// container holding it has one - see Gui_Widget_Context. The click is
+	// then kept from the control, so a field does not open its own menu as
+	// well; a canvas, or the window, still reports its `alt-down`.
+	if (win && ([evt type] == NSEventTypeRightMouseDown
+	         || ([evt type] == NSEventTypeLeftMouseDown
+	             && ([evt modifierFlags] & NSEventModifierFlagControl)))) {
+		NSView    *content = [self contentView];
+		NSPoint    inWindow = [evt locationInWindow];
+		NSView    *hit = [content hitTest:[[content superview] convertPoint:inWindow fromView:nil]];
+		GUIWIDGET *wid = Widget_Of_View(win, hit);
+		NSPoint    pt  = [content convertPoint:inWindow fromView:nil];  // flipped: top-left
+		// A disabled control's click is its container's, as elsewhere.
+		while (wid && [(id)wid->handle isKindOfClass:[NSControl class]]
+		       && ![(NSControl*)wid->handle isEnabled])
+			wid = (GUIWIDGET*)wid->parent;
+		if (wid && Gui_Widget_Context(wid, TRUE, (REBINT)floor(pt.x), (REBINT)floor(pt.y))) {
+			if ([evt type] == NSEventTypeRightMouseDown
+			    && ([hit isKindOfClass:[RebolGuiImageView class]]
+			     || [hit isKindOfClass:[RebolGuiView class]]))
+				[super sendEvent:evt];
+			return;
 		}
 	}
 	[super sendEvent:evt];

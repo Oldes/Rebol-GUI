@@ -1585,6 +1585,64 @@ static GUIWIDGET *Widget_Of(GUIWIN *win, HWND hwnd)
 	return NULL;
 }
 
+/***********************************************************************
+**  A widget's context menu - see Gui_Widget_Context().
+**
+**  WM_CONTEXTMENU is what Windows sends for the gesture, after a right
+**  button's release or for the Menu key and Shift+F10 (lParam -1). It goes
+**  to the control under the pointer, which may answer it (an edit's own
+**  menu) - so the controls this file subclasses are asked first, in
+**  Nav_Proc - and DefWindowProc hands it on to the parent, up to the
+**  window. A label is transparent to the mouse, so the message comes from
+**  whatever it sits on: the widget is found by the point, the deepest one
+**  under it, a label included.
+***********************************************************************/
+static GUIWIDGET *Widget_At_Screen(GUIWIN *win, POINT pt)
+{
+	GUIWIDGET *w, *p, *best = NULL;
+	int        best_depth = -1;
+	RECT       r;
+
+	for (w = (GUIWIDGET*)win->widgets; w; w = (GUIWIDGET*)w->next) {
+		int depth = 0;
+		if (!w->handle || !IsWindowVisible(HWND_OF_WID(w)) || !IsWindowEnabled(HWND_OF_WID(w)))
+			continue;
+		if (!GetWindowRect(HWND_OF_WID(w), &r) || !PtInRect(&r, pt)) continue;
+		// Inside everything holding it too: a scroller's child scrolled out
+		// of sight is not under the point.
+		for (p = (GUIWIDGET*)w->parent; p; p = (GUIWIDGET*)p->parent, depth++)
+			if (!p->handle || !GetWindowRect(HWND_OF_WID(p), &r) || !PtInRect(&r, pt)) break;
+		if (p) continue;
+		// The list is in reverse creation order: the first at a depth is
+		// the topmost there.
+		if (depth > best_depth) { best = w; best_depth = depth; }
+	}
+	return best;
+}
+
+static REBOOL Context_Message(GUIWIN *win, LPARAM lp)
+{
+	GUIWIDGET *wid = NULL;
+	POINT      pt;
+	int        dpi;
+
+	if (!win || !win->handle) return FALSE;
+	if (lp == (LPARAM)-1) {
+		// From the keyboard: the focused widget - or the one whose part has
+		// the focus, as a drop-down's edit.
+		HWND f = GetFocus();
+		while (f && !(wid = Widget_Of(win, f))) f = GetParent(f);
+		return wid ? Gui_Widget_Context(wid, FALSE, 0, 0) : FALSE;
+	}
+	pt.x = GET_X_LPARAM(lp);
+	pt.y = GET_Y_LPARAM(lp);
+	wid = Widget_At_Screen(win, pt);
+	if (!wid) return FALSE;
+	ScreenToClient(HWND_OF(win), &pt);
+	dpi = Dpi_Of(HWND_OF(win));
+	return Gui_Widget_Context(wid, TRUE, To_Logical(dpi, pt.x), To_Logical(dpi, pt.y));
+}
+
 // WM_NOTIFY in the window procedure: NM_CUSTOMDRAW for a dark window.
 static REBOOL Dark_Custom_Draw(GUIWIN *win, LPARAM lp, LRESULT *result)
 {
@@ -1912,7 +1970,12 @@ static LRESULT CALLBACK Gui_Window_Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
 	case WM_RBUTTONUP:
 		Queue_Mouse(win, EVT_ALT_UP, lp, 0);
 		ReleaseCapture();
-		return 0;
+		// On to DefWindowProc, which sends WM_CONTEXTMENU.
+		return DefWindowProcW(hwnd, msg, wp, lp);
+
+	case WM_CONTEXTMENU:
+		if (Context_Message(win, lp)) return 0;
+		break;
 
 	case WM_MBUTTONDBLCLK:
 		Queue_Mouse(win, EVT_AUX_DOWN, lp, GUI_FLAG_DOUBLE);
@@ -2400,7 +2463,8 @@ static LRESULT CALLBACK Gui_Image_Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp
 		return 0;
 	case WM_RBUTTONUP:
 		Queue_Widget_Mouse(wid, EVT_ALT_UP, lp, 0);
-		return 0;
+		// On to DefWindowProc, which sends WM_CONTEXTMENU - to the parent.
+		return DefWindowProcW(hwnd, msg, wp, lp);
 
 	case WM_MBUTTONDOWN:
 		Queue_Widget_Mouse(wid, EVT_AUX_DOWN, lp, 0);
@@ -4571,6 +4635,9 @@ static LRESULT CALLBACK Nav_Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 		if (wid) Refresh_Icons(wid, Dpi_Of(hwnd));
 		return 0;
 	}
+
+	// A `menu` wins over the control's own (an edit's Cut/Copy/Paste).
+	if (msg == WM_CONTEXTMENU && wid && Context_Message(wid->owner, lp)) return 0;
 
 	// A list-view's selection has settled - see List_View_Notify.
 	if (msg == WM_GUI_LIST_CHECK) {
@@ -6774,6 +6841,9 @@ static LRESULT CALLBACK Combo_Edit_Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
 
 	// The mouse over the typed text - see Relay_Inner_Mouse().
 	Relay_Inner_Mouse(hwnd, wid, msg, wp, lp);
+
+	// The drop-down's `menu` over the edit's own - see Context_Message().
+	if (msg == WM_CONTEXTMENU && wid && Context_Message(wid->owner, lp)) return 0;
 
 	// Without the dialog manager - see Handle_Key().
 	if (wid && Handle_Key(hwnd, msg, wp, lp, FALSE)) return 0;

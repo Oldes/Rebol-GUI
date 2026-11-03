@@ -1351,6 +1351,25 @@ icon-view: add-list-view/with/index trees ["" 28  "Name" 100  "Size" none right]
 ] 2
 --test-- "a list-view's text skips the icon" [is? icon-view/text "a.txt"]
 
+;; A widget's own context menu: `menu`, in the menu bar's dialect. The user's
+;; gesture opens it - a right click, a Control-click on macOS, the Menu key
+;; or Shift+F10 - and a pick is a `menu-select` with the widget as source. A
+;; container's menu covers what it holds, unless that has one of its own.
+;;
+;; WATCH: a right click on the list-view with icons, or on the tree, opens
+;; its menu, and the log names the item and the widget; the tree's items open
+;; and close every branch. The text-list next to them has none, so nothing
+;; opens there.
+view-menu: ["Open" open-item  "Rename" rename-item  ---  "More" ["Delete" delete-item]]
+icon-view/menu: view-menu
+--test-- "a widget's menu reads back" [same? icon-view/menu view-menu]
+--test-- "none by default"            [none? icon-list/menu]
+--rejects-- "a menu which is not a block" [icon-view/menu: 42]
+icon-view/menu: none
+--test-- "none takes it off"          [none? icon-view/menu]
+icon-view/menu: view-menu
+tree/menu: ["Expand all" expand-all  "Collapse all" collapse-all]
+
 ;; `capture` - a window's client area or a widget, as an image! of device
 ;; pixels - within a pixel of the logical size times the scale.
 about?: func [size [pair!] want [pair!] /local d][
@@ -1785,9 +1804,11 @@ if all [type = 'alt-down  source == canvas] [
 	;; A menu pick carries the item's WORD in `code` - the core reads a symbol
 	;; id back as a word, which is what keeps this a plain switch.
 	if type == 'menu-select [
-		note ajoin ["menu: " event/code]
+		note ajoin ["menu: " event/code either source == win [""][join " from " source/kind]]
 		switch event/code [
 			reset     [clicks: 0  counter/text: "Click me"]
+			expand-all   [tree/expanded: tree/nodes]
+			collapse-all [tree/expanded: []]
 			note      [note "a note"]
 			;; WATCH: the dialog blocks the main window until answered;
 			;; the window's own close box can't close it meanwhile.

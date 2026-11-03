@@ -622,6 +622,7 @@ static REBHOB *Screen_Handle(const REBYTE *key);
 #define SLOT_CHILDREN 1
 #define SLOT_SCRATCH  2
 #define SLOT_ICON     2   // a window's, where a list-view has its scratch
+#define SLOT_MENU     3   // a widget's context menu - see Gui_Widget_Context
 
 static REBSER *Hob_Slots(REBHOB *hob)
 {
@@ -3114,12 +3115,18 @@ COMMAND cmd_gui_set_focus(RXIFRM *frm, void *ctx)
 }
 
 
+#define GUI_EVT_CONTEXT 250   // queued only; never reaches Rebol as such -
+                              // see Gui_Widget_Context
+static REBOOL Context_Menu(REBHOB **source, REBCNT *word);
+
 COMMAND cmd_gui_poll_events(RXIFRM *frm, void *ctx)
 {
 	REBSER *blk;
 	REBCNT  count, n, at = 0;
 	RXIARG  val;
 	REBEVT  ev;
+	REBHOB *menu_source = NULL;
+	REBCNT  menu_word = 0;
 
 	/*******************************************************************
 	**  Pumps and drains, and never sleeps.
@@ -3137,13 +3144,36 @@ COMMAND cmd_gui_poll_events(RXIFRM *frm, void *ctx)
 		Event_Dropped = 0;
 	}
 
+	// A widget's context menu asked for (see Gui_Widget_Context) is shown
+	// here, at the head of the queue, and its pick comes out first. Events
+	// after the request wait for the next poll, so they come out after it,
+	// in the order they happened - including those queued while the menu
+	// was up.
+	if (QUEUE_COUNT() > 0 && QUEUE_AT(0)->type == GUI_EVT_CONTEXT) {
+		if (!Context_Menu(&menu_source, &menu_word)) menu_source = NULL;
+	}
 	count = QUEUE_COUNT();
-	blk = (REBSER*)RL_MAKE_BLOCK(count);
+	for (n = 0; n < count; n++)
+		if (QUEUE_AT(n)->type == GUI_EVT_CONTEXT) { count = n; break; }
+
+	blk = (REBSER*)RL_MAKE_BLOCK(count + 1);
 	if (!blk) RETURN_ERROR(ERR_NO_HANDLE);
 
 	// RL_Set_Value may expand the block, and an expansion can collect - so
 	// the series is protected until it is safely stored in the frame.
 	RL_PROTECT_GC(blk, 1);
+
+	if (menu_source) {
+		CLEARS(&ev);
+		ev.type  = EVT_MENU_SELECT;
+		ev.model = EVM_HANDLE;
+		ev.hob   = menu_source;
+		ev.flags = (1 << EVF_HAS_SYM) | (1 << EVF_HAS_CODE);
+		ev.data  = (u32)menu_word;
+		CLEARS(&val);
+		COPY_MEM(&val, &ev, sizeof(ev));
+		RL_SET_VALUE(blk, at++, val, RXT_EVENT);
+	}
 
 	for (n = 0; n < count; n++) {
 		GUIEVT *evt = QUEUE_AT(n);
@@ -3238,7 +3268,9 @@ COMMAND cmd_gui_poll_events(RXIFRM *frm, void *ctx)
 	RL_PROTECT_GC(blk, 0);
 	Event_Tail += count;
 
-	// The queue is empty again, so the next event may ring the doorbell.
+	// The queue is drained, so the next event may ring the doorbell. A
+	// context menu request left waiting rings it at the next device poll,
+	// as anything still queued does.
 	Event_Rung = FALSE;
 
 	RXA_SERIES(frm, 1) = blk;
@@ -4189,14 +4221,42 @@ COMMAND cmd_gui_withinq(RXIFRM *frm, void *ctx)
 **  arrive meanwhile are queued as usual - the queue never allocates -
 **  and come out of the next `poll-events`.
 ***********************************************************************/
+// Shows `blk` as a context menu of `win` and returns the word of the item
+// picked, 0 for none, or POPUP_FAILED. The bar's table of ids is set aside
+// meanwhile: the popup is built with the same calls, and numbered the same
+// way.
+#define POPUP_FAILED ((REBCNT)-1)
+
+static REBCNT Popup_Menu(GUIWIN *win, REBSER *blk, REBCNT index, REBOOL at, REBINT x, REBINT y)
+{
+	void   *root, *bar;
+	REBCNT *ids;
+	REBYTE *on;
+	REBCNT  count, id, word = 0;
+
+	root = Gui_Popup_Begin(win);
+	if (!root) return POPUP_FAILED;
+
+	// The bar's table aside ...
+	bar = win->menu; ids = win->menu_ids; on = win->menu_on; count = win->menu_count;
+	win->menu = root; win->menu_ids = NULL; win->menu_on = NULL; win->menu_count = 0;
+
+	Block_To_Menu(win, blk, index, root);
+	id = Gui_Popup_Track(win, root, at, x, y);
+	if (id > 0 && id <= win->menu_count) word = win->menu_ids[id - 1];
+
+	// ... and back.
+	Menu_Free_Ids(win);
+	win->menu = bar; win->menu_ids = ids; win->menu_on = on; win->menu_count = count;
+	Gui_Popup_Free(win, root);
+	return word;
+}
+
 COMMAND cmd_gui_popup_menu(RXIFRM *frm, void *ctx)
 {
 	GUIWIN    *win = Frm_Window(frm, 1);
 	GUIWIDGET *wid;
-	void      *root, *bar;
-	REBCNT    *ids;
-	REBYTE    *on;
-	REBCNT     count, id, word = 0;
+	REBCNT     word;
 	REBOOL     at = RXA_REF(frm, 3) ? TRUE : FALSE;
 	REBINT     x = 0, y = 0;
 
@@ -4206,27 +4266,86 @@ COMMAND cmd_gui_popup_menu(RXIFRM *frm, void *ctx)
 		x = (REBINT)RXA_PAIR(frm, 4).x;
 		y = (REBINT)RXA_PAIR(frm, 4).y;
 	}
-
-	root = Gui_Popup_Begin(win);
-	if (!root) RETURN_ERROR(ERR_NO_WIDGET);
-
-	// The bar's table aside ...
-	bar = win->menu; ids = win->menu_ids; on = win->menu_on; count = win->menu_count;
-	win->menu = root; win->menu_ids = NULL; win->menu_on = NULL; win->menu_count = 0;
-
-	Block_To_Menu(win, RXA_SERIES(frm, 2), RXA_INDEX(frm, 2), root);
-	id = Gui_Popup_Track(win, root, at, x, y);
-	if (id > 0 && id <= win->menu_count) word = win->menu_ids[id - 1];
-
-	// ... and back.
-	Menu_Free_Ids(win);
-	win->menu = bar; win->menu_ids = ids; win->menu_on = on; win->menu_count = count;
-	Gui_Popup_Free(win, root);
-
+	word = Popup_Menu(win, RXA_SERIES(frm, 2), RXA_INDEX(frm, 2), at, x, y);
+	if (word == POPUP_FAILED) RETURN_ERROR(ERR_NO_WIDGET);
 	if (!word) return RXR_NONE;
 	RXA_WORD(frm, 1) = (i32)word;
 	RXA_TYPE(frm, 1) = RXT_WORD;
 	return RXR_VALUE;
+}
+
+
+/***********************************************************************
+**  A widget's own context menu - its `menu`.
+**
+**  The backend sees the user ask for a context menu - a right click, a
+**  Control-click on macOS, the Menu key or Shift+F10 - and calls
+**  Gui_Widget_Context(). When the widget, or a container holding it,
+**  has a `menu`, a request is queued in that one's name and TRUE goes
+**  back, so the backend keeps the gesture from the control (a field's
+**  own Cut/Copy/Paste menu). The menu itself is shown when the queue is
+**  drained - from `poll-events`, where Rebol values can be read and the
+**  same code as `popup-menu` runs - and the pick comes out as a
+**  `menu-select` event with the widget as its source.
+***********************************************************************/
+static REBOOL Hob_Menu(REBHOB *hob, RXIARG *val)
+{
+	if (!hob || !hob->series) return FALSE;
+	if ((REBCNT)RL_SERIES(hob->series, RXI_SER_TAIL) <= SLOT_MENU) return FALSE;
+	return RL_GET_VALUE(hob->series, SLOT_MENU, val) == RXT_BLOCK;
+}
+
+static REBOOL Hob_Set_Menu(REBHOB *hob, RXIARG *val)
+{
+	REBSER *blk = Hob_Slots(hob);
+	RXIARG  none;
+	CLEARS(&none);
+	if (!blk) return FALSE;
+	// The slots before it exist, so it lands at its own index.
+	while ((REBCNT)RL_SERIES(blk, RXI_SER_TAIL) < SLOT_MENU)
+		RL_SET_VALUE(blk, (u32)RL_SERIES(blk, RXI_SER_TAIL), none, RXT_NONE);
+	RL_SET_VALUE(blk, SLOT_MENU, val ? *val : none, val ? RXT_BLOCK : RXT_NONE);
+	return TRUE;
+}
+
+REBOOL Gui_Widget_Context(GUIWIDGET *wid, REBOOL at, REBINT x, REBINT y)
+{
+	GUIWIDGET *w;
+	RXIARG     val;
+
+	for (w = wid; w; w = (GUIWIDGET*)w->parent)
+		if (w->hob && Hob_Menu(w->hob, &val)) break;
+	if (!w || !w->owner || Gui_Window_Blocked(w->owner)) return FALSE;
+
+	// From the keyboard there is no pointer to open at: by the widget
+	// asked about, a little into it.
+	if (!at) {
+		if (!Gui_Widget_Get_At(wid, &x, &y)) x = y = 0;
+		x += 8;
+		y += 8;
+	}
+	Gui_Queue_Event(w->hob, GUI_EVT_CONTEXT, x, y, 0);
+	return TRUE;
+}
+
+// The request at the head of the queue, taken off it and shown. Hands
+// back the widget's handle and the word picked, or FALSE.
+static REBOOL Context_Menu(REBHOB **source, REBCNT *word)
+{
+	GUIEVT     evt = *QUEUE_AT(0);
+	GUIWIDGET *wid;
+	RXIARG     val;
+
+	Event_Tail++;
+	*source = evt.source;
+	*word   = 0;
+	if (!evt.source || evt.source->sym != Handle_GuiWidget) return FALSE;
+	wid = (GUIWIDGET*)evt.source->data;
+	if (!wid || !wid->handle || !wid->owner || !wid->owner->handle) return FALSE;
+	if (!Hob_Menu(evt.source, &val)) return FALSE;
+	*word = Popup_Menu(wid->owner, (REBSER*)val.series, val.index, TRUE, evt.x, evt.y);
+	if (*word == POPUP_FAILED) *word = 0;
+	return *word != 0;
 }
 
 
@@ -5149,6 +5268,14 @@ int GuiWidget_get_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 		arg->int64 = (i64)Gui_Widget_Get_Row_Height(wid);
 		break;
 
+	case W_GUI_ARG_MENU: {
+		RXIARG val;
+		if (!Hob_Menu(hob, &val)) { *type = RXT_NONE; break; }
+		arg->series = val.series;
+		arg->index  = val.index;
+		*type = RXT_BLOCK;
+		break; }
+
 	case W_GUI_ARG_NODES: {
 		REBSER *blk;
 		if (wid->kind != W_GUI_WIDGET_TREE_VIEW) { *type = RXT_NONE; break; }
@@ -5665,6 +5792,15 @@ int GuiWidget_set_path(REBHOB *hob, REBCNT word, REBCNT *type, RXIARG *arg)
 		}
 		else return PE_BAD_SET_TYPE;
 		Gui_Widget_Set_Row_Height(wid);
+		break;
+
+	// Kept as given - the same block, read again each time the menu opens,
+	// so changing it in place changes the next menu. Shown by
+	// Gui_Widget_Context; `none` takes it off.
+	case W_GUI_ARG_MENU:
+		if (*type == RXT_NONE) { if (!Hob_Set_Menu(hob, NULL)) return PE_BAD_SET; }
+		else if (*type == RXT_BLOCK) { if (!Hob_Set_Menu(hob, arg)) return PE_BAD_SET; }
+		else return PE_BAD_SET_TYPE;
 		break;
 
 	case W_GUI_ARG_EXPANDED:

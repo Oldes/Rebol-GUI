@@ -1171,6 +1171,40 @@ the menu closes, and reports no event; anything else that happens meanwhile
 comes out of the next `poll-events`. Shortcuts are shown but do not work as
 keys in a context menu.
 
+A widget can have a menu of its own instead, which opens without any code
+to call `popup-menu`:
+
+```rebol
+files/menu: [
+    "Open"   open-file
+    "Rename" rename-file
+    ---
+    "More" ["Delete" delete-file]
+]
+
+do-events win func [evt][
+    if all [evt/type = 'menu-select  evt/source == files] [
+        switch evt/code [open-file [...]  rename-file [...]]
+    ]
+]
+```
+
+It opens on the user's usual gesture: a right click, Control-click on macOS,
+and the Menu key or Shift+F10 on Windows and Linux, at the focused widget. A
+pick is reported as a `menu-select` event with the widget as `source` and the
+item's word as `code`, exactly as a menu bar's pick is with the window as
+source. Dismissing it reports nothing. The menu covers what the widget holds:
+a right click on a button in a panel opens the panel's menu, unless the
+button has one of its own, and a label can have one too. In a field, an area
+or a drop-down it replaces the control's own Cut/Copy/Paste menu. A list
+still picks the row under the pointer first on Windows and Linux. `menu` reads
+back the very block, which is read again each time the menu opens; `none`
+takes it off.
+
+The menu is shown when the events are next read, by `poll-events` (which
+`do-events` calls). Whatever happened before the click comes out before the
+pick, and what happens while the menu is up comes out after it.
+
 ## Modal dialogs
 
 `open-window/modal owner` opens a dialog that blocks **every** other window of
@@ -1656,6 +1690,7 @@ Creates a tree - nodes in branches which open and close - and returns its handle
 /expanded         block!              block!                        "A tree-view's open branches, each as `selected` names a node; setting opens exactly those (with the branches above them) and closes the rest; none for other kinds"
 /nodes            block!              none                          "A tree-view's nodes, each as `selected` names it, parents before their children - the `code` of an `open` or `close` event is a position in it; none for other kinds"
 /row-height       integer!            [integer! none!]              "Height of a row of a text-list, a list-view or a tree-view, in logical units; none goes back to the platform's own, which follows the font; none for other kinds"
+/menu             block!              [block! none!]                "Its context menu, in the menu bar's dialect: opened by a right click (Control-click on macOS, the Menu key or Shift+F10 elsewhere) on it or anything it holds, and reported as a `menu-select` event with the widget as source; none for none"
 ```
 
 #### __SCREEN__ - GUI screen handle - one display; every read asks the platform again

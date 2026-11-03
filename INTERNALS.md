@@ -361,6 +361,27 @@ has the focus (`GetAsyncKeyState` has no toggle bit). macOS: the class method
 `[NSEvent modifierFlags]`, the keyboard's state now. GTK:
 `gdk_keymap_get_caps_lock_state`, as of the last pump.
 
+## Widget context menus (`menu`)
+
+A widget's `menu` block is kept in a fourth slot of its handle's series
+(`SLOT_MENU`, after payload, children and scratch). A backend that sees the
+gesture over a widget calls `Gui_Widget_Context`, which walks up the parents
+to the first one with a `menu` and queues an internal `GUI_EVT_CONTEXT`
+request in its name; a TRUE answer tells the backend to keep the gesture
+from the control. The menu is shown by `poll-events` when the request is at
+the head of the queue, through the same `Popup_Menu` as `popup-menu`, where
+Rebol values are safe to read; a drain stops short of a request, so it is
+always shown first in a later batch, and its pick is put first in the block
+as a `menu-select` from the widget. Windows: `WM_CONTEXTMENU`, taken in
+`Nav_Proc` and the drop-down's edit before the control's own, and in the
+window procedure for what DefWindowProc hands up (the window and the image
+widget pass `WM_RBUTTONUP` on to DefWindowProc for that); the widget is the
+deepest under the point (`Widget_At_Screen`, labels included), or the focus
+for the keyboard. GTK: a button-3 press in the event hook, swallowed for the
+kinds with a menu of their own, and the Menu key or Shift+F10 on the focus.
+macOS: a right or Control-click in `-[RebolGuiWindow sendEvent:]`, mapped
+from `hitTest:` to its widget; a canvas or the window still gets the click.
+
 ## Capture
 
 `Gui_Capture` hands back BGRA in memory of its own, which the command copies

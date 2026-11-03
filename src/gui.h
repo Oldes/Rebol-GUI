@@ -453,6 +453,14 @@ void*   Gui_Popup_Begin(GUIWIN *win);
 REBCNT  Gui_Popup_Track(GUIWIN *win, void *root, REBOOL at, REBINT x, REBINT y);
 void    Gui_Popup_Free(GUIWIN *win, void *root);
 
+// The user asked for a context menu over `wid` - a right click, a Control-
+// click on macOS, the Menu key or Shift+F10 - at `x`,`y` in its window's
+// client area when `at`, or from the keyboard. TRUE when `wid` or a
+// container holding it has a `menu`, which is then shown at the next
+// `poll-events`: the backend keeps the gesture from the control, so a
+// field does not open its own menu as well.
+REBOOL  Gui_Widget_Context(GUIWIDGET *wid, REBOOL at, REBINT x, REBINT y);
+
 // Called BY a backend when an item is picked - it queues the `menu` event
 // with the item's word, which is the shared layer's business.
 void    Gui_Menu_Picked(GUIWIN *win, REBCNT id);

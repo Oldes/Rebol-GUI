@@ -492,6 +492,7 @@ handles: [
 		expanded block!    block!    "A tree-view's open branches, each as `selected` names a node; setting opens exactly those (with the branches above them) and closes the rest; none for other kinds"
 		nodes    block!    none      "A tree-view's nodes, each as `selected` names it, parents before their children - the `code` of an `open` or `close` event is a position in it; none for other kinds"
 		row-height integer! [integer! none!] "Height of a row of a text-list, a list-view or a tree-view, in logical units; none goes back to the platform's own, which follows the font; none for other kinds"
+		menu      block!   [block! none!] "Its context menu, in the menu bar's dialect: opened by a right click (Control-click on macOS, the Menu key or Shift+F10 elsewhere) on it or anything it holds, and reported as a `menu-select` event with the widget as source; none for none"
 	]
 	screen: [
 		"GUI screen handle - one display; every read asks the platform again"
