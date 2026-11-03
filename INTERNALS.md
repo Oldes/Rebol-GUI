@@ -332,7 +332,9 @@ Cocoa flips offsets against the menu-bar screen; the content view answers
   and a text-list's in a window property, which an owner-drawn list box
   (`Text_List_Draw`, colours from `WM_CTLCOLORLISTBOX`) draws from; macOS,
   `NSImage`s at the backing scale drawn by `RebolGuiIconCell`, an
-  `NSTextFieldCell` given room on its left.
+  `NSTextFieldCell` given room on its left. Every column of the three
+  tables uses that cell, icons or not: its `drawingRectForBounds:` centres
+  the font's line in the row, where a plain text cell draws at the top.
 - **`row-height`:** kept in `wid->row_height` (0 = the platform's own) and
   counted with the gap between rows, so the same number gives the same pitch
   everywhere. Windows: `LB_SETITEMHEIGHT` (at most 255 px; an owner-drawn

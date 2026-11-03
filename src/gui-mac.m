@@ -398,8 +398,9 @@ static GUIWIN *Window_Context(NSWindow *window);
 @end
 
 
-// A row's label cell - a text-list's, a list-view's first field's, a
-// tree's - with room for an icon before the label: `side` points square,
+// A row's label cell - a text-list's, a list-view's, a tree's - with its
+// line centred in the row, and room for an icon before the label (in a
+// list-view, the first field's only): `side` points square,
 // the icon drawn in it - or nothing, for a row with none in a widget with
 // some, which keeps the labels in line. See Icon_Image.
 @interface RebolGuiIconCell : NSTextFieldCell
@@ -1155,6 +1156,23 @@ static void Free_Pixels(void *info, const void *data, size_t size)
 	NSSize size = [super cellSize];
 	if (side > 0) size.width += side + 4.0;
 	return size;
+}
+
+// The line in the middle of the row. A text cell draws from the top of
+// its frame, which shows once a row is taller than its font - as with
+// `row-height`, or the row a tree's icons ask for. The line is the font's,
+// measured as the row height is (see Row_Height_For), not the string's,
+// so every row's text sits on the same baseline.
+- (NSRect)drawingRectForBounds:(NSRect)bounds
+{
+	NSRect  rect = [super drawingRectForBounds:bounds];
+	NSFont *font = [self font];
+	CGFloat line = font ? ceil([font ascender] - [font descender] + [font leading]) : 0;
+	if (line > 0 && line < rect.size.height) {
+		rect.origin.y   += floor((rect.size.height - line) / 2.0);
+		rect.size.height = line;
+	}
+	return rect;
 }
 
 @end
@@ -5492,8 +5510,9 @@ REBOOL Gui_List_Add_Column(GUIWIDGET *wid, REBCNT field, const REBYTE *utf8, REB
 			[NSString stringWithFormat:@"%lu", (unsigned long)field]]
 			autorelease];
 		[[column headerCell] setStringValue:title];
-		// A row's icon is its first field.
-		if (field == 0) [column setDataCell:New_Icon_Cell()];
+		// The cell which centres its line in the row - and in the first
+		// field, a row's icon.
+		[column setDataCell:New_Icon_Cell()];
 		[[column dataCell] setFont:font];
 		[[column dataCell] setAlignment:NS_Align(align)];
 		[[column headerCell] setAlignment:NS_Align(align)];
