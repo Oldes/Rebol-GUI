@@ -2303,6 +2303,12 @@ static CGFloat Wheel_Rest = 0.0;
 ***********************************************************************/
 - (void)windowDidBecomeKey:(NSNotification*)note
 {
+	// Not while a context menu is up: the shared layer has the popup in
+	// `menu` meanwhile (see Popup_Menu), and a window becomes key when a
+	// menu opens over it while it was not. A context menu made the main
+	// menu cannot be replaced later - AppKit throws on the next window
+	// change. Gui_Popup_Free puts the window's bar up instead.
+	if (Popup_Tracking) return;
 	if (context && context->menu)
 		[NSApp setMainMenu:(NSMenu*)context->menu];
 }
@@ -2839,8 +2845,15 @@ REBCNT Gui_Popup_Track(GUIWIN *win, void *root, REBOOL at, REBINT x, REBINT y)
 
 void Gui_Popup_Free(GUIWIN *win, void *root)
 {
-	(void)win;
-	if (root) [(NSMenu*)root release];
+	@autoreleasepool {
+		// The bar is the window's again here (see Popup_Menu): if the menu
+		// made the window key, its bar is shown now, as becoming key would
+		// have - see -windowDidBecomeKey:.
+		if (win && win->handle && win->menu && [NSWINDOW_OF(win) isKeyWindow]
+		    && [NSApp mainMenu] != (NSMenu*)win->menu)
+			[NSApp setMainMenu:(NSMenu*)win->menu];
+		if (root) [(NSMenu*)root release];
+	}
 }
 
 
