@@ -1151,7 +1151,12 @@ static void Event_Hook(GdkEvent *ev, gpointer data)
 			case GDK_SCROLL_DOWN: lines = -1; break;
 			case GDK_SCROLL_SMOOTH:
 				// A wheel notch is 1.0; a touchpad reports fractions, which
-				// are added up until they make a line.
+				// are added up until they make a line. The end of a gesture,
+				// or a turn the other way, starts the count again, so a
+				// leftover never leaks into the next one - as on macOS.
+				if (gdk_event_is_scroll_stop_event(ev)
+				 || (s->delta_y != 0 && Wheel_Rest != 0 && (Wheel_Rest > 0) == (s->delta_y > 0)))
+					Wheel_Rest = 0;
 				Wheel_Rest -= s->delta_y;
 				if (Wheel_Rest >= 1.0 || Wheel_Rest <= -1.0) {
 					lines = (REBINT)Wheel_Rest;
@@ -1166,6 +1171,7 @@ static void Event_Hook(GdkEvent *ev, gpointer data)
 			wid = Widget_Under_Point(win, cx, cy, FALSE);
 			if (wid && (wid->kind == W_GUI_WIDGET_AREA
 			         || wid->kind == W_GUI_WIDGET_LIST_VIEW
+			         || wid->kind == W_GUI_WIDGET_TREE_VIEW
 			         || (wid->kind == W_GUI_WIDGET_TEXT_LIST && !(wid->state & GUI_LIST_FIXED))))
 				break;
 			// ... and so does a scroller around it, while it has something

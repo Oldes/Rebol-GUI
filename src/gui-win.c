@@ -1932,10 +1932,24 @@ static LRESULT CALLBACK Gui_Window_Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
 		// Unlike the button messages, this one carries SCREEN coordinates.
 		POINT pt;
 		UINT  lines = 3;
-		REBINT delta = GET_WHEEL_DELTA_WPARAM(wp) / WHEEL_DELTA;
+		int   raw = GET_WHEEL_DELTA_WPARAM(wp);
+		REBINT delta;
 
 		SystemParametersInfoW(SPI_GETWHEELSCROLLLINES, 0, &lines, 0);
 		if (lines == 0 || lines > 100) lines = 3; // also covers WHEEL_PAGESCROLL
+
+		// A notch is WHEEL_DELTA (120); a precision touchpad or a free-
+		// spinning wheel sends a fraction of one at a time. They are added
+		// up, in lines, and only whole lines are reported - the rest waits
+		// for the next message. A turn the other way starts the count again.
+		{
+			static int rest = 0;   // in 1/WHEEL_DELTA of a line
+			if (raw != 0 && rest != 0 && (rest > 0) != (raw > 0)) rest = 0;
+			rest += raw * (int)lines;
+			delta = (REBINT)(rest / WHEEL_DELTA);
+			rest -= (int)delta * WHEEL_DELTA;
+		}
+		if (delta == 0) return 0;
 
 		pt.x = GET_X_LPARAM(lp);
 		pt.y = GET_Y_LPARAM(lp);
@@ -1944,7 +1958,7 @@ static LRESULT CALLBACK Gui_Window_Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
 		if (win->hob)
 			Gui_Queue_Event(win->hob, EVT_SCROLL_LINE,
 			                To_Logical(Dpi_Of(hwnd), pt.x), To_Logical(Dpi_Of(hwnd), pt.y),
-			                delta * (REBINT)lines);
+			                delta);
 		return 0; }
 
 	case WM_SETTINGCHANGE:
