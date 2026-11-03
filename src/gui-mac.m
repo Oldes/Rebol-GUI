@@ -192,7 +192,7 @@ static void Apply_Button_Color(GUIWIDGET *wid);
 
 // The GUIWIN behind a window; defined with the content view, below.
 static GUIWIN *Window_Context(NSWindow *window);
-@class RebolGuiView, RebolGuiImageView;
+static BOOL Reports_Right_Click(NSView *view);   // after the classes, below
 
 // The widget a view belongs to: the one whose handle it is, or is inside -
 // a table in its scroll view, a field's editor. Asked of the window's own
@@ -265,9 +265,7 @@ static GUIWIDGET *Widget_Of_View(GUIWIN *win, NSView *view)
 		       && ![(NSControl*)wid->handle isEnabled])
 			wid = (GUIWIDGET*)wid->parent;
 		if (wid && Gui_Widget_Context(wid, TRUE, (REBINT)floor(pt.x), (REBINT)floor(pt.y))) {
-			if ([evt type] == NSEventTypeRightMouseDown
-			    && ([hit isKindOfClass:[RebolGuiImageView class]]
-			     || [hit isKindOfClass:[RebolGuiView class]]))
+			if ([evt type] == NSEventTypeRightMouseDown && Reports_Right_Click(hit))
 				[super sendEvent:evt];
 			return;
 		}
@@ -523,6 +521,15 @@ static GUIWIDGET *Widget_Of_View(GUIWIN *win, NSView *view)
 }
 - (void)setContext:(GUIWIDGET*)ctx;
 @end
+
+// Whether a right click on `view` is reported as `alt-down` by the view
+// itself - a canvas, or the window's content - and so still goes to it when
+// it also opens a widget's `menu` (see -[RebolGuiWindow sendEvent:]).
+static BOOL Reports_Right_Click(NSView *view)
+{
+	return [view isKindOfClass:[RebolGuiImageView class]]
+	    || [view isKindOfClass:[RebolGuiView class]];
+}
 
 
 /***********************************************************************
